@@ -28,8 +28,8 @@ firebase_credentials = {
     "type": "service_account",
     "project_id": "foxedge-888",
     "private_key_id": "2fd810e37a85631394542b0ebf2a0e02a03a8c35",
-    "private_key": "-----BEGIN PRIVATE KEY-----
-"MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDQBKYtgirukN7N
+    "private_key": """-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDQBKYtgirukN7N
 AjToVEdkxJVrmV4D23FmUJzVv4O4YNqX8Nyvmx3avSVnnh6wifSa3CbyKU618Ne4
 9YUPlso8TFh8PdpuYrYbVsbKQDPr6LUDRzHwjrtN9tSzdWQyJ1//ThYaQGydKrQc
 G4XcSX0EJC9ih1HaYEgsUYqIr9bwRxCtvYBZfz6Z3Uy+xFD9QJg3xG0H7K2lzNZE
@@ -55,13 +55,14 @@ ud+9DZzP8tiwaj2e3ENX9Rd1853t9GlNn+Q6ydltAoGBAJY1sN+sUzZsB+XopkZu
 Bmf6/HcC617cATuriBZ6gLuHsHnOy8bUQwCLIfBFHQyWIw5vTOe5PgkXNTJgKK6M
 lqCtB/yrPAZwjERUMMJYBEN86gnxUnsgx5JhqzdQM/9FlgWtdyZ+KVe+hmEcK7Vp
 MNO0X1jTQ/W0xzYxgaMiFnYf
------END PRIVATE KEY-----",
+-----END PRIVATE KEY-----
+""",
     "client_email": "firebase-adminsdk-p5clz@foxedge-888.iam.gserviceaccount.com",
     "client_id": "103000901062251131086",
     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
     "token_uri": "https://oauth2.googleapis.com/token",
     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-p5clz%40foxedge-888.iam.gserviceaccount.com",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-p5clz@foxedge-888.iam.gserviceaccount.com",
     "universe_domain": "googleapis.com"
 }
 
