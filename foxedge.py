@@ -9,7 +9,8 @@ from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import GradientBoostingRegressor
 from pmdarima import auto_arima
 from pathlib import Path
-
+import streamlit as st
+from firebase_admin import credentials, initialize_app
 
 
 import firebase_admin
@@ -26,8 +27,13 @@ from firebase_admin import credentials, initialize_app
 FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"  # Replace with Firebase Web API Key
 
 # Load credentials from Streamlit secrets
-firebase_credentials = json.loads(st.secrets["firebase"])
-cred = credentials.Certificate(firebase_credentials)
+
+
+if not firebase_admin._apps:
+    # Load Firebase credentials directly from Streamlit secrets
+    cred = credentials.Certificate(st.secrets["firebase"])
+    initialize_app(cred)
+
 
 def login_with_rest(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
