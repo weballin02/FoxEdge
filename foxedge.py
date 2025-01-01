@@ -15,17 +15,19 @@ from pathlib import Path
 import firebase_admin
 from firebase_admin import credentials, auth
 import requests
+import json
+import streamlit as st
+from firebase_admin import credentials, initialize_app
 
 ##################################
 # FIREBASE CONFIGURATION
 ##################################
 
 FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"  # Replace with Firebase Web API Key
-SERVICE_ACCOUNT_PATH = "/Users/matthewfox/FoxEdgeAI/serviceAccountKey.json"  # Replace with your service account JSON path
 
-if not firebase_admin._apps:
-    cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-    firebase_admin.initialize_app(cred)
+# Load credentials from Streamlit secrets
+firebase_credentials = json.loads(st.secrets["firebase"])
+cred = credentials.Certificate(firebase_credentials)
 
 def login_with_rest(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
