@@ -55,8 +55,7 @@ ud+9DZzP8tiwaj2e3ENX9Rd1853t9GlNn+Q6ydltAoGBAJY1sN+sUzZsB+XopkZu
 Bmf6/HcC617cATuriBZ6gLuHsHnOy8bUQwCLIfBFHQyWIw5vTOe5PgkXNTJgKK6M
 lqCtB/yrPAZwjERUMMJYBEN86gnxUnsgx5JhqzdQM/9FlgWtdyZ+KVe+hmEcK7Vp
 MNO0X1jTQ/W0xzYxgaMiFnYf
------END PRIVATE KEY-----
-""",
+-----END PRIVATE KEY-----""",
     "client_email": "firebase-adminsdk-p5clz@foxedge-888.iam.gserviceaccount.com",
     "client_id": "103000901062251131086",
     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
@@ -67,9 +66,12 @@ MNO0X1jTQ/W0xzYxgaMiFnYf
 }
 
 try:
-    cred = credentials.Certificate(firebase_credentials)
-    initialize_app(cred)
-    print("Firebase initialized successfully!")
+    if not firebase_admin._apps:  # Check if any Firebase app is already initialized
+        cred = credentials.Certificate(firebase_credentials)
+        initialize_app(cred)
+        print("Firebase initialized successfully!")
+    else:
+        print("Firebase app already initialized.")
 except Exception as e:
     print("Error: ", e)
 
