@@ -28,7 +28,34 @@ firebase_credentials = {
     "type": "service_account",
     "project_id": "foxedge-888",
     "private_key_id": "2fd810e37a85631394542b0ebf2a0e02a03a8c35",
-    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDQBKYtgirukN7N\nAjToVEdkxJVrmV4D23FmUJzVv4O4YNqX8Nyvmx3avSVnnh6wifSa3CbyKU618Ne4\n...",
+    "private_key": "-----BEGIN PRIVATE KEY-----
+"MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDQBKYtgirukN7N
+AjToVEdkxJVrmV4D23FmUJzVv4O4YNqX8Nyvmx3avSVnnh6wifSa3CbyKU618Ne4
+9YUPlso8TFh8PdpuYrYbVsbKQDPr6LUDRzHwjrtN9tSzdWQyJ1//ThYaQGydKrQc
+G4XcSX0EJC9ih1HaYEgsUYqIr9bwRxCtvYBZfz6Z3Uy+xFD9QJg3xG0H7K2lzNZE
+KjCsPXYdiV4V2pKQl9oWR7JWnkfKdPiQrmDuDLNTrT9P8M/bA+njzHN6jFBSXrAZ
+0lS/9tQEykXPk7qEYco3jHmb7eO4ZzbNtrD9JABxKhmGOPrpktD+JJM/usDw5dHy
+SepUsAWlAgMBAAECggEAB7vvLx352VOK6nW8iy7Rq2N2aBZpsnGu7ljs8TLlA4Px
+B1kt5gbkaJpDu8Mwl5ZpgSB8/4qdoed0fddTEoNOvZ3bubLVs5Oj+wbnmTl4ihA6
+5VujoF1jhWs5+U98tt3+lGV42OewTMpRAVfcoEDIjyYxRNPh1+FgjZVH4KZ5CAdA
+gDr29iy4HAPPPG4vrkFSL4HmiMJccnMd6aPE1RRtII8xRBaj3GtYodk64Zi9aI0U
+TYV8x3fyn2wCMXC1pBxnSZm8OH3PjQG3d1aDEMADQF+/CvMuX1P38uQlVqi4MLC2
+16Hi8gy9AELeQY7oFixVV/JSCEmxQ4W8RW457GTTeQKBgQD6oFtoMVgUo16gsxMt
+LTMYvbcHu9AeO1PoAjoEOGIIfeYnkQjqibuy45CoanX2iDEa0cvPzX9bCl8hp528
+qJzMds+DXEvr7opXUE52bK/bxiJ3K+eMaRz25k8sH+A9cFkI3rdWJsKU7ezr+c85
+d6xVqLpYEIJFrEYPO+IWMvH7EwKBgQDUemxV0DcIi9Sw7F/Pgcgca/cMWI4KQLQl
+uHsnz4x4YFtehIx2C9icUj942cbI5LWF682pwE81eN3haPuM144NCSRjzVnQBvZE
+XU3TDmI3K8eY2D/3xW7JNg24fiYBL8vUYn0We+u17mpevhcTEcKIDTzqtqONJBcP
+6lLiWuMbZwKBgEof2UkEpw9bjiYrMHXBE4ayvYpdAt2eIF/TIMOUxXHLgqGbJK7x
+U4FCCsu0yPTELPnIqOXp2kvb0m0KvP1KRS23ygII7y91WpceWkZuOMjgXdsvMgl2
+ISnozeu39cNWEg8sh77EMfKIN/VG6gIOIfsnrw1SvKTMod/pjyGPqb/fAoGBALsd
+fJ4tmOlryshrwQxKbGGrKoqyyZN526uEROCQRFIV+SDJdbDXSdCQFdllX0u3Laxc
+NmeRNbAPWsaQ30Xu5efQ7zz8sGUkXGdkC48cEZ4obcPKXLrkIWYMthSM8wcEgmns
+ud+9DZzP8tiwaj2e3ENX9Rd1853t9GlNn+Q6ydltAoGBAJY1sN+sUzZsB+XopkZu
+Bmf6/HcC617cATuriBZ6gLuHsHnOy8bUQwCLIfBFHQyWIw5vTOe5PgkXNTJgKK6M
+lqCtB/yrPAZwjERUMMJYBEN86gnxUnsgx5JhqzdQM/9FlgWtdyZ+KVe+hmEcK7Vp
+MNO0X1jTQ/W0xzYxgaMiFnYf
+-----END PRIVATE KEY-----",
     "client_email": "firebase-adminsdk-p5clz@foxedge-888.iam.gserviceaccount.com",
     "client_id": "103000901062251131086",
     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
