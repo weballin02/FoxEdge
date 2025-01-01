@@ -9,35 +9,25 @@ from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import GradientBoostingRegressor
 from pmdarima import auto_arima
 from pathlib import Path
-from firebase_admin import credentials, initialize_app
+
+
+
 import firebase_admin
-from firebase_admin import auth
+from firebase_admin import credentials, auth
 import requests
-import json
 
 ##################################
 # FIREBASE CONFIGURATION
 ##################################
 
-FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"
+FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"  # Replace with Firebase Web API Key
+SERVICE_ACCOUNT_PATH = "/Users/matthewfox/FoxEdgeAI/serviceAccountKey.json"  # Replace with your service account JSON path
 
-# Firebase credentials loaded from Streamlit secrets
-try:
-    firebase_credentials = json.loads(st.secrets["firebase"])
-    if not firebase_admin._apps:  # Check if Firebase is already initialized
-        cred = credentials.Certificate(firebase_credentials)
-        initialize_app(cred)
-        print("Firebase initialized successfully!")
-except Exception as e:
-    st.error(f"Firebase initialization failed: {e}")
-    print(f"Error initializing Firebase: {e}")
-
-##################################
-# FIREBASE AUTH FUNCTIONS
-##################################
+if not firebase_admin._apps:
+    cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+    firebase_admin.initialize_app(cred)
 
 def login_with_rest(email, password):
-    """Authenticate user using Firebase REST API."""
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
     payload = {"email": email, "password": password, "returnSecureToken": True}
     response = requests.post(url, json=payload)
@@ -48,23 +38,20 @@ def login_with_rest(email, password):
         return None
 
 def signup_user(email, password):
-    """Create a new user in Firebase Authentication."""
     try:
         user = auth.create_user(email=email, password=password)
         st.success(f"User {email} created successfully!")
         return user
     except Exception as e:
-        st.error(f"Error creating user: {e}")
+        st.error(f"Error: {e}")
 
 def logout_user():
-    """Log out the current user."""
     for key in ['email', 'logged_in']:
         if key in st.session_state:
             del st.session_state[key]
 
-##################################
-# UTILITY FUNCTIONS
-##################################
+# File to store predictions
+CSV_FILE = "predictions.csv"
 
 # Utility function to round to nearest 0.5
 def round_half(number):
@@ -73,8 +60,6 @@ def round_half(number):
 ##################################
 # CSV MANAGEMENT FUNCTIONS
 ##################################
-
-CSV_FILE = "predictions.csv"
 
 def initialize_csv(csv_file=CSV_FILE):
     """Initialize the CSV file if it doesn't exist."""
