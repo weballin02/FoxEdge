@@ -28,7 +28,7 @@ FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"  # Replace with Fir
 
 
 if not firebase_admin._apps:
-    # Convert the AttrDict to a plain dictionary
+    # Convert Streamlit secrets to a dictionary and initialize Firebase
     firebase_credentials = dict(st.secrets["firebase"])
     cred = credentials.Certificate(firebase_credentials)
     initialize_app(cred)
