@@ -11,8 +11,6 @@ from pmdarima import auto_arima
 from pathlib import Path
 import streamlit as st
 from firebase_admin import credentials, initialize_app
-
-
 import firebase_admin
 from firebase_admin import credentials, auth
 import requests
@@ -30,8 +28,9 @@ FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"  # Replace with Fir
 
 
 if not firebase_admin._apps:
-    # Load Firebase credentials directly from Streamlit secrets
-    cred = credentials.Certificate(st.secrets["firebase"])
+    # Convert the AttrDict to a plain dictionary
+    firebase_credentials = dict(st.secrets["firebase"])
+    cred = credentials.Certificate(firebase_credentials)
     initialize_app(cred)
 
 
