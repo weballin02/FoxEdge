@@ -24,14 +24,26 @@ from firebase_admin import credentials, initialize_app
 
 FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"  # Replace with Firebase Web API Key
 
-# Load credentials from Streamlit secrets
+firebase_credentials = {
+    "type": "service_account",
+    "project_id": "foxedge-888",
+    "private_key_id": "2fd810e37a85631394542b0ebf2a0e02a03a8c35",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDQBKYtgirukN7N\nAjToVEdkxJVrmV4D23FmUJzVv4O4YNqX8Nyvmx3avSVnnh6wifSa3CbyKU618Ne4\n...",
+    "client_email": "firebase-adminsdk-p5clz@foxedge-888.iam.gserviceaccount.com",
+    "client_id": "103000901062251131086",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-p5clz%40foxedge-888.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com"
+}
 
-
-if not firebase_admin._apps:
-    # Convert Streamlit secrets to a dictionary and initialize Firebase
-    firebase_credentials = dict(st.secrets["firebase"])
+try:
     cred = credentials.Certificate(firebase_credentials)
     initialize_app(cred)
+    print("Firebase initialized successfully!")
+except Exception as e:
+    print("Error: ", e)
 
 
 def login_with_rest(email, password):
