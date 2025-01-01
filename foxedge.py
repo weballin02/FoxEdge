@@ -9,74 +9,35 @@ from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import GradientBoostingRegressor
 from pmdarima import auto_arima
 from pathlib import Path
-import streamlit as st
 from firebase_admin import credentials, initialize_app
 import firebase_admin
-from firebase_admin import credentials, auth
+from firebase_admin import auth
 import requests
 import json
-import streamlit as st
-from firebase_admin import credentials, initialize_app
 
 ##################################
 # FIREBASE CONFIGURATION
 ##################################
 
-FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"  # Replace with Firebase Web API Key
+FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"
 
-firebase_credentials = {
-    "type": "service_account",
-    "project_id": "foxedge-888",
-    "private_key_id": "2fd810e37a85631394542b0ebf2a0e02a03a8c35",
-    "private_key": """-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDQBKYtgirukN7N
-AjToVEdkxJVrmV4D23FmUJzVv4O4YNqX8Nyvmx3avSVnnh6wifSa3CbyKU618Ne4
-9YUPlso8TFh8PdpuYrYbVsbKQDPr6LUDRzHwjrtN9tSzdWQyJ1//ThYaQGydKrQc
-G4XcSX0EJC9ih1HaYEgsUYqIr9bwRxCtvYBZfz6Z3Uy+xFD9QJg3xG0H7K2lzNZE
-KjCsPXYdiV4V2pKQl9oWR7JWnkfKdPiQrmDuDLNTrT9P8M/bA+njzHN6jFBSXrAZ
-0lS/9tQEykXPk7qEYco3jHmb7eO4ZzbNtrD9JABxKhmGOPrpktD+JJM/usDw5dHy
-SepUsAWlAgMBAAECggEAB7vvLx352VOK6nW8iy7Rq2N2aBZpsnGu7ljs8TLlA4Px
-B1kt5gbkaJpDu8Mwl5ZpgSB8/4qdoed0fddTEoNOvZ3bubLVs5Oj+wbnmTl4ihA6
-5VujoF1jhWs5+U98tt3+lGV42OewTMpRAVfcoEDIjyYxRNPh1+FgjZVH4KZ5CAdA
-gDr29iy4HAPPPG4vrkFSL4HmiMJccnMd6aPE1RRtII8xRBaj3GtYodk64Zi9aI0U
-TYV8x3fyn2wCMXC1pBxnSZm8OH3PjQG3d1aDEMADQF+/CvMuX1P38uQlVqi4MLC2
-16Hi8gy9AELeQY7oFixVV/JSCEmxQ4W8RW457GTTeQKBgQD6oFtoMVgUo16gsxMt
-LTMYvbcHu9AeO1PoAjoEOGIIfeYnkQjqibuy45CoanX2iDEa0cvPzX9bCl8hp528
-qJzMds+DXEvr7opXUE52bK/bxiJ3K+eMaRz25k8sH+A9cFkI3rdWJsKU7ezr+c85
-d6xVqLpYEIJFrEYPO+IWMvH7EwKBgQDUemxV0DcIi9Sw7F/Pgcgca/cMWI4KQLQl
-uHsnz4x4YFtehIx2C9icUj942cbI5LWF682pwE81eN3haPuM144NCSRjzVnQBvZE
-XU3TDmI3K8eY2D/3xW7JNg24fiYBL8vUYn0We+u17mpevhcTEcKIDTzqtqONJBcP
-6lLiWuMbZwKBgEof2UkEpw9bjiYrMHXBE4ayvYpdAt2eIF/TIMOUxXHLgqGbJK7x
-U4FCCsu0yPTELPnIqOXp2kvb0m0KvP1KRS23ygII7y91WpceWkZuOMjgXdsvMgl2
-ISnozeu39cNWEg8sh77EMfKIN/VG6gIOIfsnrw1SvKTMod/pjyGPqb/fAoGBALsd
-fJ4tmOlryshrwQxKbGGrKoqyyZN526uEROCQRFIV+SDJdbDXSdCQFdllX0u3Laxc
-NmeRNbAPWsaQ30Xu5efQ7zz8sGUkXGdkC48cEZ4obcPKXLrkIWYMthSM8wcEgmns
-ud+9DZzP8tiwaj2e3ENX9Rd1853t9GlNn+Q6ydltAoGBAJY1sN+sUzZsB+XopkZu
-Bmf6/HcC617cATuriBZ6gLuHsHnOy8bUQwCLIfBFHQyWIw5vTOe5PgkXNTJgKK6M
-lqCtB/yrPAZwjERUMMJYBEN86gnxUnsgx5JhqzdQM/9FlgWtdyZ+KVe+hmEcK7Vp
-MNO0X1jTQ/W0xzYxgaMiFnYf
------END PRIVATE KEY-----""",
-    "client_email": "firebase-adminsdk-p5clz@foxedge-888.iam.gserviceaccount.com",
-    "client_id": "103000901062251131086",
-    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-p5clz@foxedge-888.iam.gserviceaccount.com",
-    "universe_domain": "googleapis.com"
-}
-
+# Firebase credentials loaded from Streamlit secrets
 try:
-    if not firebase_admin._apps:  # Check if any Firebase app is already initialized
+    firebase_credentials = json.loads(st.secrets["firebase"])
+    if not firebase_admin._apps:  # Check if Firebase is already initialized
         cred = credentials.Certificate(firebase_credentials)
         initialize_app(cred)
         print("Firebase initialized successfully!")
-    else:
-        print("Firebase app already initialized.")
 except Exception as e:
-    print("Error: ", e)
+    st.error(f"Firebase initialization failed: {e}")
+    print(f"Error initializing Firebase: {e}")
 
+##################################
+# FIREBASE AUTH FUNCTIONS
+##################################
 
 def login_with_rest(email, password):
+    """Authenticate user using Firebase REST API."""
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
     payload = {"email": email, "password": password, "returnSecureToken": True}
     response = requests.post(url, json=payload)
@@ -87,20 +48,23 @@ def login_with_rest(email, password):
         return None
 
 def signup_user(email, password):
+    """Create a new user in Firebase Authentication."""
     try:
         user = auth.create_user(email=email, password=password)
         st.success(f"User {email} created successfully!")
         return user
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error creating user: {e}")
 
 def logout_user():
+    """Log out the current user."""
     for key in ['email', 'logged_in']:
         if key in st.session_state:
             del st.session_state[key]
 
-# File to store predictions
-CSV_FILE = "predictions.csv"
+##################################
+# UTILITY FUNCTIONS
+##################################
 
 # Utility function to round to nearest 0.5
 def round_half(number):
@@ -109,6 +73,8 @@ def round_half(number):
 ##################################
 # CSV MANAGEMENT FUNCTIONS
 ##################################
+
+CSV_FILE = "predictions.csv"
 
 def initialize_csv(csv_file=CSV_FILE):
     """Initialize the CSV file if it doesn't exist."""
