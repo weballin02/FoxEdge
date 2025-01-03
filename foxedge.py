@@ -10,8 +10,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from pmdarima import auto_arima
 from pathlib import Path
 
-
-
+import json
 import firebase_admin
 from firebase_admin import credentials, auth
 import requests
@@ -20,11 +19,27 @@ import requests
 # FIREBASE CONFIGURATION
 ##################################
 
-FIREBASE_API_KEY = "AIzaSyByS5bF8UQh9lmYtDVjHJ5A_uAwaGSBvhI"  # Replace with Firebase Web API Key
-SERVICE_ACCOUNT_PATH = "/Users/matthewfox/FoxEdgeAI/serviceAccountKey.json"  # Replace with your service account JSON path
+# Load the Firebase Web API Key from secrets
+FIREBASE_API_KEY = st.secrets["general"]["firebaseApiKey"]
 
+# Construct credentials from secrets
+service_account_info = {
+    "type": st.secrets["firebase"]["type"],
+    "project_id": st.secrets["firebase"]["project_id"],
+    "private_key_id": st.secrets["firebase"]["private_key_id"],
+    "private_key": st.secrets["firebase"]["private_key"],
+    "client_email": st.secrets["firebase"]["client_email"],
+    "client_id": st.secrets["firebase"]["client_id"],
+    "auth_uri": st.secrets["firebase"]["auth_uri"],
+    "token_uri": st.secrets["firebase"]["token_uri"],
+    "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+    "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
+    # "universe_domain": st.secrets["firebase"]["universe_domain"]  # Not strictly required for auth.
+}
+
+# Initialize Firebase only once
 if not firebase_admin._apps:
-    cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+    cred = credentials.Certificate(service_account_info)
     firebase_admin.initialize_app(cred)
 
 def login_with_rest(email, password):
@@ -226,7 +241,11 @@ def load_nba_data():
     all_data = []
 
     for season in seasons:
-        gamelog = LeagueGameLog(season=season, season_type_all_star='Regular Season', player_or_team_abbreviation='T')
+        gamelog = LeagueGameLog(
+            season=season,
+            season_type_all_star='Regular Season',
+            player_or_team_abbreviation='T'
+        )
         df = gamelog.get_data_frames()[0]
         if df.empty:
             continue
@@ -354,13 +373,13 @@ def display_bet_card(bet):
         with col3:
             st.metric(label="Confidence", value=f"{bet['confidence']:.1f}%")
 
-    # Optional Detailed Insights
+    # Expanded details
     with st.expander("Detailed Insights", expanded=False):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
         st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
 
-    # **New Section: Detailed Writeup**
+    # New Section: Detailed Writeup
     with st.expander("Game Analysis", expanded=False):
         writeup = generate_writeup(bet)
         st.markdown(writeup)
