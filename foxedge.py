@@ -241,11 +241,7 @@ def load_nba_data():
     all_data = []
 
     for season in seasons:
-        gamelog = LeagueGameLog(
-            season=season,
-            season_type_all_star='Regular Season',
-            player_or_team_abbreviation='T'
-        )
+        gamelog = LeagueGameLog(season=season, season_type_all_star='Regular Season', player_or_team_abbreviation='T')
         df = gamelog.get_data_frames()[0]
         if df.empty:
             continue
@@ -373,13 +369,13 @@ def display_bet_card(bet):
         with col3:
             st.metric(label="Confidence", value=f"{bet['confidence']:.1f}%")
 
-    # Expanded details
+    # Optional Detailed Insights
     with st.expander("Detailed Insights", expanded=False):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
         st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
 
-    # New Section: Detailed Writeup
+    # **New Section: Detailed Writeup**
     with st.expander("Game Analysis", expanded=False):
         writeup = generate_writeup(bet)
         st.markdown(writeup)
