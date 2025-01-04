@@ -472,7 +472,7 @@ def main():
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
         page_icon="🦊",
-        layout="wide"
+        layout="centered"
     )
 
     if 'logged_in' not in st.session_state:
