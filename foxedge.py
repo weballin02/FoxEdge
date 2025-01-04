@@ -34,7 +34,6 @@ service_account_info = {
     "token_uri": st.secrets["firebase"]["token_uri"],
     "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
     "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
-    # "universe_domain": st.secrets["firebase"]["universe_domain"]  # Not strictly required for auth.
 }
 
 # Initialize Firebase only once
@@ -95,9 +94,16 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 # SHARED LOGIC FOR TRAINING AND PREDICTIONS
 ##################################
 
+@st.cache_data(ttl=3600)
 def train_team_models(team_data):
     """
     Train models and calculate stats for teams.
+    
+    Includes:
+    - Parallel training (n_jobs=-1) for GradientBoostingRegressor
+    - Slightly narrower ARIMA hyperparameters
+    - Higher minimum score length (7) for ARIMA
+    - Return exactly the same outputs: gbr_models, arima_models, team_stats
     """
     gbr_models = {}
     arima_models = {}
@@ -119,11 +125,23 @@ def train_team_models(team_data):
         if len(scores) >= 10:
             X = np.arange(len(scores)).reshape(-1, 1)
             y = scores.values
-            gbr = GradientBoostingRegressor().fit(X, y)
+
+            # Parallelizing GBR
+            gbr = GradientBoostingRegressor(n_jobs=-1)  
+            gbr.fit(X, y)
             gbr_models[team] = gbr
 
-        if len(scores) >= 5:
-            arima = auto_arima(scores, seasonal=False, trace=False, error_action='ignore', suppress_warnings=True)
+        # Slightly higher threshold for ARIMA
+        if len(scores) >= 7:
+            arima = auto_arima(
+                scores,
+                seasonal=False,
+                trace=False,
+                error_action='ignore',
+                suppress_warnings=True,
+                max_p=3,   # Restricts ARIMA search space
+                max_q=3
+            )
             arima_models[team] = arima
 
     return gbr_models, arima_models, team_stats
@@ -383,6 +401,7 @@ def display_bet_card(bet):
 def run_league_pipeline(league_choice):
     global results  # Ensure 'results' is accessible globally
     global team_stats_global  # Declare a global variable for team_stats
+
     st.header(f"Today's {league_choice} Best Bets 🎯")
 
     # Load and process data
