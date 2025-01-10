@@ -16,6 +16,11 @@ from firebase_admin import credentials, auth
 import requests
 
 ##################################
+# cbbpy IMPORT (men's scraper)
+##################################
+import cbbpy.mens_scraper as cbb
+
+##################################
 # FIREBASE CONFIGURATION
 ##################################
 
@@ -126,7 +131,6 @@ def train_team_models(team_data):
             X = np.arange(len(scores)).reshape(-1, 1)
             y = scores.values
 
-            # GradientBoostingRegressor without parallelization
             gbr = GradientBoostingRegressor()
             gbr.fit(X, y)
             gbr_models[team] = gbr
@@ -194,8 +198,9 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
 
     winner = home_team if diff > 0 else away_team
 
+    # Adjust the Over/Under threshold for NCAAB
+    ou_text = f"Take the {'Over' if total_points > 145 else 'Under'} {round_half(total_points):.1f}"
     spread_text = f"Lean {winner} by {round_half(diff):.1f}"
-    ou_text = f"Take the {'Over' if total_points > 45 else 'Under'} {round_half(total_points):.1f}"
 
     return {
         'predicted_winner': winner,
@@ -320,6 +325,88 @@ def fetch_upcoming_nba_games(days_ahead=3):
     return upcoming
 
 ##################################
+# NCAAB-SPECIFIC LOGIC
+##################################
+
+@st.cache_data(ttl=3600)
+def load_ncaab_data():
+    """
+    Uses cbbpy to get game metadata for the current season. 
+    We'll return a DataFrame with columns [gameday, team, score].
+    """
+    # Example: load the 2023 season info only (no boxscore, no PBP).
+    # Returns a tuple of (game_info_df, boxscore_df, pbp_df).
+    game_info_df, _, _ = cbb.get_games_season(season=2024, info=True, box=False, pbp=False)
+    if game_info_df.empty:
+        return pd.DataFrame()
+
+    # Convert "game_day" to a real datetime if it's not already
+    if not pd.api.types.is_datetime64_any_dtype(game_info_df["game_day"]):
+        game_info_df["game_day"] = pd.to_datetime(game_info_df["game_day"], errors="coerce")
+
+    # Create home/away style DataFrame to match NFL/NBA structure
+    home_df = game_info_df.rename(
+        columns={
+            "home_team": "team",
+            "home_score": "score",
+            "game_day": "gameday"
+        }
+    )[["gameday", "team", "score"]]
+
+    away_df = game_info_df.rename(
+        columns={
+            "away_team": "team",
+            "away_score": "score",
+            "game_day": "gameday"
+        }
+    )[["gameday", "team", "score"]]
+
+    data = pd.concat([home_df, away_df], ignore_index=True)
+    data.dropna(subset=["score"], inplace=True)
+    data.sort_values("gameday", inplace=True)
+    return data
+
+
+def fetch_upcoming_ncaab_games(days_ahead=3):
+    """
+    Fetch upcoming NCAAB games in the next X days, using cbbpy's get_games_range.
+    We'll filter out any games that have final scores.
+    """
+    now = datetime.now()
+    end_date = (now + timedelta(days=days_ahead)).strftime("%m-%d-%Y")
+    start_date = now.strftime("%m-%d-%Y")
+
+    # Grab game info from start_date to end_date. 
+    # Returns (info_df, box_df, pbp_df).
+    info_df, _, _ = cbb.get_games_range(
+        start_date=start_date,
+        end_date=end_date,
+        info=True,
+        box=False,
+        pbp=False
+    )
+    if info_df.empty:
+        return pd.DataFrame()
+
+    # Convert "game_day" to datetime
+    if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
+        info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
+
+    # Filter out finished games (i.e. rows with home_score/away_score)
+    upcoming = info_df[
+        info_df["home_score"].isna() & info_df["away_score"].isna()
+    ].copy()
+
+    # Sort by date
+    upcoming.sort_values("game_day", inplace=True)
+
+    # Rename columns to match your pipeline
+    upcoming = upcoming.rename(columns={"game_day": "gameday"})[
+        ["gameday", "home_team", "away_team"]
+    ]
+    return upcoming
+
+##################################
 # ENHANCED UI COMPONENTS
 ##################################
 
@@ -347,7 +434,6 @@ def generate_writeup(bet):
     away_std = away_stats.get('std', 'N/A')
     away_recent = away_stats.get('recent_form', 'N/A')
 
-    # Construct the writeup
     writeup = f"""
     **Detailed Analysis:**
 
@@ -416,12 +502,20 @@ def run_league_pipeline(league_choice):
             return
         team_data = preprocess_nfl_data(schedule)
         upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
-    else:
+
+    elif league_choice == 'NBA':
         team_data = load_nba_data()
         if team_data.empty:
             st.error("Unable to load NBA data. Please try again later.")
             return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
+
+    else:  # NCAAB
+        team_data = load_ncaab_data()
+        if team_data.empty:
+            st.error("Unable to load NCAAB data. Please try again later.")
+            return
+        upcoming = fetch_upcoming_ncaab_games(days_ahead=3)
 
     if team_data.empty:
         st.warning(f"No {league_choice} data available for analysis.")
@@ -534,7 +628,7 @@ def main():
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
         "Select League",
-        ["NFL", "NBA"],
+        ["NFL", "NBA", "NCAAB"],  # NCAAB added
         help="Choose which league's games you'd like to analyze"
     )
 
@@ -542,7 +636,7 @@ def main():
 
     st.sidebar.markdown(
         "### About FoxEdge\n"
-        "FoxEdge provides advanced data-driven insights for NFL and NBA games, helping bettors make informed decisions with high confidence."
+        "FoxEdge provides advanced data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions with high confidence."
     )
     st.sidebar.markdown("#### Powered by 🧠 AI and 🔍 Statistical Analysis")
     st.sidebar.markdown(
