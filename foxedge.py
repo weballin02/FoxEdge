@@ -241,9 +241,10 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
     upcoming.sort_values('gameday', inplace=True)
     return upcoming[['gameday', 'home_team', 'away_team']]
 
-########################################
-# NBA LOGIC (unchanged)
-########################################
+##################################
+# NBA-SPECIFIC LOGIC
+##################################
+
 @st.cache_data(ttl=3600)
 def load_nba_data():
     seasons = ['2022-23', '2023-24', '2024-25']
@@ -258,6 +259,7 @@ def load_nba_data():
         df = gamelog.get_data_frames()[0]
         if df.empty:
             continue
+
         df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
         new_df = df[['GAME_DATE', 'TEAM_ABBREVIATION', 'PTS']].copy()
         new_df.rename(columns={
@@ -279,6 +281,7 @@ def load_nba_data():
 def fetch_upcoming_nba_games(days_ahead=3):
     now = datetime.now()
     upcoming_rows = []
+
     for offset in range(days_ahead + 1):
         date_target = now + timedelta(days=offset)
         date_str = date_target.strftime('%Y-%m-%d')
@@ -289,6 +292,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
             continue
 
         nba_team_dict = {tm['id']: tm['abbreviation'] for tm in nba_teams.get_teams()}
+
         games['HOME_TEAM_ABBREV'] = games['HOME_TEAM_ID'].map(nba_team_dict)
         games['AWAY_TEAM_ABBREV'] = games['VISITOR_TEAM_ID'].map(nba_team_dict)
         upcoming_df = games[~games['GAME_STATUS_TEXT'].str.contains("Final", case=False, na=False)]
@@ -297,7 +301,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
             upcoming_rows.append({
                 'gameday': pd.to_datetime(date_str),
                 'home_team': g['HOME_TEAM_ABBREV'],
-                'away_team': g['VISITOR_TEAM_ABBREV']
+                'away_team': g['AWAY_TEAM_ABBREV']
             })
 
     if not upcoming_rows:
