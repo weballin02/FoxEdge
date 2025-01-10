@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2
 from nba_api.stats.static import teams as nba_teams
-from sklearn.ensemble import GradientBoostingRegressor
+# CHANGED: Use HistGradientBoostingRegressor for parallelization
+from sklearn.ensemble import HistGradientBoostingRegressor
 from pmdarima import auto_arima
 from pathlib import Path
 
@@ -99,11 +100,7 @@ def train_team_models(team_data):
     """
     Train models and calculate stats for teams.
     
-    Includes:
-    - Parallel training (n_jobs=-1) for GradientBoostingRegressor
-    - Slightly narrower ARIMA hyperparameters
-    - Higher minimum score length (7) for ARIMA
-    - Return exactly the same outputs: gbr_models, arima_models, team_stats
+    Now uses HistGradientBoostingRegressor with n_jobs=-1 for parallelization.
     """
     gbr_models = {}
     arima_models = {}
@@ -126,12 +123,16 @@ def train_team_models(team_data):
             X = np.arange(len(scores)).reshape(-1, 1)
             y = scores.values
 
-            # Parallelizing GBR
-            gbr = GradientBoostingRegressor(n_jobs=-1)  
+            # CHANGED: Use HistGradientBoostingRegressor (with parallel jobs)
+            gbr = HistGradientBoostingRegressor(
+                max_iter=100,
+                learning_rate=0.1,
+                max_depth=3,
+                n_jobs=-1  # Parallelization
+            )
             gbr.fit(X, y)
             gbr_models[team] = gbr
 
-        # Slightly higher threshold for ARIMA
         if len(scores) >= 7:
             arima = auto_arima(
                 scores,
@@ -305,7 +306,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
             upcoming_rows.append({
                 'gameday': pd.to_datetime(date_str),
                 'home_team': g['HOME_TEAM_ABBREV'],
-                'away_team': g['AWAY_TEAM_ABBREV']
+                'away_team': g['VISITOR_TEAM_ABBREV']
             })
 
     if not upcoming_rows:
