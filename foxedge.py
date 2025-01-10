@@ -219,8 +219,15 @@ def find_top_bets(matchups, threshold=70.0):
 
 @st.cache_data(ttl=3600)
 def load_nfl_schedule():
+    """
+    Loads NFL schedules for the previous 2 years, current year, and next year.
+    This helps ensure that early 2025 queries still find data 
+    from late 2024 and into 2025.
+    """
+    # CHANGED: Add (current_year + 1) for coverage around 2025
     current_year = datetime.now().year
-    years = [current_year - 2, current_year - 1, current_year]
+    years = [current_year - 2, current_year - 1, current_year, current_year + 1]
+
     schedule = nfl.import_schedules(years)
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
@@ -256,11 +263,21 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=3):
 
 @st.cache_data(ttl=3600)
 def load_nba_data():
-    seasons = ['2022-23', '2023-24']
+    """
+    Loads the specified NBA seasons. 
+    For 2025 coverage, we include '2023-24' and '2024-25'.
+    Add or remove seasons as needed.
+    """
+    # CHANGED: Include 2024-25 season for coverage into 2025
+    seasons = ['2023-24', '2024-25']
     all_data = []
 
     for season in seasons:
-        gamelog = LeagueGameLog(season=season, season_type_all_star='Regular Season', player_or_team_abbreviation='T')
+        gamelog = LeagueGameLog(
+            season=season,
+            season_type_all_star='Regular Season',
+            player_or_team_abbreviation='T'
+        )
         df = gamelog.get_data_frames()[0]
         if df.empty:
             continue
@@ -292,22 +309,36 @@ def fetch_upcoming_nba_games(days_ahead=3):
         date_str = date_target.strftime('%Y-%m-%d')
 
         scoreboard = ScoreboardV2(game_date=date_str)
-        games = scoreboard.get_data_frames()[0]
+        all_frames = scoreboard.get_data_frames()
+        if not all_frames:
+            continue
+
+        # Check frame 0 or whichever frame has HOME_TEAM_ID / VISITOR_TEAM_ID
+        games = all_frames[0]
         if games.empty:
+            continue
+
+        # Safely check if these columns exist before mapping
+        if 'HOME_TEAM_ID' not in games.columns or 'VISITOR_TEAM_ID' not in games.columns:
+            # If these columns don't exist, skip this date
             continue
 
         nba_team_dict = {tm['id']: tm['abbreviation'] for tm in nba_teams.get_teams()}
 
+        # Create abbreviations for home & away
         games['HOME_TEAM_ABBREV'] = games['HOME_TEAM_ID'].map(nba_team_dict)
         games['AWAY_TEAM_ABBREV'] = games['VISITOR_TEAM_ID'].map(nba_team_dict)
+
+        # Filter out final games
         upcoming_df = games[~games['GAME_STATUS_TEXT'].str.contains("Final", case=False, na=False)]
 
         for _, g in upcoming_df.iterrows():
-            upcoming_rows.append({
-                'gameday': pd.to_datetime(date_str),
-                'home_team': g['HOME_TEAM_ABBREV'],
-                'away_team': g['VISITOR_TEAM_ABBREV']
-            })
+            if 'HOME_TEAM_ABBREV' in g and 'AWAY_TEAM_ABBREV' in g:
+                upcoming_rows.append({
+                    'gameday': pd.to_datetime(date_str),
+                    'home_team': g['HOME_TEAM_ABBREV'],
+                    'away_team': g['AWAY_TEAM_ABBREV']
+                })
 
     if not upcoming_rows:
         return pd.DataFrame()
@@ -344,7 +375,6 @@ def generate_writeup(bet):
     away_std = away_stats.get('std', 'N/A')
     away_recent = away_stats.get('recent_form', 'N/A')
 
-    # Construct the writeup
     writeup = f"""
     **Detailed Analysis:**
 
@@ -418,6 +448,7 @@ def run_league_pipeline(league_choice):
         if team_data.empty:
             st.error("Unable to load NBA data. Please try again later.")
             return
+
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
 
     if team_data.empty:
