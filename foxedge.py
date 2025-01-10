@@ -100,7 +100,7 @@ def train_team_models(team_data):
     Train models and calculate stats for teams.
     
     Includes:
-    - Parallel training (n_jobs=-1) for GradientBoostingRegressor
+    - GradientBoostingRegressor (no parallelization)
     - Slightly narrower ARIMA hyperparameters
     - Higher minimum score length (7) for ARIMA
     - Return exactly the same outputs: gbr_models, arima_models, team_stats
@@ -126,8 +126,8 @@ def train_team_models(team_data):
             X = np.arange(len(scores)).reshape(-1, 1)
             y = scores.values
 
-            # Parallelizing GBR
-            gbr = GradientBoostingRegressor(n_jobs=-1)  
+            # GradientBoostingRegressor without parallelization
+            gbr = GradientBoostingRegressor()
             gbr.fit(X, y)
             gbr_models[team] = gbr
 
@@ -259,7 +259,11 @@ def load_nba_data():
     all_data = []
 
     for season in seasons:
-        gamelog = LeagueGameLog(season=season, season_type_all_star='Regular Season', player_or_team_abbreviation='T')
+        gamelog = LeagueGameLog(
+            season=season,
+            season_type_all_star='Regular Season',
+            player_or_team_abbreviation='T'
+        )
         df = gamelog.get_data_frames()[0]
         if df.empty:
             continue
