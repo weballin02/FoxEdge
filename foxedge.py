@@ -232,9 +232,9 @@ def load_nfl_data_advanced(seasons=None):
     Returns a DataFrame with columns: [gameday, team, score, avg_epa, success_rate].
     """
     if not seasons:
-    # e.g., last five seasons
-    current_year = datetime.now().year
-    seasons = list(range(current_year - 4, current_year + 1))  # Includes current_year and four previous years
+       # e.g., last five seasons
+       current_year = datetime.now().year
+       seasons = list(range(current_year - 4, current_year + 1))  # Includes current_year and four previous years
 
     # 1) Load schedule for date references and final scores
     schedule = nfl.import_schedules(seasons)
