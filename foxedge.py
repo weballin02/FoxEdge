@@ -260,8 +260,18 @@ def load_nfl_data_advanced(seasons=None):
     schedule_scores = pd.concat([home_df, away_df], ignore_index=True)
     schedule_scores.dropna(subset=['game_id','team','score'], how='any', inplace=True)
 
-    # 2) Load PBP data
-    pbp = nfl.import_pbp_data(seasons=seasons)
+    # 2) Load PBP data for each season and concatenate
+    pbp_list = []
+    for year in seasons:
+        try:
+            pbp_season = nfl.import_pbp_data(year=year)
+            pbp_list.append(pbp_season)
+        except Exception as e:
+            st.warning(f"Failed to load PBP data for season {year}: {e}")
+    if not pbp_list:
+        st.error("No PBP data could be loaded for the specified NFL seasons.")
+        return pd.DataFrame()
+    pbp = pd.concat(pbp_list, ignore_index=True)
     pbp.dropna(subset=['game_id','posteam','epa'], inplace=True)
 
     # Define success as epa > 0
@@ -329,7 +339,11 @@ def load_nba_data():
     for season in seasons:
         for t in nba_teams_list:
             team_id = t['id']
-            gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
+            try:
+                gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
+            except Exception as e:
+                st.warning(f"Failed to load game log for team {t['full_name']} in season {season}: {e}")
+                continue
             if gl.empty:
                 continue
 
@@ -385,8 +399,12 @@ def fetch_upcoming_nba_games(days_ahead=3):
     for offset in range(days_ahead + 1):
         date_target = now + timedelta(days=offset)
         date_str = date_target.strftime('%Y-%m-%d')
-        scoreboard = ScoreboardV2(game_date=date_str)
-        games = scoreboard.get_data_frames()[0]
+        try:
+            scoreboard = ScoreboardV2(game_date=date_str)
+            games = scoreboard.get_data_frames()[0]
+        except Exception as e:
+            st.warning(f"Failed to fetch NBA games for {date_str}: {e}")
+            continue
         if games.empty:
             continue
 
@@ -423,7 +441,11 @@ def load_ncaab_data_current_season(seasons=None):
 
     all_games = []
     for season in seasons:
-        info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
+        try:
+            info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
+        except Exception as e:
+            st.warning(f"Failed to load NCAAB data for season {season}: {e}")
+            continue
         if info_df.empty or box_dfs.empty:
             continue
 
@@ -526,9 +548,11 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
         'limit': '357'
     }
 
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
-        st.warning(f"ESPN API request failed with status code {response.status_code}")
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        st.warning(f"ESPN API request failed: {e}")
         return pd.DataFrame()
 
     data = response.json()
@@ -541,7 +565,11 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     for game in games:
         # Parse date/time
         game_time_str = game['date']          # ISO8601
-        game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
+        try:
+            game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
+        except Exception as e:
+            st.warning(f"Failed to parse game time: {e}")
+            continue
 
         # Parse teams
         competitors = game['competitions'][0]['competitors']
