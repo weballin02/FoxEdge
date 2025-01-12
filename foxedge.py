@@ -17,6 +17,15 @@ from firebase_admin import credentials, auth
 import cbbpy.mens_scraper as cbb
 
 ################################################################################
+# CONFIGURATION
+################################################################################
+
+# Define the optimal number of seasons for each sport
+SEASONS_NFL = 3    # Last 3 NFL seasons
+SEASONS_NBA = 4    # Last 4 NBA seasons
+SEASONS_NCAAB = 3  # Last 3 NCAAB seasons
+
+################################################################################
 # FIREBASE CONFIGURATION
 ################################################################################
 try:
@@ -232,9 +241,9 @@ def load_nfl_data_advanced(seasons=None):
     Returns a DataFrame with columns: [gameday, team, score, avg_epa, success_rate].
     """
     if not seasons:
-        # e.g., last two seasons
+        # e.g., last 3 seasons
         current_year = datetime.now().year
-        seasons = [current_year - 1, current_year]
+        seasons = list(range(current_year - SEASONS_NFL + 1, current_year + 1))  # Last 3 seasons
 
     # 1) Load schedule for date references and final scores
     schedule = nfl.import_schedules(seasons)
@@ -290,7 +299,7 @@ def fetch_upcoming_nfl_games_advanced(days_ahead=7):
     now = datetime.now()
     cutoff = now + timedelta(days=days_ahead)
     # Re-import the same schedule for the specified seasons
-    seasons = [now.year]  # Current year
+    seasons = list(range(now.year - SEASONS_NFL + 1, now.year + 1))  # Last 3 seasons
     schedule = nfl.import_schedules(seasons)
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
@@ -312,7 +321,9 @@ def fetch_upcoming_nfl_games_advanced(days_ahead=7):
 def load_nba_data():
     """Load multi-season team logs with pace & efficiency integrated."""
     nba_teams_list = nba_teams.get_teams()
-    seasons = ['2022-23', '2023-24']  # Adjust as needed
+    # Dynamically generate season strings based on current year
+    current_season_year = datetime.now().year
+    seasons = [f"{year - 1}-{str(year)[-2:]}" for year in range(current_season_year - SEASONS_NBA + 1, current_season_year + 1)]
     all_rows = []
 
     for season in seasons:
@@ -401,91 +412,97 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 
 @st.cache_data(ttl=3600)
-def load_ncaab_data_current_season(season=2025):
+def load_ncaab_data_current_season(seasons=None):
     """
     Load finished or in-progress NCAAB games + box scores to compute pace & efficiency.
     """
-    info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
-    if info_df.empty or box_dfs.empty:
+    if not seasons:
+        # e.g., last 3 seasons
+        current_season = datetime.now().year
+        seasons = list(range(current_season - SEASONS_NCAAB + 1, current_season + 1))  # Last 3 seasons
+
+    all_games = []
+    for season in seasons:
+        info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
+        if info_df.empty or box_dfs.empty:
+            continue
+
+        # Convert to datetime
+        if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
+            info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
+
+        # Merge box scores with game info
+        df_box = pd.concat(box_dfs, ignore_index=True)
+        df_box.dropna(subset=['score'], how='any', inplace=True)
+        df_box.sort_values('game_id', inplace=True)
+
+        # Compute possessions at team level
+        df_box[['fga','fta','to','oreb','score']] = df_box[['fga','fta','to','oreb','score']].fillna(0)
+        df_box['possessions'] = df_box['fga'] + 0.475*df_box['fta'] + df_box['to'] - df_box['oreb']
+        df_box.loc[df_box['possessions'] < 0, 'possessions'] = np.nan
+
+        team_level = df_box.groupby(['game_id','team'], as_index=False).agg({
+            'score': 'sum',
+            'possessions': 'sum'
+        })
+        team_level.rename(columns={'score':'team_score','possessions':'team_poss'}, inplace=True)
+
+        # Merge with game info to get home/away, final scores, etc.
+        merged = pd.merge(info_df, team_level, how='left', left_on=['game_id','home_team'], right_on=['game_id','team'])
+        merged.rename(columns={'team_score':'home_score_adv','team_poss':'home_poss'}, inplace=True)
+        merged.drop('team', axis=1, inplace=True)
+
+        merged = pd.merge(merged, team_level, how='left', left_on=['game_id','away_team'], right_on=['game_id','team'])
+        merged.rename(columns={'team_score':'away_score_adv','team_poss':'away_poss'}, inplace=True)
+        merged.drop('team', axis=1, inplace=True)
+
+        # Build final "long" format: Two rows per game (home + away)
+        for _, row_ in merged.iterrows():
+            gameday = row_['game_day']
+            # Home
+            if pd.notnull(row_['home_team']):
+                h_poss = row_['home_poss'] if row_['home_poss'] > 0 else np.nan
+                a_poss = row_['away_poss'] if row_['away_poss'] > 0 else np.nan
+                if pd.notnull(h_poss) and pd.notnull(a_poss):
+                    pace = (h_poss + a_poss) / 2.0
+                    off_rating = (row_['home_score_adv'] / h_poss) * 100 if h_poss > 0 else np.nan
+                    def_rating = (row_['away_score_adv'] / h_poss) * 100 if h_poss > 0 else np.nan
+                else:
+                    pace, off_rating, def_rating = np.nan, np.nan, np.nan
+
+                all_games.append({
+                    'gameday': gameday,
+                    'team': row_['home_team'],
+                    'score': row_['home_score'],
+                    'pace': pace,
+                    'off_rating': off_rating,
+                    'def_rating': def_rating
+                })
+
+            # Away
+            if pd.notnull(row_['away_team']):
+                a_poss = row_['away_poss'] if row_['away_poss'] > 0 else np.nan
+                h_poss = row_['home_poss'] if row_['home_poss'] > 0 else np.nan
+                if pd.notnull(a_poss) and pd.notnull(h_poss):
+                    pace = (a_poss + h_poss) / 2.0
+                    off_rating = (row_['away_score_adv'] / a_poss) * 100 if a_poss > 0 else np.nan
+                    def_rating = (row_['home_score_adv'] / a_poss) * 100 if a_poss > 0 else np.nan
+                else:
+                    pace, off_rating, def_rating = np.nan, np.nan, np.nan
+
+                all_games.append({
+                    'gameday': gameday,
+                    'team': row_['away_team'],
+                    'score': row_['away_score'],
+                    'pace': pace,
+                    'off_rating': off_rating,
+                    'def_rating': def_rating
+                })
+
+    if not all_games:
         return pd.DataFrame()
 
-    # Convert to datetime
-    if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
-        info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
-
-    # Merge box scores with game info
-    df_box = pd.concat(box_dfs, ignore_index=True)
-    df_box.dropna(subset=['score'], how='any', inplace=True)
-    df_box.sort_values('game_id', inplace=True)
-
-    # Compute possessions at team level
-    df_box[['fga','fta','to','oreb','score']] = df_box[['fga','fta','to','oreb','score']].fillna(0)
-    df_box['possessions'] = df_box['fga'] + 0.475*df_box['fta'] + df_box['to'] - df_box['oreb']
-    df_box.loc[df_box['possessions'] < 0, 'possessions'] = np.nan
-
-    team_level = df_box.groupby(['game_id','team'], as_index=False).agg({
-        'score': 'sum',
-        'possessions': 'sum'
-    })
-    team_level.rename(columns={'score':'team_score','possessions':'team_poss'}, inplace=True)
-
-    # Merge with game info to get home/away, final scores, etc.
-    merged = pd.merge(info_df, team_level, how='left', left_on=['game_id','home_team'], right_on=['game_id','team'])
-    merged.rename(columns={'team_score':'home_score_adv','team_poss':'home_poss'}, inplace=True)
-    merged.drop('team', axis=1, inplace=True)
-
-    merged = pd.merge(merged, team_level, how='left', left_on=['game_id','away_team'], right_on=['game_id','team'])
-    merged.rename(columns={'team_score':'away_score_adv','team_poss':'away_poss'}, inplace=True)
-    merged.drop('team', axis=1, inplace=True)
-
-    # Build final "long" format: Two rows per game (home + away)
-    final_rows = []
-    for _, row_ in merged.iterrows():
-        gameday = row_['game_day']
-        # Home
-        if pd.notnull(row_['home_team']):
-            h_poss = row_['home_poss'] if row_['home_poss'] > 0 else np.nan
-            a_poss = row_['away_poss'] if row_['away_poss'] > 0 else np.nan
-            if pd.notnull(h_poss) and pd.notnull(a_poss):
-                pace = (h_poss + a_poss) / 2.0
-                off_rating = (row_['home_score_adv'] / h_poss) * 100 if h_poss > 0 else np.nan
-                def_rating = (row_['away_score_adv'] / h_poss) * 100 if h_poss > 0 else np.nan
-            else:
-                pace, off_rating, def_rating = np.nan, np.nan, np.nan
-
-            final_rows.append({
-                'gameday': gameday,
-                'team': row_['home_team'],
-                'score': row_['home_score'],
-                'pace': pace,
-                'off_rating': off_rating,
-                'def_rating': def_rating
-            })
-
-        # Away
-        if pd.notnull(row_['away_team']):
-            a_poss = row_['away_poss'] if row_['away_poss'] > 0 else np.nan
-            h_poss = row_['home_poss'] if row_['home_poss'] > 0 else np.nan
-            if pd.notnull(a_poss) and pd.notnull(h_poss):
-                pace = (a_poss + h_poss) / 2.0
-                off_rating = (row_['away_score_adv'] / a_poss) * 100 if a_poss > 0 else np.nan
-                def_rating = (row_['home_score_adv'] / a_poss) * 100 if a_poss > 0 else np.nan
-            else:
-                pace, off_rating, def_rating = np.nan, np.nan, np.nan
-
-            final_rows.append({
-                'gameday': gameday,
-                'team': row_['away_team'],
-                'score': row_['away_score'],
-                'pace': pace,
-                'off_rating': off_rating,
-                'def_rating': def_rating
-            })
-
-    if not final_rows:
-        return pd.DataFrame()
-
-    final_df = pd.DataFrame(final_rows)
+    final_df = pd.DataFrame(all_games)
     final_df.dropna(subset=['score'], inplace=True)
     final_df.sort_values('gameday', inplace=True)
 
@@ -650,21 +667,25 @@ def run_league_pipeline(league_choice):
             st.error("Unable to load advanced NFL data.")
             return
 
-        # Fetch upcoming NFL games within 7 days
+        # Fetch upcoming NFL games within SEASONS_NFL seasons
         upcoming = fetch_upcoming_nfl_games_advanced(days_ahead=7)
 
     elif league_choice == "NBA":
+        # Load NBA data
         team_data = load_nba_data()
         if team_data.empty:
             st.error("Unable to load NBA data.")
             return
+        # Fetch upcoming NBA games within SEASONS_NBA seasons
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
 
     else:  # NCAAB
-        team_data = load_ncaab_data_current_season(season=2025)
+        # Load NCAAB data
+        team_data = load_ncaab_data_current_season()
         if team_data.empty:
             st.error("Unable to load NCAAB data.")
             return
+        # Fetch upcoming NCAAB games within SEASONS_NCAAB seasons
         upcoming = fetch_upcoming_ncaab_games()
 
     if team_data.empty or upcoming.empty:
@@ -685,6 +706,7 @@ def run_league_pipeline(league_choice):
             if outcome:
                 results.append({
                     'date': row['gameday'],
+                    'league': league_choice,
                     'home_team': home,
                     'away_team': away,
                     'home_pred': home_pred,
