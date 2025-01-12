@@ -172,7 +172,7 @@ def predict_team_score(team, gbr_models, arima_models, team_stats, team_data):
     # ARIMA
     if team in arima_models:
         forecast = arima_models[team].predict(n_periods=1)
-        arima_pred = forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast.iloc[0]
+        arima_pred = forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast
 
     # Blend
     if gbr_pred is not None and arima_pred is not None:
@@ -246,6 +246,9 @@ def load_nfl_data_advanced(seasons=None):
         current_year = datetime.now().year
         seasons = list(range(current_year - SEASONS_NFL + 1, current_year + 1))  # Last 3 seasons
 
+    # Remove future years if data isn't available
+    seasons = [year for year in seasons if year <= datetime.now().year]
+
     # 1) Load schedule for date references and final scores
     try:
         schedule = nfl.import_schedules(years=seasons)
@@ -266,18 +269,13 @@ def load_nfl_data_advanced(seasons=None):
     schedule_scores = pd.concat([home_df, away_df], ignore_index=True)
     schedule_scores.dropna(subset=['game_id','team','score'], how='any', inplace=True)
 
-    # 2) Load PBP data for each season and concatenate
-    pbp_list = []
-    for year in seasons:
-        try:
-            pbp_season = nfl.import_pbp_data(years=[year])
-            pbp_list.append(pbp_season)
-        except Exception as e:
-            st.warning(f"Failed to load PBP data for season {year}: {e}")
-    if not pbp_list:
-        st.error("No PBP data could be loaded for the specified NFL seasons.")
+    # 2) Load PBP data for all seasons at once
+    try:
+        pbp = nfl.import_pbp_data(years=seasons)
+    except Exception as e:
+        st.error(f"Failed to load PBP data: {e}")
         return pd.DataFrame()
-    pbp = pd.concat(pbp_list, ignore_index=True)
+
     pbp.dropna(subset=['game_id','posteam','epa'], inplace=True)
 
     # Define success as epa > 0
