@@ -4,7 +4,7 @@ import numpy as np
 import pytz
 from datetime import datetime, timedelta
 import nfl_data_py as nfl
-from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
+from nba_api.stats.endpoints import ScoreboardV2, TeamGameLog
 from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import GradientBoostingRegressor
 from pmdarima import auto_arima
@@ -85,7 +85,8 @@ def initialize_csv(csv_file=CSV_FILE):
     if not Path(csv_file).exists():
         columns = [
             "date", "league", "home_team", "away_team", "home_pred", "away_pred",
-            "predicted_winner", "total", "spread_suggestion", "ou_suggestion"
+            "predicted_winner", "predicted_diff", "predicted_total", 
+            "spread_suggestion", "ou_suggestion"
         ]
         pd.DataFrame(columns=columns).to_csv(csv_file, index=False)
 
@@ -241,12 +242,17 @@ def load_nfl_data_advanced(seasons=None):
     Returns a DataFrame with columns: [gameday, team, score, avg_epa, success_rate].
     """
     if not seasons:
-        # e.g., last 3 seasons
+        # Default to last SEASONS_NFL seasons
         current_year = datetime.now().year
         seasons = list(range(current_year - SEASONS_NFL + 1, current_year + 1))  # Last 3 seasons
 
     # 1) Load schedule for date references and final scores
-    schedule = nfl.import_schedules(seasons)
+    try:
+        schedule = nfl.import_schedules(years=seasons)
+    except Exception as e:
+        st.error(f"Failed to load NFL schedules: {e}")
+        return pd.DataFrame()
+
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
         schedule['gameday'] = schedule['gameday'].dt.tz_convert(None)
@@ -264,7 +270,7 @@ def load_nfl_data_advanced(seasons=None):
     pbp_list = []
     for year in seasons:
         try:
-            pbp_season = nfl.import_pbp_data(year=year)
+            pbp_season = nfl.import_pbp_data(years=[year])
             pbp_list.append(pbp_season)
         except Exception as e:
             st.warning(f"Failed to load PBP data for season {year}: {e}")
@@ -308,9 +314,14 @@ def fetch_upcoming_nfl_games_advanced(days_ahead=7):
     """
     now = datetime.now()
     cutoff = now + timedelta(days=days_ahead)
-    # Re-import the same schedule for the specified seasons
+    # Define seasons to include
     seasons = list(range(now.year - SEASONS_NFL + 1, now.year + 1))  # Last 3 seasons
-    schedule = nfl.import_schedules(seasons)
+    try:
+        schedule = nfl.import_schedules(years=seasons)
+    except Exception as e:
+        st.error(f"Failed to load NFL schedules: {e}")
+        return pd.DataFrame()
+
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
         schedule['gameday'] = schedule['gameday'].dt.tz_convert(None)
@@ -433,9 +444,10 @@ def fetch_upcoming_nba_games(days_ahead=3):
 def load_ncaab_data_current_season(seasons=None):
     """
     Load finished or in-progress NCAAB games + box scores to compute pace & efficiency.
+    Returns a DataFrame with columns: [gameday, team, score, pace, off_rating, def_rating].
     """
     if not seasons:
-        # e.g., last 3 seasons
+        # Default to last SEASONS_NCAAB seasons
         current_season = datetime.now().year
         seasons = list(range(current_season - SEASONS_NCAAB + 1, current_season + 1))  # Last 3 seasons
 
@@ -695,7 +707,7 @@ def run_league_pipeline(league_choice):
             st.error("Unable to load advanced NFL data.")
             return
 
-        # Fetch upcoming NFL games within SEASONS_NFL seasons
+        # Fetch upcoming NFL games within 7 days
         upcoming = fetch_upcoming_nfl_games_advanced(days_ahead=7)
 
     elif league_choice == "NBA":
@@ -704,7 +716,7 @@ def run_league_pipeline(league_choice):
         if team_data.empty:
             st.error("Unable to load NBA data.")
             return
-        # Fetch upcoming NBA games within SEASONS_NBA seasons
+        # Fetch upcoming NBA games within 3 days
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
 
     else:  # NCAAB
@@ -713,7 +725,7 @@ def run_league_pipeline(league_choice):
         if team_data.empty:
             st.error("Unable to load NCAAB data.")
             return
-        # Fetch upcoming NCAAB games within SEASONS_NCAAB seasons
+        # Fetch upcoming NCAAB games for today
         upcoming = fetch_upcoming_ncaab_games()
 
     if team_data.empty or upcoming.empty:
