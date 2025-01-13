@@ -1045,13 +1045,14 @@ def run_league_pipeline(league_choice):
     global team_stats_global
 
     st.header(f"Today's {league_choice} Best Bets 🎯")
-    
-    # Initialize models
-    nba_model = None
-    betting_analyzer = BettingAnalyzer()
-    
+
     if league_choice == "NFL":
-        [Previous NFL code remains unchanged]
+        schedule = load_nfl_schedule()
+        if schedule.empty:
+            st.error("Unable to load NFL schedule. Please try again later.")
+            return
+        team_data = preprocess_nfl_data(schedule)
+        upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
     
     elif league_choice == "NBA":
         # Load and enhance data
