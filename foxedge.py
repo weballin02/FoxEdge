@@ -4,26 +4,230 @@ import numpy as np
 import pytz
 from datetime import datetime, timedelta
 import nfl_data_py as nfl
-from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
+from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2
 from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.model_selection import GridSearchCV, cross_val_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from pmdarima import auto_arima
 from pathlib import Path
-import requests
+import xgboost as xgb
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+import json
 import firebase_admin
 from firebase_admin import credentials, auth
-
-# cbbpy for NCAAB
+import requests
 import cbbpy.mens_scraper as cbb
 
-################################################################################
-# CONFIGURATION
-################################################################################
+########################################
+# CONSTANTS AND CONFIGURATIONS
+########################################
+# NBA Specific Constants
+NBA_KEY_NUMBERS = {
+    'spreads': [2.5, 3.5, 5.5, 7.5, 9.5, 11.5],
+    'totals': [205, 210, 215, 220, 225, 230]
+}
 
-# Define the optimal number of seasons for each sport
-SEASONS_NFL = 3    # Last 3 NFL seasons
-SEASONS_NBA = 4    # Last 4 NBA seasons
-SEASONS_NCAAB = 3  # Last 3 NCAAB seasons
+# Model Configuration
+MODEL_CONFIG = {
+    'xgboost': {
+        'learning_rate': 0.01,
+        'max_depth': 5,
+        'n_estimators': 200,
+        'min_child_weight': 1,
+        'subsample': 0.8,
+        'colsample_bytree': 0.8,
+        'objective': 'reg:squarederror'
+    },
+    'gradient_boosting': {
+        'learning_rate': 0.1,
+        'max_depth': 4,
+        'n_estimators': 100,
+        'min_samples_split': 2,
+        'min_samples_leaf': 1
+    }
+}
+
+########################################
+# ENHANCED PREDICTION MODELS
+########################################
+class EnhancedNBAPredictionModel:
+    def __init__(self):
+        self.xgb_model = None
+        self.gbr_model = None
+        self.scaler = StandardScaler()
+        self.feature_columns = [
+            'rolling_mean_3', 'rolling_std_3',
+            'rolling_mean_5', 'rolling_std_5',
+            'season_avg', 'season_std',
+            'home_court_advantage',
+            'rest_days',
+            'streak',
+            'last_10_performance'
+        ]
+    
+    def prepare_features(self, data):
+        features = data[self.feature_columns].copy()
+        return self.scaler.fit_transform(features)
+    
+    def train(self, data):
+        X = self.prepare_features(data)
+        y = data['score']
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        # Train XGBoost
+        self.xgb_model = xgb.XGBRegressor(**MODEL_CONFIG['xgboost'])
+        self.xgb_model.fit(X_train, y_train)
+        
+        # Train GradientBoosting
+        self.gbr_model = GradientBoostingRegressor(**MODEL_CONFIG['gradient_boosting'])
+        self.gbr_model.fit(X_train, y_train)
+        
+        # Calculate model weights based on performance
+        xgb_score = self.xgb_model.score(X_test, y_test)
+        gbr_score = self.gbr_model.score(X_test, y_test)
+        
+        total_score = xgb_score + gbr_score
+        self.xgb_weight = xgb_score / total_score
+        self.gbr_weight = gbr_score / total_score
+    
+    def predict(self, features):
+        X = self.scaler.transform(features[self.feature_columns])
+        xgb_pred = self.xgb_model.predict(X)
+        gbr_pred = self.gbr_model.predict(X)
+        
+        # Weighted ensemble prediction
+        final_pred = (xgb_pred * self.xgb_weight + 
+                     gbr_pred * self.gbr_weight)
+        
+        return final_pred
+
+########################################
+# ENHANCED BETTING ANALYSIS
+########################################
+class BettingAnalyzer:
+    def __init__(self):
+        self.key_numbers = NBA_KEY_NUMBERS
+    
+    def calculate_edge(self, predicted_value, market_value, variance):
+        """Calculate betting edge with Kelly Criterion"""
+        edge = abs(predicted_value - market_value)
+        edge_percentage = (edge / variance) * 100
+        
+        # Kelly Criterion calculation
+        win_prob = self._calculate_win_probability(edge, variance)
+        fair_odds = 1 / win_prob
+        kelly_bet = max(0, min(0.05, (win_prob - (1 - win_prob)) / 1))  # Cap at 5%
+        
+        return {
+            'edge_percentage': edge_percentage,
+            'kelly_percentage': kelly_bet * 100,
+            'win_probability': win_prob * 100
+        }
+    
+    def _calculate_win_probability(self, edge, variance):
+        """Calculate win probability using normal distribution"""
+        z_score = edge / (variance ** 0.5)
+        win_prob = 0.5 + (0.5 * np.tanh(z_score * np.pi / (2 * 2**0.5)))
+        return win_prob
+    
+    def analyze_key_numbers(self, predicted_value, bet_type='spread'):
+        """Analyze proximity to key betting numbers"""
+        key_numbers = (self.key_numbers['spreads'] if bet_type == 'spread' 
+                      else self.key_numbers['totals'])
+        
+        closest_key = min(key_numbers, key=lambda x: abs(x - predicted_value))
+        distance = abs(predicted_value - closest_key)
+        
+        return {
+            'closest_key': closest_key,
+            'distance': distance,
+            'is_key_number': distance < 0.5
+        }
+    
+    def generate_betting_insight(self, game_data, predictions):
+        """Generate comprehensive betting insights"""
+        insights = []
+        
+        for pred in predictions:
+            home_variance = pred.get('home_variance', 10)
+            away_variance = pred.get('away_variance', 10)
+            
+            # Analyze spread
+            spread_edge = self.calculate_edge(
+                pred['predicted_diff'],
+                pred.get('market_spread', 0),
+                (home_variance + away_variance) ** 0.5
+            )
+            
+            # Analyze total
+            total_edge = self.calculate_edge(
+                pred['predicted_total'],
+                pred.get('market_total', 0),
+                (home_variance + away_variance) ** 0.5
+            )
+            
+            # Key number analysis
+            spread_key = self.analyze_key_numbers(abs(pred['predicted_diff']), 'spread')
+            total_key = self.analyze_key_numbers(pred['predicted_total'], 'total')
+            
+            insight = {
+                'game_id': f"{pred['away_team']}@{pred['home_team']}",
+                'spread_edge': spread_edge,
+                'total_edge': total_edge,
+                'spread_key_numbers': spread_key,
+                'total_key_numbers': total_key,
+                'recommended_bets': []
+            }
+            
+            # Generate bet recommendations
+            if spread_edge['edge_percentage'] > 5:
+                insight['recommended_bets'].append({
+                    'type': 'spread',
+                    'edge': spread_edge['edge_percentage'],
+                    'kelly': spread_edge['kelly_percentage'],
+                    'win_prob': spread_edge['win_probability']
+                })
+            
+            if total_edge['edge_percentage'] > 5:
+                insight['recommended_bets'].append({
+                    'type': 'total',
+                    'edge': total_edge['edge_percentage'],
+                    'kelly': total_edge['kelly_percentage'],
+                    'win_prob': total_edge['win_probability']
+                })
+            
+            insights.append(insight)
+        
+        return insights
+
+########################################
+# ENHANCED DATA PROCESSING
+########################################
+def enhance_team_data(data: pd.DataFrame) -> pd.DataFrame:
+    """Add advanced features to team data"""
+    enhanced = data.copy()
+    
+    # Add home court advantage
+    enhanced['home_court_advantage'] = enhanced['is_home'].map({1: 2.5, 0: 0})
+    
+    # Calculate rest days (if game dates available)
+    enhanced['rest_days'] = enhanced.groupby('team')['gameday'].diff().dt.days.fillna(2)
+    
+    # Calculate streak (positive for wins, negative for losses)
+    enhanced['streak'] = enhanced.groupby('team')['score'].apply(
+        lambda x: x.expanding().mean() - x.shift(1).expanding().mean()
+    ).fillna(0)
+    
+    # Last 10 games performance
+    enhanced['last_10_performance'] = enhanced.groupby('team')['score'].transform(
+        lambda x: x.rolling(10, min_periods=1).mean()
+    )
 
 ################################################################################
 # FIREBASE CONFIGURATION
