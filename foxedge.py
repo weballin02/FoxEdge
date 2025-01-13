@@ -21,6 +21,56 @@ import requests
 import cbbpy.mens_scraper as cbb
 
 ########################################
+# FIREBASE CONFIGURATION (unchanged)
+########################################
+try:
+    FIREBASE_API_KEY = st.secrets["general"]["firebaseApiKey"]
+    service_account_info = {
+        "type": st.secrets["firebase"]["type"],
+        "project_id": st.secrets["firebase"]["project_id"],
+        "private_key_id": st.secrets["firebase"]["private_key_id"],
+        "private_key": st.secrets["firebase"]["private_key"],
+        "client_email": st.secrets["firebase"]["client_email"],
+        "client_id": st.secrets["firebase"]["client_id"],
+        "auth_uri": st.secrets["firebase"]["auth_uri"],
+        "token_uri": st.secrets["firebase"]["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
+    }
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(service_account_info)
+        firebase_admin.initialize_app(cred)
+except KeyError:
+    st.warning("Firebase secrets not found or incomplete in st.secrets. Please verify your secrets.toml.")
+
+def login_with_rest(email, password):
+    try:
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+        payload = {"email": email, "password": password, "returnSecureToken": True}
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error("Invalid credentials.")
+            return None
+    except Exception as e:
+        st.error(f"Error during login: {e}")
+        return None
+
+def signup_user(email, password):
+    try:
+        user = auth.create_user(email=email, password=password)
+        st.success(f"User {email} created successfully!")
+        return user
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+def logout_user():
+    for key in ['email', 'logged_in']:
+        if key in st.session_state:
+            del st.session_state[key]
+
+########################################
 # CONSTANTS AND CONFIGURATIONS
 ########################################
 # NBA Specific Constants
@@ -233,56 +283,6 @@ def enhance_team_data(data: pd.DataFrame) -> pd.DataFrame:
     # This would require additional data sources
     
     return enhanced
-
-########################################
-# FIREBASE CONFIGURATION (unchanged)
-########################################
-try:
-    FIREBASE_API_KEY = st.secrets["general"]["firebaseApiKey"]
-    service_account_info = {
-        "type": st.secrets["firebase"]["type"],
-        "project_id": st.secrets["firebase"]["project_id"],
-        "private_key_id": st.secrets["firebase"]["private_key_id"],
-        "private_key": st.secrets["firebase"]["private_key"],
-        "client_email": st.secrets["firebase"]["client_email"],
-        "client_id": st.secrets["firebase"]["client_id"],
-        "auth_uri": st.secrets["firebase"]["auth_uri"],
-        "token_uri": st.secrets["firebase"]["token_uri"],
-        "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
-        "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
-    }
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(service_account_info)
-        firebase_admin.initialize_app(cred)
-except KeyError:
-    st.warning("Firebase secrets not found or incomplete in st.secrets. Please verify your secrets.toml.")
-
-def login_with_rest(email, password):
-    try:
-        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
-        payload = {"email": email, "password": password, "returnSecureToken": True}
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error("Invalid credentials.")
-            return None
-    except Exception as e:
-        st.error(f"Error during login: {e}")
-        return None
-
-def signup_user(email, password):
-    try:
-        user = auth.create_user(email=email, password=password)
-        st.success(f"User {email} created successfully!")
-        return user
-    except Exception as e:
-        st.error(f"Error: {e}")
-
-def logout_user():
-    for key in ['email', 'logged_in']:
-        if key in st.session_state:
-            del st.session_state[key]
 
 ########################################
 # CSV MANAGEMENT (unchanged)
