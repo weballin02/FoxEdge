@@ -7,8 +7,6 @@ import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2
 from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.model_selection import GridSearchCV, cross_val_score
-from sklearn.metrics import mean_squared_error, mean_absolute_error
 from pmdarima import auto_arima
 from pathlib import Path
 
@@ -95,271 +93,70 @@ def round_half(number):
     return round(number * 2) / 2
 
 ########################################
-# ENHANCEMENTS & DATA QUALITY CHECKS
+# TRAINING & PREDICTIONS (unchanged)
 ########################################
-def remove_outliers(df, score_col='score', z_threshold=3):
-    """
-    Removes outliers from the dataset based on a Z-threshold for the score column.
-    Typically used prior to or after merging league data.
-    """
-    mean_val = df[score_col].mean()
-    std_val = df[score_col].std()
-    if std_val == 0 or np.isnan(std_val):
-        return df  # No outlier removal if no variation
-    df_filtered = df[np.abs(df[score_col] - mean_val) <= z_threshold * std_val]
-    return df_filtered
-
-def fallback_league_average(team_df, min_games_threshold=3):
-    """
-    If the team has fewer than `min_games_threshold` data points,
-    replace their scores with the league average.
-    """
-    if len(team_df) < min_games_threshold:
-        league_avg = team_df['score'].mean()  # This is a bit contrived in a single-team subset, see usage logic
-        team_df['score'] = league_avg
-    return team_df
-
-########################################
-# TRAINING & PREDICTIONS
-########################################
-
-# Toggle for weighted ensemble vs. simple average
-USE_WEIGHTED_ENSEMBLE = True
-
 @st.cache_data(ttl=3600)
 def train_team_models(team_data: pd.DataFrame):
     """
-    Trains GradientBoostingRegressor (with expanded hyperparameter tuning) 
-    and ARIMA for each team. Returns gbr_models, arima_models, team_stats, and
-    optional metrics such as RMSE to enable weighted ensembles.
+    Trains GradientBoostingRegressor and ARIMA for each team.
+    Returns: gbr_models, arima_models, team_stats
     """
     gbr_models = {}
     arima_models = {}
     team_stats = {}
-    # Store model performance metrics (RMSE) for dynamic weighting
-    gbr_rmse_dict = {}
-    arima_rmse_dict = {}
 
     all_teams = team_data['team'].unique()
-
-    # --- Example for advanced feature engineering placeholders ---
-    # If available, you could add rolling_mean_5, rolling_std_5, season_avg, etc. to your team_data,
-    # same as you did rolling_mean_3. Already done for each league below, but further customization can happen here.
-    
     for team in all_teams:
-        # Extract data for this team & fallback if insufficient data
-        team_df = team_data[team_data['team'] == team].copy()
-        team_df.sort_values('gameday', inplace=True)
-        # Optional outlier removal for each team
-        team_df = remove_outliers(team_df, score_col='score', z_threshold=3)
-        # Fallback if fewer than 3 games
-        team_df = fallback_league_average(team_df, min_games_threshold=3)
-        scores = team_df['score'].reset_index(drop=True)
-
+        scores = team_data[team_data['team'] == team]['score'].reset_index(drop=True)
         if len(scores) < 3:
             continue
 
-        # Basic descriptive stats for this team
-        recent_5 = scores.tail(5).mean() if len(scores) >= 5 else scores.mean()
         team_stats[team] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
             'max': round_half(scores.max()),
-            'recent_form': round_half(recent_5)
+            'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
         }
 
-        # ---------- Train GradientBoostingRegressor (GBR) ----------
-        # Expanded hyperparameter grid
         if len(scores) >= 10:
-            # Prepare features: game_index, is_home, rolling_mean_3, rolling_std_3
-            # You can add rolling_mean_5, etc., if you’ve computed them in the data
-            candidate_cols = ['game_index', 'is_home', 'rolling_mean_3', 'rolling_std_3',
-                               'rolling_mean_5', 'rolling_std_5', 'season_avg', 'season_std']
-            # Only use columns that actually exist
-            feature_cols = [c for c in candidate_cols if c in team_df.columns]
-            X = team_df[feature_cols].values
+            X = np.arange(len(scores)).reshape(-1, 1)
             y = scores.values
+            gbr = GradientBoostingRegressor()
+            gbr.fit(X, y)
+            gbr_models[team] = gbr
 
-            param_grid = {
-                'learning_rate': [0.01, 0.05, 0.1],
-                'n_estimators': [50, 100, 200],
-                'max_depth': [2, 3, 4],
-                'min_samples_split': [2, 5],
-                'min_samples_leaf': [1, 3]
-            }
-            gbr = GradientBoostingRegressor(random_state=42)
-            grid_search = GridSearchCV(
-                estimator=gbr,
-                param_grid=param_grid,
-                scoring='neg_mean_squared_error',
-                cv=3,
-                n_jobs=-1,
-                verbose=0
-            )
-            grid_search.fit(X, y)
-            best_gbr = grid_search.best_estimator_
-            gbr_models[team] = best_gbr
-
-            # Evaluate via cross_val_score for an RMSE estimate
-            cv_neg_mse = cross_val_score(best_gbr, X, y, cv=3, scoring='neg_mean_squared_error')
-            cv_rmse = np.mean(np.sqrt(-cv_neg_mse))
-            gbr_rmse_dict[team] = cv_rmse
-        else:
-            gbr_rmse_dict[team] = None
-
-        # ---------- Train ARIMA (with optional seasonality) ----------
-        # If data is too short, skip
         if len(scores) >= 7:
-            # Example: enabling seasonality if periodic patterns exist.
-            # If you have exogenous data (e.g., venue, injury, etc.), pass exog=some_df
             arima = auto_arima(
                 scores,
-                seasonal=True,  # Set to True if you suspect seasonal
-                m=5,            # Season length; tune to league specifics
+                seasonal=False,
                 trace=False,
                 error_action='ignore',
                 suppress_warnings=True,
-                max_p=5,
-                max_q=5
+                max_p=3,
+                max_q=3
             )
-            # You could compare AIC here or store it
             arima_models[team] = arima
 
-            # ARIMA pseudo-evaluation:
-            # A quick approach is to do an in-sample forecast. For real evaluation, do a train/test split.
-            try:
-                # Forecast last 3 points as a simple check
-                steps = min(3, len(scores))
-                train_cutoff = len(scores) - steps
-                model_scores = scores.iloc[:train_cutoff]
-                arima_fit = auto_arima(
-                    model_scores,
-                    seasonal=True,
-                    m=5,
-                    max_p=5,
-                    max_q=5,
-                    error_action='ignore',
-                    suppress_warnings=True
-                )
-                preds = arima_fit.predict(n_periods=steps)
-                actuals = scores.iloc[train_cutoff:]
-                if len(preds) == len(actuals):
-                    rmse_arima = mean_squared_error(actuals, preds, squared=False)
-                    arima_rmse_dict[team] = rmse_arima
-                else:
-                    arima_rmse_dict[team] = None
-            except:
-                arima_rmse_dict[team] = None
-        else:
-            arima_rmse_dict[team] = None
+    return gbr_models, arima_models, team_stats
 
-    return gbr_models, arima_models, team_stats, gbr_rmse_dict, arima_rmse_dict
-
-def get_next_features(team, team_data, is_home_flag=0):
-    """
-    Generate the next row of features for a future game for the given team:
-    - game_index (one more than last game)
-    - is_home (passed in)
-    - rolling_mean_3, rolling_std_3 (based on the last 3 known scores)
-    - rolling_mean_5, rolling_std_5, season_avg, season_std if available
-    """
-    team_df = team_data[team_data['team'] == team].copy()
-    if team_df.empty:
-        return None
-
-    last_row = team_df.iloc[-1]
-    next_game_index = last_row['game_index'] + 1
-
-    # Grab last 3 & last 5 scores for rolling stats
-    last_3_scores = team_df['score'].tail(3)
-    next_rolling_mean_3 = last_3_scores.mean()
-    next_rolling_std_3 = last_3_scores.std(ddof=1) if len(last_3_scores) > 1 else 0.0
-
-    last_5_scores = team_df['score'].tail(5)
-    next_rolling_mean_5 = last_5_scores.mean()
-    next_rolling_std_5 = last_5_scores.std(ddof=1) if len(last_5_scores) > 1 else 0.0
-
-    # Season stats if you define a “season” or if the dataset can delineate
-    season_avg = team_df['score'].mean()
-    season_std = team_df['score'].std()
-
-    # Construct a single feature row, ensuring consistent order with training
-    X_next = pd.DataFrame([{
-        'game_index': next_game_index,
-        'is_home': is_home_flag,
-        'rolling_mean_3': next_rolling_mean_3,
-        'rolling_std_3': next_rolling_std_3,
-        'rolling_mean_5': next_rolling_mean_5,
-        'rolling_std_5': next_rolling_std_5,
-        'season_avg': season_avg if not np.isnan(season_avg) else 0.0,
-        'season_std': season_std if not np.isnan(season_std) else 0.0
-    }])
-
-    return X_next
-
-def weighted_ensemble_prediction(gbr_pred, gbr_rmse, arima_pred, arima_rmse):
-    """
-    Dynamically weight GBR and ARIMA predictions using inverse RMSE.
-    If either RMSE is None or 0, fallback to simple averaging for that model.
-    """
-    if gbr_pred is None and arima_pred is None:
-        return None
-
-    if gbr_rmse is None or gbr_rmse == 0:
-        w_gbr = 1.0 if gbr_pred is not None else 0
-    else:
-        w_gbr = 1.0 / gbr_rmse
-
-    if arima_rmse is None or arima_rmse == 0:
-        w_arima = 1.0 if arima_pred is not None else 0
-    else:
-        w_arima = 1.0 / arima_rmse
-
-    if gbr_pred is None:
-        return arima_pred
-    elif arima_pred is None:
-        return gbr_pred
-
-    total_w = w_gbr + w_arima
-    return (gbr_pred * w_gbr + arima_pred * w_arima) / total_w
-
-def predict_team_score(team, gbr_models, arima_models, team_stats, team_data, 
-                       gbr_rmse_dict, arima_rmse_dict, is_home=0):
-    """
-    Predict the next game score for the specified team. 
-    is_home=1 if the upcoming game is at home, else 0.
-    Integrates dynamic weighting if USE_WEIGHTED_ENSEMBLE=True.
-    """
+def predict_team_score(team, gbr_models, arima_models, team_stats, team_data):
     if team not in team_stats:
         return None, (None, None)
 
     gbr_pred = None
     arima_pred = None
 
-    # Generate features for next game
-    feature_df = get_next_features(team, team_data, is_home_flag=is_home)
-    if feature_df is None or feature_df.empty:
-        return None, (None, None)
-
-    # If we have a trained GBR model for this team, predict
     if team in gbr_models:
-        gbr_pred = gbr_models[team].predict(feature_df.values)[0]
+        data_len = len(team_data[team_data['team'] == team])
+        X_next = np.array([[data_len]])
+        gbr_pred = gbr_models[team].predict(X_next)[0]
 
-    # If we have an ARIMA model for this team, forecast
     if team in arima_models:
         forecast = arima_models[team].predict(n_periods=1)
         arima_pred = forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast.iloc[0]
 
-    # Decide ensemble approach:
     if gbr_pred is not None and arima_pred is not None:
-        if USE_WEIGHTED_ENSEMBLE:
-            ensemble = weighted_ensemble_prediction(
-                gbr_pred, gbr_rmse_dict.get(team), 
-                arima_pred, arima_rmse_dict.get(team)
-            )
-        else:
-            # Original simple average
-            ensemble = (gbr_pred + arima_pred) / 2
+        ensemble = (gbr_pred + arima_pred) / 2
     elif gbr_pred is not None:
         ensemble = gbr_pred
     elif arima_pred is not None:
@@ -367,28 +164,14 @@ def predict_team_score(team, gbr_models, arima_models, team_stats, team_data,
     else:
         ensemble = None
 
-    # Confidence interval placeholders using mean ± 1.96 * std
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
-
-    # Optional refinement: if you have 10-game rolling std, you could do that:
-    # recent_scores = team_data[team_data['team'] == team]['score'].tail(10)
-    # sigma_10 = recent_scores.std()
-    # if not np.isnan(sigma_10): sigma = sigma_10
-
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
-
-    if ensemble is None:
-        return None, (conf_low, conf_high)
 
     return round_half(ensemble), (conf_low, conf_high)
 
 def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
-    """
-    Existing matchup logic; calculates difference, total points, confidence, etc.
-    Kept fully intact with minor expansions possible.
-    """
     if home_pred is None or away_pred is None:
         return None
 
@@ -424,7 +207,7 @@ def find_top_bets(matchups, threshold=70.0):
     return df_top
 
 ########################################
-# NFL LOGIC
+# NFL LOGIC (unchanged)
 ########################################
 @st.cache_data(ttl=3600)
 def load_nfl_schedule():
@@ -437,63 +220,15 @@ def load_nfl_schedule():
     return schedule
 
 def preprocess_nfl_data(schedule):
-    """
-    Create a single DataFrame with columns:
-      ['gameday', 'team', 'score', 'is_home', 'game_index', 
-       'rolling_mean_3', 'rolling_std_3', 'rolling_mean_5', 'rolling_std_5',
-       'season_avg', 'season_std'].
-
-    Added additional rolling windows (5-game) and placeholders for season stats.
-    """
     home_df = schedule[['gameday', 'home_team', 'home_score']].rename(
         columns={'home_team': 'team', 'home_score': 'score'}
     )
-    home_df['is_home'] = 1
-
     away_df = schedule[['gameday', 'away_team', 'away_score']].rename(
         columns={'away_team': 'team', 'away_score': 'score'}
     )
-    away_df['is_home'] = 0
-
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=['score'], inplace=True)
     data.sort_values('gameday', inplace=True)
-
-    # Sort by team + gameday for rolling features
-    data.sort_values(['team', 'gameday'], inplace=True)
-    # Create a 'game_index' that increments per team
-    data['game_index'] = data.groupby('team').cumcount()
-
-    # Rolling means & std dev (3 games)
-    data['rolling_mean_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).mean()
-    )
-    data['rolling_std_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).std(ddof=1)
-    )
-
-    # Rolling means & std dev (5 games)
-    data['rolling_mean_5'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(5, min_periods=1).mean()
-    )
-    data['rolling_std_5'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(5, min_periods=1).std(ddof=1)
-    )
-
-    # Season avg/std (placeholder: entire dataset)
-    # If you want a single "season" column, you'd group by [team, season].
-    data['season_avg'] = data.groupby('team')['score'].transform('mean')
-    data['season_std'] = data.groupby('team')['score'].transform('std')
-
-    # Fallbacks for the first few games
-    data['rolling_mean_3'].fillna(data['score'], inplace=True)
-    data['rolling_std_3'].fillna(0, inplace=True)
-    data['rolling_mean_5'].fillna(data['score'], inplace=True)
-    data['rolling_std_5'].fillna(0, inplace=True)
-    data['season_std'].fillna(0, inplace=True)
-
-    # (Optional) Insert placeholders for weather data if available
-
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
@@ -509,12 +244,9 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ##################################
 # NBA-SPECIFIC LOGIC
 ##################################
+
 @st.cache_data(ttl=3600)
 def load_nba_data():
-    """
-    Loads multiple seasons from the NBA API with additional rolling windows
-    for 3 & 5 games, plus placeholders for season stats.
-    """
     seasons = ['2022-23', '2023-24', '2024-25']
     all_data = []
 
@@ -535,9 +267,7 @@ def load_nba_data():
             'TEAM_ABBREVIATION': 'team',
             'PTS': 'score'
         }, inplace=True)
-        # No direct home/away indicator from this dataset
-        new_df['is_home'] = 0
-
+        new_df.sort_values('gameday', inplace=True)
         all_data.append(new_df)
 
     if not all_data:
@@ -545,39 +275,7 @@ def load_nba_data():
 
     data = pd.concat(all_data, ignore_index=True)
     data.dropna(subset=['score'], inplace=True)
-
-    # Sort by team + gameday
-    data.sort_values(['team', 'gameday'], inplace=True)
-    data['game_index'] = data.groupby('team').cumcount()
-
-    # Rolling means & std dev (3 games)
-    data['rolling_mean_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).mean()
-    )
-    data['rolling_std_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).std(ddof=1)
-    )
-
-    # Rolling means & std dev (5 games)
-    data['rolling_mean_5'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(5, min_periods=1).mean()
-    )
-    data['rolling_std_5'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(5, min_periods=1).std(ddof=1)
-    )
-
-    # Season avg/std (placeholder: entire dataset)
-    data['season_avg'] = data.groupby('team')['score'].transform('mean')
-    data['season_std'] = data.groupby('team')['score'].transform('std')
-
-    data['rolling_mean_3'].fillna(data['score'], inplace=True)
-    data['rolling_std_3'].fillna(0, inplace=True)
-    data['rolling_mean_5'].fillna(data['score'], inplace=True)
-    data['rolling_std_5'].fillna(0, inplace=True)
-    data['season_std'].fillna(0, inplace=True)
-
-    # If you track pace-of-play or injuries, add them here as extra columns
-
+    data.sort_values('gameday', inplace=True)
     return data
 
 def fetch_upcoming_nba_games(days_ahead=3):
@@ -614,14 +312,15 @@ def fetch_upcoming_nba_games(days_ahead=3):
     return upcoming
 
 ########################################
-# NCAAB HISTORICAL LOADER
+# NCAAB HISTORICAL LOADER (unchanged)
 ########################################
 @st.cache_data(ttl=3600)
 def load_ncaab_data_current_season(season=2025):
     """
     Loads finished or in-progress NCAA MBB games for the given season
-    using cbbpy. Adds rolling windows (3 & 5) plus placeholders for season stats.
+    using cbbpy. 
     """
+    # This call requires a mandatory 'season' param
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
         return pd.DataFrame()
@@ -635,48 +334,16 @@ def load_ncaab_data_current_season(season=2025):
         "home_score": "score",
         "game_day": "gameday"
     })[["gameday", "team", "score"]]
-    home_df['is_home'] = 1
 
     away_df = info_df.rename(columns={
         "away_team": "team",
         "away_score": "score",
         "game_day": "gameday"
     })[["gameday", "team", "score"]]
-    away_df['is_home'] = 0
 
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
-
-    # Rolling features
-    data.sort_values(['team', 'gameday'], inplace=True)
-    data['game_index'] = data.groupby('team').cumcount()
-
-    data['rolling_mean_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).mean()
-    )
-    data['rolling_std_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).std(ddof=1)
-    )
-
-    data['rolling_mean_5'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(5, min_periods=1).mean()
-    )
-    data['rolling_std_5'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(5, min_periods=1).std(ddof=1)
-    )
-
-    data['season_avg'] = data.groupby('team')['score'].transform('mean')
-    data['season_std'] = data.groupby('team')['score'].transform('std')
-
-    data['rolling_mean_3'].fillna(data['score'], inplace=True)
-    data['rolling_std_3'].fillna(0, inplace=True)
-    data['rolling_mean_5'].fillna(data['score'], inplace=True)
-    data['rolling_std_5'].fillna(0, inplace=True)
-    data['season_std'].fillna(0, inplace=True)
-
-    # Optionally incorporate rankings or strength-of-schedule if available
-
     return data
 
 ########################################
@@ -684,7 +351,8 @@ def load_ncaab_data_current_season(season=2025):
 ########################################
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     """
-    Fetches upcoming NCAAB games for 'today' using ESPN's scoreboard API.
+    Fetches upcoming NCAAB games for 'today' using ESPN's scoreboard API
+    (similar to the example provided).
     """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
@@ -710,9 +378,11 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 
     rows = []
     for game in games:
-        game_time_str = game['date']  # ISO8601
+        # Parse date/time
+        game_time_str = game['date']          # ISO8601
         game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
 
+        # Parse teams
         competitors = game['competitions'][0]['competitors']
         home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
         away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
@@ -731,7 +401,6 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 
     if not rows:
         return pd.DataFrame()
-
     df = pd.DataFrame(rows)
     df.sort_values('gameday', inplace=True)
     return df
@@ -822,7 +491,7 @@ results = []
 team_stats_global = {}
 
 ########################################
-# MAIN PIPELINE
+# MAIN PIPELINE (unchanged except NCAAB)
 ########################################
 def run_league_pipeline(league_choice):
     global results
@@ -860,21 +529,16 @@ def run_league_pipeline(league_choice):
         st.warning(f"No {league_choice} data available for analysis.")
         return
 
-    # Train models (GBR + ARIMA) with enhancements
+    # Train models (unchanged)
     with st.spinner("Analyzing recent performance data..."):
-        gbr_models, arima_models, team_stats, gbr_rmse_dict, arima_rmse_dict = train_team_models(team_data)
+        gbr_models, arima_models, team_stats = train_team_models(team_data)
         team_stats_global = team_stats
         results.clear()
 
         for _, row in upcoming.iterrows():
-            home = row['home_team']
-            away = row['away_team']
-
-            # Pass is_home=1 for home, 0 for away
-            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data,
-                                              gbr_rmse_dict, arima_rmse_dict, is_home=1)
-            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data,
-                                              gbr_rmse_dict, arima_rmse_dict, is_home=0)
+            home, away = row['home_team'], row['away_team']
+            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
 
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
