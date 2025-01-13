@@ -1045,6 +1045,10 @@ def run_league_pipeline(league_choice):
     global team_stats_global
 
     st.header(f"Today's {league_choice} Best Bets 🎯")
+    
+    # Initialize models
+    nba_model = None
+    betting_analyzer = BettingAnalyzer()
 
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
@@ -1054,12 +1058,80 @@ def run_league_pipeline(league_choice):
         team_data = preprocess_nfl_data(schedule)
         upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
 
-    elif league_choice == "NBA":
+elif league_choice == "NBA":
+        # Load and enhance data
         team_data = load_nba_data()
         if team_data.empty:
             st.error("Unable to load NBA data. Please try again later.")
             return
+        
+        # Enhance data with additional features
+        enhanced_data = enhance_team_data(team_data)
+        
+        # Initialize and train NBA model
+        nba_model = EnhancedNBAPredictionModel()
+        with st.spinner("Training advanced NBA prediction models..."):
+            nba_model.train(enhanced_data)
+        
+        # Fetch upcoming games
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
+        
+        # Generate predictions and betting insights
+        results.clear()
+        
+        for _, row in upcoming.iterrows():
+            home = row['home_team']
+            away = row['away_team']
+            
+            # Get team-specific enhanced data
+            home_data = enhanced_data[enhanced_data['team'] == home].copy()
+            away_data = enhanced_data[enhanced_data['team'] == away].copy()
+            
+            # Generate predictions
+            home_pred = nba_model.predict(home_data.iloc[-1:])
+            away_pred = nba_model.predict(away_data.iloc[-1:])
+            
+            # Traditional matchup evaluation
+            outcome = evaluate_matchup(home, away, home_pred[0], away_pred[0], team_stats_global)
+            
+            if outcome:
+                result = {
+                    'date': row['gameday'],
+                    'home_team': home,
+                    'away_team': away,
+                    'home_pred': home_pred[0],
+                    'away_pred': away_pred[0],
+                    'predicted_winner': outcome['predicted_winner'],
+                    'predicted_diff': outcome['diff'],
+                    'predicted_total': outcome['total_points'],
+                    'confidence': outcome['confidence'],
+                    'spread_suggestion': outcome['spread_suggestion'],
+                    'ou_suggestion': outcome['ou_suggestion'],
+                    'home_variance': home_data['score'].std(),
+                    'away_variance': away_data['score'].std()
+                }
+                
+                results.append(result)
+        
+        # Generate betting insights
+        if results:
+            betting_insights = betting_analyzer.generate_betting_insight(enhanced_data, results)
+            
+            # Display insights in sidebar
+            st.sidebar.markdown("### 🎯 Advanced Betting Insights")
+            for insight in betting_insights:
+                if any(bet['edge'] > 5 for bet in insight['recommended_bets']):
+                    st.sidebar.markdown(f"""
+                    **{insight['game_id']}**
+                    """)
+                    
+                    for bet in insight['recommended_bets']:
+                        st.sidebar.markdown(f"""
+                        - Type: {bet['type'].title()}
+                        - Edge: {bet['edge']:.1f}%
+                        - Kelly: {bet['kelly']:.1f}%
+                        - Win Prob: {bet['win_prob']:.1f}%
+                        """)
 
     else:  # NCAAB
         # 1) Load historical data via cbbpy
