@@ -643,6 +643,75 @@ def find_top_bets(matchups, threshold=70.0):
 # NFL LOGIC
 ########################################
 @st.cache_data(ttl=3600)
+def load_nfl_schedule():
+    current_year = datetime.now().year
+    years = [current_year - 2, current_year - 1, current_year]
+    schedule = nfl.import_schedules(years)
+    schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
+    if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
+        schedule['gameday'] = schedule['gameday'].dt.tz_convert(None)
+    return schedule
+
+def preprocess_nfl_data(schedule):
+    """
+    Create a single DataFrame with columns:
+      ['gameday', 'team', 'score', 'is_home', 'game_index', 
+       'rolling_mean_3', 'rolling_std_3', 'rolling_mean_5', 'rolling_std_5',
+       'season_avg', 'season_std'].
+
+    Added additional rolling windows (5-game) and placeholders for season stats.
+    """
+    home_df = schedule[['gameday', 'home_team', 'home_score']].rename(
+        columns={'home_team': 'team', 'home_score': 'score'}
+    )
+    home_df['is_home'] = 1
+
+    away_df = schedule[['gameday', 'away_team', 'away_score']].rename(
+        columns={'away_team': 'team', 'away_score': 'score'}
+    )
+    away_df['is_home'] = 0
+
+    data = pd.concat([home_df, away_df], ignore_index=True)
+    data.dropna(subset=['score'], inplace=True)
+    data.sort_values('gameday', inplace=True)
+
+    # Sort by team + gameday for rolling features
+    data.sort_values(['team', 'gameday'], inplace=True)
+    # Create a 'game_index' that increments per team
+    data['game_index'] = data.groupby('team').cumcount()
+
+    # Rolling means & std dev (3 games)
+    data['rolling_mean_3'] = data.groupby('team')['score'].transform(
+        lambda x: x.rolling(3, min_periods=1).mean()
+    )
+    data['rolling_std_3'] = data.groupby('team')['score'].transform(
+        lambda x: x.rolling(3, min_periods=1).std(ddof=1)
+    )
+
+    # Rolling means & std dev (5 games)
+    data['rolling_mean_5'] = data.groupby('team')['score'].transform(
+        lambda x: x.rolling(5, min_periods=1).mean()
+    )
+    data['rolling_std_5'] = data.groupby('team')['score'].transform(
+        lambda x: x.rolling(5, min_periods=1).std(ddof=1)
+    )
+
+    # Season avg/std (placeholder: entire dataset)
+    # If you want a single "season" column, you'd group by [team, season].
+    data['season_avg'] = data.groupby('team')['score'].transform('mean')
+    data['season_std'] = data.groupby('team')['score'].transform('std')
+
+    # Fallbacks for the first few games
+    data['rolling_mean_3'].fillna(data['score'], inplace=True)
+    data['rolling_std_3'].fillna(0, inplace=True)
+    data['rolling_mean_5'].fillna(data['score'], inplace=True)
+    data['rolling_std_5'].fillna(0, inplace=True)
+    data['season_std'].fillna(0, inplace=True)
+
+    # (Optional) Insert placeholders for weather data if available
+
+    return data
+
 def enhance_nfl_data(schedule_df):
     """
     Enhances NFL data with key betting-specific features based on research.
