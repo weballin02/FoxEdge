@@ -1,105 +1,3 @@
-I need the following added to the below script using only know available data based on the current script while keeping all current functionality and logic exactly as is. 
-
-Predicting NBA points scored in a game and developing reliable betting systems is a complex task that involves various statistical methods and machine learning techniques. Based on the available research and data, here are the most reliable and accurate methods for predicting NBA points and key betting insights:
-
-## Prediction Models
-
-### Machine Learning Approaches
-
-The most accurate prediction models for NBA games utilize advanced machine learning algorithms. Some of the top-performing models include:
-
-1. **XGBoost**: This algorithm has shown high effectiveness in predicting NBA game outcomes, with accuracy rates reaching over 72%[1].
-
-2. **Neural Networks**: Models like "Netty" have achieved over 70% accuracy in predicting game winners[1].
-
-3. **Random Forest**: This method handles non-linear relationships well and typically achieves 65-70% accuracy[1].
-
-4. **Gaussian Naïve Bayes**: One study found this to be the best-performing model among several tested, with an average accuracy of 65.1%[2].
-
-### Key Features for Prediction
-
-The most reliable prediction models incorporate the following features:
-
-- Historical team performances
-- Player scoring averages
-- Field goal percentages
-- Home-court advantage
-- Recent team performance (last 5-10 games)
-- Player injuries and availability
-- Offensive and defensive efficiency ratings
-
-## Betting Key Numbers and Systems
-
-### Point Spread Key Numbers
-
-In NBA betting, key numbers for point spreads are less significant compared to other sports like football. However, some numbers to consider are:
-
-- 5, 6, and 7: These are common margins of victory in NBA games.
-- 11: Another frequent margin, especially for home favorites.
-
-### Totals (Over/Under) Key Numbers
-
-For totals betting, key numbers often end in 5 or 0, such as:
-
-- 205, 210, 215, 220: These are common total points lines in NBA games.
-
-### Betting Systems
-
-1. **Home Underdog System**: Betting on home underdogs, especially those with a positive record, can be profitable in the long run.
-
-2. **Back-to-Back Games**: Teams playing on consecutive nights often underperform, especially on the road. Consider betting against teams in this situation.
-
-3. **Contrarian Betting**: Betting against the public, especially in high-profile games, can yield positive results over time.
-
-4. **Line Movement Analysis**: Tracking line movements and betting with "sharp" money can be a profitable strategy.
-
-## Statistical Approach for Points Prediction
-
-For predicting total points scored in a game, a regression model using the following variables has shown good results:
-
-1. Field Goals Made (FGM)
-2. Three-Pointers Made (3PM)
-3. Free Throws Made (FTM)
-
-The formula for points prediction can be represented as:
-
-PTS = -18.006 + 1.5216*FGM + 0.9996*3PM + 0.9995*FTM[4]
-
-This model provides a strong baseline for predicting total points, as it directly incorporates the three ways to score in basketball.
-
-## Conclusion
-
-While no prediction method is perfect, combining machine learning algorithms with comprehensive statistical analysis and an understanding of key betting numbers can significantly improve the accuracy of NBA game predictions and betting strategies. It's important to note that even the best models typically achieve accuracy rates between 65-74%, highlighting the inherent unpredictability in sports outcomes[1][2].
-
-Sources
-[1] NBA Score Predictions: Leveraging Sports Data Science for ... https://www.fitnesslife.news/en/article/9/nba-score-predictions-seo
-[2] [PDF] Predicting the Outcome of NBA Games - Bryant Digital Repository https://digitalcommons.bryant.edu/cgi/viewcontent.cgi?article=1000&context=honors_data_science
-[3] [PDF] CS229 Final Project: Predicting NBA Game Outcomes https://cs229.stanford.edu/proj2017/final-reports/5231214.pdf
-[4] Predicting Points in the NBA | Yale Undergraduate Sports Analytics ... https://sports.sites.yale.edu/predicting-points-nba
-[5] luke-lite/NBA-Prediction-Modeling - GitHub https://github.com/luke-lite/NBA-Prediction-Modeling/
-[6] NBA scores predicting : r/algobetting - Reddit https://www.reddit.com/r/algobetting/comments/1flxcib/nba_scores_predicting/
-[7] A Method for Predicting the Outcome of NBA Games - kyle wurtz https://kylewurtz.com/2013/11/30/a-method-for-predicting-the-outcome-of-nba-games/
-[8] NBA Player Statistics Analysis and Prediction System - GitHub https://github.com/Jayplect/nba-player-points-prediction
-[9] How Our NBA Predictions Work | FiveThirtyEight https://fivethirtyeight.com/methodology/how-our-nba-predictions-work/
-[10] Making NBA models : r/algobetting - Reddit https://www.reddit.com/r/algobetting/comments/1e0ptxd/making_nba_models/
-[11] NBA players scored points prediction - Kaggle https://www.kaggle.com/code/amirhosseinmirzaie/nba-players-scored-points-prediction
-[12] NBA Match Prediction | Result & Points - Kaggle https://www.kaggle.com/code/yalcinberkay/nba-match-prediction-result-points
-[13] NBA Top Picks Based on Betting Splits, Power Ratings and Trends ... https://vsin.com/nba/nba-top-picks-based-on-betting-splits-power-ratings-and-trends-for-saturday-january-11/
-[14] What Are Key Numbers in Sports Betting? - WSN.com https://www.wsn.com/betting-guide/key-numbers/
-[15] Key Numbers in Sports Betting: The Complete Guide - Boyd's Bets https://www.boydsbets.com/key-numbers/
-[16] NBA Top Picks Based on Betting Splits, Power Ratings and Trends ... https://kdus1060.com/nba-top-picks-based-on-betting-splits-power-ratings-and-trends-for-sunday-january-12/
-[17] Key Numbers For Basketball Betting - Sports Betting Library https://www.madduxsports.com/library/basketball/key-numbers-for-basketball-betting.html
-[18] NBA Key Numbers - Predictem https://www.predictem.com/nba/nba-key-numbers/
-[19] Key Numbers In Sports Betting | BeaBetterBettor.com https://www.beabetterbettor.com/sports-betting/key-numbers.html
-[20] NBA Key Numbers to Bet On & Off Of with Point Buying https://www.boydsbets.com/nba-key-numbers/
-[21] Key Numbers: Sports Betting's Most Common Margins https://www.sportsbettingdime.com/guides/betting-101/key-numbers-sports-betting/
-[22] Key Numbers in Sports Betting – NFL, NBA & More https://www.ncsharp.com/ssports-betting/how-to-bet/key-numbers/
-[23] NBA Betting Systems - BettingPros https://www.bettingpros.com/nba/systems/
-[24] How to Gamble On Sports - Key Numbers Occur in the NBA https://www.patriotsplanet.net/BB/threads/how-to-gamble-on-sports-key-numbers-occur-in-the-nba.42915/
-
-
-Script:
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -113,12 +11,228 @@ from sklearn.model_selection import GridSearchCV, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from pmdarima import auto_arima
 from pathlib import Path
-
+import xgboost as xgb
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 import json
 import firebase_admin
 from firebase_admin import credentials, auth
 import requests
-import cbbpy.mens_scraper as cbb  # For historical NCAAB data
+import cbbpy.mens_scraper as cbb
+
+########################################
+# CONSTANTS AND CONFIGURATIONS
+########################################
+# NBA Specific Constants
+NBA_KEY_NUMBERS = {
+    'spreads': [2.5, 3.5, 5.5, 7.5, 9.5, 11.5],
+    'totals': [205, 210, 215, 220, 225, 230]
+}
+
+# Model Configuration
+MODEL_CONFIG = {
+    'xgboost': {
+        'learning_rate': 0.01,
+        'max_depth': 5,
+        'n_estimators': 200,
+        'min_child_weight': 1,
+        'subsample': 0.8,
+        'colsample_bytree': 0.8,
+        'objective': 'reg:squarederror'
+    },
+    'gradient_boosting': {
+        'learning_rate': 0.1,
+        'max_depth': 4,
+        'n_estimators': 100,
+        'min_samples_split': 2,
+        'min_samples_leaf': 1
+    }
+}
+
+########################################
+# ENHANCED PREDICTION MODELS
+########################################
+class EnhancedNBAPredictionModel:
+    def __init__(self):
+        self.xgb_model = None
+        self.gbr_model = None
+        self.scaler = StandardScaler()
+        self.feature_columns = [
+            'rolling_mean_3', 'rolling_std_3',
+            'rolling_mean_5', 'rolling_std_5',
+            'season_avg', 'season_std',
+            'home_court_advantage',
+            'rest_days',
+            'streak',
+            'last_10_performance'
+        ]
+    
+    def prepare_features(self, data):
+        features = data[self.feature_columns].copy()
+        return self.scaler.fit_transform(features)
+    
+    def train(self, data):
+        X = self.prepare_features(data)
+        y = data['score']
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        # Train XGBoost
+        self.xgb_model = xgb.XGBRegressor(**MODEL_CONFIG['xgboost'])
+        self.xgb_model.fit(X_train, y_train)
+        
+        # Train GradientBoosting
+        self.gbr_model = GradientBoostingRegressor(**MODEL_CONFIG['gradient_boosting'])
+        self.gbr_model.fit(X_train, y_train)
+        
+        # Calculate model weights based on performance
+        xgb_score = self.xgb_model.score(X_test, y_test)
+        gbr_score = self.gbr_model.score(X_test, y_test)
+        
+        total_score = xgb_score + gbr_score
+        self.xgb_weight = xgb_score / total_score
+        self.gbr_weight = gbr_score / total_score
+    
+    def predict(self, features):
+        X = self.scaler.transform(features[self.feature_columns])
+        xgb_pred = self.xgb_model.predict(X)
+        gbr_pred = self.gbr_model.predict(X)
+        
+        # Weighted ensemble prediction
+        final_pred = (xgb_pred * self.xgb_weight + 
+                     gbr_pred * self.gbr_weight)
+        
+        return final_pred
+
+########################################
+# ENHANCED BETTING ANALYSIS
+########################################
+class BettingAnalyzer:
+    def __init__(self):
+        self.key_numbers = NBA_KEY_NUMBERS
+    
+    def calculate_edge(self, predicted_value, market_value, variance):
+        """Calculate betting edge with Kelly Criterion"""
+        edge = abs(predicted_value - market_value)
+        edge_percentage = (edge / variance) * 100
+        
+        # Kelly Criterion calculation
+        win_prob = self._calculate_win_probability(edge, variance)
+        fair_odds = 1 / win_prob
+        kelly_bet = max(0, min(0.05, (win_prob - (1 - win_prob)) / 1))  # Cap at 5%
+        
+        return {
+            'edge_percentage': edge_percentage,
+            'kelly_percentage': kelly_bet * 100,
+            'win_probability': win_prob * 100
+        }
+    
+    def _calculate_win_probability(self, edge, variance):
+        """Calculate win probability using normal distribution"""
+        z_score = edge / (variance ** 0.5)
+        win_prob = 0.5 + (0.5 * np.tanh(z_score * np.pi / (2 * 2**0.5)))
+        return win_prob
+    
+    def analyze_key_numbers(self, predicted_value, bet_type='spread'):
+        """Analyze proximity to key betting numbers"""
+        key_numbers = (self.key_numbers['spreads'] if bet_type == 'spread' 
+                      else self.key_numbers['totals'])
+        
+        closest_key = min(key_numbers, key=lambda x: abs(x - predicted_value))
+        distance = abs(predicted_value - closest_key)
+        
+        return {
+            'closest_key': closest_key,
+            'distance': distance,
+            'is_key_number': distance < 0.5
+        }
+    
+    def generate_betting_insight(self, game_data, predictions):
+        """Generate comprehensive betting insights"""
+        insights = []
+        
+        for pred in predictions:
+            home_variance = pred.get('home_variance', 10)
+            away_variance = pred.get('away_variance', 10)
+            
+            # Analyze spread
+            spread_edge = self.calculate_edge(
+                pred['predicted_diff'],
+                pred.get('market_spread', 0),
+                (home_variance + away_variance) ** 0.5
+            )
+            
+            # Analyze total
+            total_edge = self.calculate_edge(
+                pred['predicted_total'],
+                pred.get('market_total', 0),
+                (home_variance + away_variance) ** 0.5
+            )
+            
+            # Key number analysis
+            spread_key = self.analyze_key_numbers(abs(pred['predicted_diff']), 'spread')
+            total_key = self.analyze_key_numbers(pred['predicted_total'], 'total')
+            
+            insight = {
+                'game_id': f"{pred['away_team']}@{pred['home_team']}",
+                'spread_edge': spread_edge,
+                'total_edge': total_edge,
+                'spread_key_numbers': spread_key,
+                'total_key_numbers': total_key,
+                'recommended_bets': []
+            }
+            
+            # Generate bet recommendations
+            if spread_edge['edge_percentage'] > 5:
+                insight['recommended_bets'].append({
+                    'type': 'spread',
+                    'edge': spread_edge['edge_percentage'],
+                    'kelly': spread_edge['kelly_percentage'],
+                    'win_prob': spread_edge['win_probability']
+                })
+            
+            if total_edge['edge_percentage'] > 5:
+                insight['recommended_bets'].append({
+                    'type': 'total',
+                    'edge': total_edge['edge_percentage'],
+                    'kelly': total_edge['kelly_percentage'],
+                    'win_prob': total_edge['win_probability']
+                })
+            
+            insights.append(insight)
+        
+        return insights
+
+########################################
+# ENHANCED DATA PROCESSING
+########################################
+def enhance_team_data(data: pd.DataFrame) -> pd.DataFrame:
+    """Add advanced features to team data"""
+    enhanced = data.copy()
+    
+    # Add home court advantage
+    enhanced['home_court_advantage'] = enhanced['is_home'].map({1: 2.5, 0: 0})
+    
+    # Calculate rest days (if game dates available)
+    enhanced['rest_days'] = enhanced.groupby('team')['gameday'].diff().dt.days.fillna(2)
+    
+    # Calculate streak (positive for wins, negative for losses)
+    enhanced['streak'] = enhanced.groupby('team')['score'].apply(
+        lambda x: x.expanding().mean() - x.shift(1).expanding().mean()
+    ).fillna(0)
+    
+    # Last 10 games performance
+    enhanced['last_10_performance'] = enhanced.groupby('team')['score'].transform(
+        lambda x: x.rolling(10, min_periods=1).mean()
+    )
+    
+    # Add pace and efficiency metrics if available
+    # This would require additional data sources
+    
+    return enhanced
 
 ########################################
 # FIREBASE CONFIGURATION (unchanged)
