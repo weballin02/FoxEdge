@@ -643,84 +643,123 @@ def find_top_bets(matchups, threshold=70.0):
 # NFL LOGIC
 ########################################
 @st.cache_data(ttl=3600)
-def load_nfl_schedule():
-    current_year = datetime.now().year
-    years = [current_year - 2, current_year - 1, current_year]
-    schedule = nfl.import_schedules(years)
-    schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
-    if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
-        schedule['gameday'] = schedule['gameday'].dt.tz_convert(None)
-    return schedule
-
-def preprocess_nfl_data(schedule):
+def enhance_nfl_data(schedule_df):
     """
-    Create a single DataFrame with columns:
-      ['gameday', 'team', 'score', 'is_home', 'game_index', 
-       'rolling_mean_3', 'rolling_std_3', 'rolling_mean_5', 'rolling_std_5',
-       'season_avg', 'season_std'].
-
-    Added additional rolling windows (5-game) and placeholders for season stats.
+    Enhances NFL data with key betting-specific features based on research.
     """
-    home_df = schedule[['gameday', 'home_team', 'home_score']].rename(
-        columns={'home_team': 'team', 'home_score': 'score'}
+    df = schedule_df.copy()
+    
+    # Calculate key betting statistics
+    df['margin'] = df['home_score'] - df['away_score']
+    df['total_points'] = df['home_score'] + df['away_score']
+    
+    # Add margin buckets for key numbers analysis
+    df['margin_bucket'] = df['margin'].apply(lambda x: round(x) if pd.notnull(x) else None)
+    
+    # Calculate historical probability distributions
+    margin_dist = df['margin_bucket'].value_counts(normalize=True).to_dict()
+    total_points_dist = df['total_points'].apply(lambda x: round(x/0.5)*0.5).value_counts(normalize=True).to_dict()
+    
+    # Add rolling team-specific metrics
+    for team_type in ['home', 'away']:
+        team_col = f'{team_type}_team'
+        score_col = f'{team_type}_score'
+        
+        # Calculate team-specific rolling averages
+        df[f'{team_type}_rolling_avg_5'] = df.groupby(team_col)[score_col].transform(
+            lambda x: x.rolling(5, min_periods=1).mean()
+        )
+        df[f'{team_type}_rolling_std_5'] = df.groupby(team_col)[score_col].transform(
+            lambda x: x.rolling(5, min_periods=1).std()
+        )
+        
+    return df, margin_dist, total_points_dist
+
+def calculate_key_number_edge(pred_margin, margin_dist):
+    """
+    Calculates betting edge based on key numbers in NFL.
+    """
+    key_numbers = {
+        3: 0.1869,  # 18.69% of games
+        7: 0.1147,  # 11.47% of games
+        10: 0.0765, # 7.65% of games
+        6: 0.0687,  # 6.87% of games
+        14: 0.0597  # 5.97% of games
+    }
+    
+    distances = {k: abs(pred_margin - k) for k in key_numbers.keys()}
+    nearest_key = min(distances.items(), key=lambda x: x[1])
+    
+    if nearest_key[1] <= 0.5:
+        return 1 + (key_numbers[nearest_key[0]] * 0.5)
+    return 1.0
+
+def enhance_nfl_prediction(gbr_pred, arima_pred, team_data, home_team, away_team, margin_dist):
+    if gbr_pred is not None and arima_pred is not None:
+        base_pred = (gbr_pred + arima_pred) / 2
+    elif gbr_pred is not None:
+        base_pred = gbr_pred
+    elif arima_pred is not None:
+        base_pred = arima_pred
+    else:
+        return None, 0
+    
+    margin = base_pred
+    key_number_factor = calculate_key_number_edge(margin, margin_dist)
+    
+    base_confidence = 50 + (abs(margin) * 5)
+    enhanced_confidence = base_confidence * key_number_factor
+    enhanced_confidence = min(99, enhanced_confidence)
+    
+    return base_pred, enhanced_confidence
+
+def get_nfl_betting_suggestion(margin, total, confidence):
+    suggestions = []
+    
+    if confidence >= 70:
+        if margin > 0:
+            suggestions.append(f"Strong play on favorite -{abs(margin)}")
+        else:
+            suggestions.append(f"Strong play on underdog +{abs(margin)}")
+    elif confidence >= 60:
+        if margin > 0:
+            suggestions.append(f"Lean on favorite -{abs(margin)}")
+        else:
+            suggestions.append(f"Lean on underdog +{abs(margin)}")
+    
+    if total:
+        avg_nfl_total = 44.5
+        if abs(total - avg_nfl_total) > 7:
+            if total > avg_nfl_total:
+                suggestions.append(f"Consider Under {total}")
+            else:
+                suggestions.append(f"Consider Over {total}")
+    
+    return suggestions
+
+def evaluate_nfl_matchup(home_team, away_team, home_pred, away_pred, team_stats, margin_dist):
+    if home_pred is None or away_pred is None:
+        return None
+        
+    margin = home_pred - away_pred
+    total = home_pred + away_pred
+    
+    _, confidence = enhance_nfl_prediction(
+        home_pred, away_pred, team_stats, home_team, away_team, margin_dist
     )
-    home_df['is_home'] = 1
-
-    away_df = schedule[['gameday', 'away_team', 'away_score']].rename(
-        columns={'away_team': 'team', 'away_score': 'score'}
-    )
-    away_df['is_home'] = 0
-
-    data = pd.concat([home_df, away_df], ignore_index=True)
-    data.dropna(subset=['score'], inplace=True)
-    data.sort_values('gameday', inplace=True)
-
-    # Sort by team + gameday for rolling features
-    data.sort_values(['team', 'gameday'], inplace=True)
-    # Create a 'game_index' that increments per team
-    data['game_index'] = data.groupby('team').cumcount()
-
-    # Rolling means & std dev (3 games)
-    data['rolling_mean_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).mean()
-    )
-    data['rolling_std_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).std(ddof=1)
-    )
-
-    # Rolling means & std dev (5 games)
-    data['rolling_mean_5'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(5, min_periods=1).mean()
-    )
-    data['rolling_std_5'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(5, min_periods=1).std(ddof=1)
-    )
-
-    # Season avg/std (placeholder: entire dataset)
-    # If you want a single "season" column, you'd group by [team, season].
-    data['season_avg'] = data.groupby('team')['score'].transform('mean')
-    data['season_std'] = data.groupby('team')['score'].transform('std')
-
-    # Fallbacks for the first few games
-    data['rolling_mean_3'].fillna(data['score'], inplace=True)
-    data['rolling_std_3'].fillna(0, inplace=True)
-    data['rolling_mean_5'].fillna(data['score'], inplace=True)
-    data['rolling_std_5'].fillna(0, inplace=True)
-    data['season_std'].fillna(0, inplace=True)
-
-    # (Optional) Insert placeholders for weather data if available
-
-    return data
-
-def fetch_upcoming_nfl_games(schedule, days_ahead=7):
-    upcoming = schedule[
-        schedule['home_score'].isna() & schedule['away_score'].isna()
-    ].copy()
-    now = datetime.now()
-    filter_date = now + timedelta(days=days_ahead)
-    upcoming = upcoming[upcoming['gameday'] <= filter_date].copy()
-    upcoming.sort_values('gameday', inplace=True)
-    return upcoming[['gameday', 'home_team', 'away_team']]
+    
+    suggestions = get_nfl_betting_suggestion(margin, total, confidence)
+    winner = home_team if margin > 0 else away_team
+    
+    return {
+        'predicted_winner': winner,
+        'diff': round_half(margin),
+        'total_points': round_half(total),
+        'confidence': confidence,
+        'spread_suggestion': suggestions[0] if suggestions else "No strong lean",
+        'ou_suggestion': suggestions[1] if len(suggestions) > 1 else "No strong lean",
+        'key_number_analysis': calculate_key_number_edge(margin, margin_dist)
+    }
 
 ##################################
 # NBA-SPECIFIC LOGIC
