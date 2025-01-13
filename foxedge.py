@@ -830,6 +830,17 @@ def evaluate_nfl_matchup(home_team, away_team, home_pred, away_pred, team_stats,
         'key_number_analysis': calculate_key_number_edge(margin, margin_dist)
     }
 
+def fetch_upcoming_nfl_games(schedule, days_ahead=7):
+    upcoming = schedule[
+        schedule['home_score'].isna() & schedule['away_score'].isna()
+    ].copy()
+    now = datetime.now()
+    filter_date = now + timedelta(days=days_ahead)
+    upcoming = upcoming[upcoming['gameday'] <= filter_date].copy()
+    upcoming.sort_values('gameday', inplace=True)
+    return upcoming[['gameday', 'home_team', 'away_team']]
+
+
 ##################################
 # NBA-SPECIFIC LOGIC
 ##################################
