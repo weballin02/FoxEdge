@@ -617,7 +617,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 # NCAAB HISTORICAL LOADER
 ########################################
 @st.cache_data(ttl=3600)
-def load_ncaab_data_current_season(season=2025):
+def load_ncaab_data_current_season(season=2024):
     """
     Loads finished or in-progress NCAA MBB games for the given season
     using cbbpy. Adds rolling windows (3 & 5) plus placeholders for season stats.
