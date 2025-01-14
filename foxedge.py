@@ -1,4 +1,11 @@
-ts.static import teams as nba_teams
+import streamlit as st
+import pandas as pd
+import numpy as np
+import pytz
+from datetime import datetime, timedelta
+import nfl_data_py as nfl
+from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2
+from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import GridSearchCV, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error
