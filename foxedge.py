@@ -972,4 +972,10 @@ def main():
         "FoxEdge provides advanced data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions with high confidence."
     )
     st.sidebar.markdown("#### Powered by 🧠 AI and 🔍 Statistical Analysis")
-    st.side
+    st.sidebar.markdown("Feel free to reach out for feedback or support!")
+
+    if st.button("Save Predictions to CSV"):
+        save_predictions_to_csv(results)
+
+if __name__ == "__main__":
+    main()
