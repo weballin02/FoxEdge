@@ -582,6 +582,9 @@ def run_league_pipeline(league_choice):
         else:
             st.info(f"No upcoming {league_choice} games found for analysis.")
 
+########################################
+# MAIN PIPELINE (unchanged except NCAAB)
+########################################
 def main():
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
