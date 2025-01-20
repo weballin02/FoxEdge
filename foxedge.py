@@ -652,7 +652,7 @@ def run_league_pipeline(league_choice):
             "Minimum Confidence Level",
             min_value=50.0,
             max_value=99.0,
-            value75.0,
+            value=75.0,
             step=5.0,
             help="Only show bets with confidence level above this threshold"
         )
