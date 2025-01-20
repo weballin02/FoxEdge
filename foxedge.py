@@ -266,52 +266,78 @@ def load_nba_data():
     for season in seasons:
         for t in nba_teams_list:
             team_id = t['id']
-            gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
-            if gl.empty:
+            try:
+                gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
+                if gl.empty:
+                    continue
+
+                # Print columns for debugging
+                print(f"Columns for team {t.get('full_name', team_id)}: {gl.columns.tolist()}")
+
+                gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
+                gl.sort_values('GAME_DATE', inplace=True)
+
+                # Convert needed columns to numeric
+                needed = ['PTS', 'FGA', 'FTA', 'TOV', 'OREB', 'PTS_OPP']
+                for c in needed:
+                    if c not in gl.columns:
+                        gl[c] = 0
+                    gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
+
+                # Approx possessions
+                gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
+                gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
+
+                # Offensive Rating
+                gl['OFF_RATING'] = np.where(
+                    gl['TEAM_POSSESSIONS'] > 0,
+                    (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100,
+                    np.nan
+                )
+
+                # Defensive Rating
+                gl['DEF_RATING'] = np.where(
+                    gl['TEAM_POSSESSIONS'] > 0,
+                    (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100,
+                    np.nan
+                )
+
+                # Approx Pace = TEAM_POSSESSIONS (assuming opponent possessions ~ same)
+                gl['PACE'] = gl['TEAM_POSSESSIONS']
+
+                # Check for team abbreviation column
+                team_col = None
+                possible_team_cols = ['TEAM_ABBREVIATION', 'TEAM', 'TeamAbbreviation', 'Team']
+                for col in possible_team_cols:
+                    if col in gl.columns:
+                        team_col = col
+                        break
+
+                if team_col is None:
+                    # If no team column found, use the team abbreviation from teams list
+                    team_abbrev = t.get('abbreviation', t.get('id'))
+                else:
+                    team_abbrev = gl[team_col]
+
+                # We'll keep a final 'score' for training, which is the team's points
+                # plus advanced columns for potential feature engineering.
+                for idx, row_ in gl.iterrows():
+                    try:
+                        all_rows.append({
+                            'gameday': row_['GAME_DATE'],
+                            'team': team_abbrev if isinstance(team_abbrev, str) else row_[team_col],
+                            'score': float(row_['PTS']),
+                            'off_rating': row_['OFF_RATING'] if pd.notnull(row_['OFF_RATING']) else np.nan,
+                            'def_rating': row_['DEF_RATING'] if pd.notnull(row_['DEF_RATING']) else np.nan,
+                            'pace': row_['PACE'] if pd.notnull(row_['PACE']) else np.nan
+                        })
+                    except Exception as e:
+                        print(f"Error processing row for team {team_id}: {str(e)}")
+                        continue
+
+            except Exception as e:
+                print(f"Error processing team {team_id} for season {season}: {str(e)}")
                 continue
-
-            gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
-            gl.sort_values('GAME_DATE', inplace=True)
-
-            # Convert needed columns to numeric
-            needed = ['PTS', 'FGA', 'FTA', 'TOV', 'OREB', 'PTS_OPP']
-            for c in needed:
-                if c not in gl.columns:
-                    gl[c] = 0
-                gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
-
-            # Approx possessions
-            gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
-            gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
-
-            # Offensive Rating
-            gl['OFF_RATING'] = np.where(
-                gl['TEAM_POSSESSIONS'] > 0,
-                (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100,
-                np.nan
-            )
-
-            # Defensive Rating
-            gl['DEF_RATING'] = np.where(
-                gl['TEAM_POSSESSIONS'] > 0,
-                (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100,
-                np.nan
-            )
-
-            # Approx Pace = TEAM_POSSESSIONS (assuming opponent possessions ~ same)
-            gl['PACE'] = gl['TEAM_POSSESSIONS']
-
-            # We'll keep a final 'score' for training, which is the team's points
-            # plus advanced columns for potential feature engineering.
-            for idx, row_ in gl.iterrows():
-                all_rows.append({
-                    'gameday': row_['GAME_DATE'],
-                    'team': row_['TEAM_ABBREVIATION'],
-                    'score': float(row_['PTS']),
-                    'off_rating': row_['OFF_RATING'] if pd.notnull(row_['OFF_RATING']) else np.nan,
-                    'def_rating': row_['DEF_RATING'] if pd.notnull(row_['DEF_RATING']) else np.nan,
-                    'pace': row_['PACE'] if pd.notnull(row_['PACE']) else np.nan
-                })
 
     if not all_rows:
         return pd.DataFrame()
