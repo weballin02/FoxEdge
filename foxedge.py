@@ -369,108 +369,152 @@ def fetch_upcoming_nba_games(days_ahead=3):
 # NCAAB DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
 @st.cache_data(ttl=3600)
-def load_ncaab_data(start_date=None, end_date=None):
+def load_ncaab_data_current_season(season=2025):
     """
-    Load and preprocess NCAAB game data for a specified date range.
-    Ensures output matches the required format: DataFrame with ['gameday', 'team', 'score'] columns.
-
-    Args:
-        start_date (str): Start date in 'YYYY-MM-DD' format. Defaults to 7 days ago.
-        end_date (str): End date in 'YYYY-MM-DD' format. Defaults to today.
-
-    Returns:
-        pd.DataFrame: Processed game data with required columns.
+    Load finished or in-progress NCAAB games + box scores to compute pace & efficiency.
     """
-    try:
-        # Default date range: last 7 days
-        if start_date is None:
-            start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-        if end_date is None:
-            end_date = datetime.now().strftime('%Y-%m-%d')
+    info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
+    if info_df.empty or box_dfs.empty:
+        return pd.DataFrame()
 
-        # Fetch boxscores for the given date range
-        boxscores = Boxscores(datetime.strptime(start_date, '%Y-%m-%d'), datetime.strptime(end_date, '%Y-%m-%d'))
-        games = boxscores.games
+    # Convert to datetime
+    if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
+        info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
 
-        rows = []
-        for date, matchups in games.items():
-            for game in matchups:
-                try:
-                    rows.append({
-                        'gameday': pd.to_datetime(date),
-                        'team': game['home_name'],
-                        'score': game['home_score']
-                    })
-                    rows.append({
-                        'gameday': pd.to_datetime(date),
-                        'team': game['away_name'],
-                        'score': game['away_score']
-                    })
-                except Exception as e:
-                    st.warning(f"Error processing game on {date}: {e}")
-                    continue
+    # We'll merge each box score with the 'info' to compute team-level pace & rating
+    # cbbpy returns multiple DataFrames in box_dfs. We'll union them.
+    df_box = pd.concat(box_dfs, ignore_index=True)
+    df_box.dropna(subset=['score'], how='any', inplace=True)
+    df_box.sort_values('game_id', inplace=True)
 
-        if not rows:
-            st.warning("No NCAAB games found in the specified date range.")
-            return pd.DataFrame(columns=['gameday', 'team', 'score'])
+    # Compute possessions at team level
+    # In NCAAB box: fgm, fga, 3pm, 3pa, ftm, fta, to, oreb, ...
+    # Approx possessions = FGA + 0.475*FTA + TO - OREB (some use 0.44 in NBA)
+    # We'll do a groupby by [game_id, team].
+    df_box[['fga', 'fta', 'to', 'oreb', 'score']] = df_box[['fga','fta','to','oreb','score']].fillna(0)
+    df_box['possessions'] = df_box['fga'] + 0.475 * df_box['fta'] + df_box['to'] - df_box['oreb']
+    df_box.loc[df_box['possessions'] < 0, 'possessions'] = np.nan
 
-        # Create DataFrame and validate columns
-        df = pd.DataFrame(rows)
-        df.dropna(subset=['gameday', 'team', 'score'], inplace=True)
-        df.sort_values('gameday', inplace=True)
+    team_level = df_box.groupby(['game_id','team'], as_index=False).agg({
+        'score': 'sum',
+        'possessions': 'sum'
+    })
+    team_level.rename(columns={'score':'team_score', 'possessions':'team_possessions'}, inplace=True)
 
-        return df
+    # Merge with info_df to get home/away, final scores, etc.
+    # info_df has columns: [game_id, home_team, home_score, away_team, away_score, game_day, ...]
+    # We'll do a left merge to align. Then we compute OffRating, DefRating for home & away
+    merged = pd.merge(info_df, team_level, how='left', left_on=['game_id','home_team'], right_on=['game_id','team'])
+    merged.rename(columns={'team_score':'home_team_score_adv','team_possessions':'home_poss'}, inplace=True)
+    merged.drop('team', axis=1, inplace=True)
 
-    except Exception as e:
-        st.error(f"Error loading NCAAB data: {e}")
-        return pd.DataFrame(columns=['gameday', 'team', 'score'])
+    merged = pd.merge(merged, team_level, how='left', left_on=['game_id','away_team'], right_on=['game_id','team'])
+    merged.rename(columns={'team_score':'away_team_score_adv','team_possessions':'away_poss'}, inplace=True)
+    merged.drop('team', axis=1, inplace=True)
 
+    # Build final "long" format: We'll have two rows per game (home + away)
+    # Because we want columns: [gameday, team, score, pace, off_rating, def_rating]
+    final_rows = []
+    for idx, row_ in merged.iterrows():
+        gameday = row_['game_day']
+        # Home
+        if not pd.isnull(row_['home_team']):
+            h_poss = row_['home_poss'] if row_['home_poss'] and row_['home_poss']>0 else np.nan
+            a_poss = row_['away_poss'] if row_['away_poss'] and row_['away_poss']>0 else np.nan
+            if pd.notnull(h_poss) and pd.notnull(a_poss):
+                pace = (h_poss + a_poss)/2.0
+                off_rating = (row_['home_team_score_adv']/h_poss)*100 if h_poss>0 else np.nan
+                def_rating = (row_['away_team_score_adv']/h_poss)*100 if h_poss>0 else np.nan
+            else:
+                pace, off_rating, def_rating = np.nan, np.nan, np.nan
 
-@st.cache_data(ttl=600)
-def fetch_upcoming_ncaab_games(days_ahead=3):
-    """
-    Fetch upcoming NCAAB games for the next few days using sportsipy.
+            final_rows.append({
+                'gameday': gameday,
+                'team': row_['home_team'],
+                'score': row_['home_score'],
+                'pace': pace,
+                'off_rating': off_rating,
+                'def_rating': def_rating
+            })
 
-    Args:
-        days_ahead (int): Number of days ahead to fetch games. Defaults to 3.
+        # Away
+        if not pd.isnull(row_['away_team']):
+            a_poss = row_['away_poss'] if row_['away_poss'] and row_['away_poss']>0 else np.nan
+            h_poss = row_['home_poss'] if row_['home_poss'] and row_['home_poss']>0 else np.nan
+            if pd.notnull(a_poss) and pd.notnull(h_poss):
+                pace = (a_poss + h_poss)/2.0
+                off_rating = (row_['away_team_score_adv']/a_poss)*100 if a_poss>0 else np.nan
+                def_rating = (row_['home_team_score_adv']/a_poss)*100 if a_poss>0 else np.nan
+            else:
+                pace, off_rating, def_rating = np.nan, np.nan, np.nan
 
-    Returns:
-        pd.DataFrame: Upcoming games with ['gameday', 'home_team', 'away_team'] columns.
-    """
-    try:
-        now = datetime.now()
-        future_date = now + timedelta(days=days_ahead)
+            final_rows.append({
+                'gameday': gameday,
+                'team': row_['away_team'],
+                'score': row_['away_score'],
+                'pace': pace,
+                'off_rating': off_rating,
+                'def_rating': def_rating
+            })
 
-        # Fetch upcoming games from sportsipy
-        boxscores = Boxscores(now, future_date)
-        games = boxscores.games
+    if not final_rows:
+        return pd.DataFrame()
 
-        rows = []
-        for date, matchups in games.items():
-            for game in matchups:
-                try:
-                    rows.append({
-                        'gameday': pd.to_datetime(date),
-                        'home_team': game['home_name'],
-                        'away_team': game['away_name']
-                    })
-                except Exception as e:
-                    st.warning(f"Error processing upcoming game on {date}: {e}")
-                    continue
+    final_df = pd.DataFrame(final_rows)
+    final_df.dropna(subset=['score'], inplace=True)
+    final_df.sort_values('gameday', inplace=True)
 
-        if not rows:
-            st.info("No upcoming NCAAB games found.")
-            return pd.DataFrame(columns=['gameday', 'home_team', 'away_team'])
+    for col in ['pace','off_rating','def_rating']:
+        final_df[col].fillna(final_df[col].mean(), inplace=True)
 
-        # Create DataFrame and sort by gameday
-        df = pd.DataFrame(rows)
-        df.sort_values('gameday', inplace=True)
+    return final_df
 
-        return df
+def fetch_upcoming_ncaab_games() -> pd.DataFrame:
+    timezone = pytz.timezone('America/Los_Angeles')
+    current_time = datetime.now(timezone)
 
-    except Exception as e:
-        st.error(f"Error fetching upcoming NCAAB games: {e}")
-        return pd.DataFrame(columns=['gameday', 'home_team', 'away_team'])
+    date_str = current_time.strftime('%Y%m%d')
+    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+    params = {
+        'dates': date_str,
+        'groups': '50',
+        'limit': '357'
+    }
+
+    response = requests.get(url, params=params)
+    if response.status_code != 200:
+        st.warning(f"ESPN API request failed with status code {response.status_code}")
+        return pd.DataFrame()
+
+    data = response.json()
+    games = data.get('events', [])
+    if not games:
+        st.info(f"No upcoming NCAAB games for {current_time.strftime('%Y-%m-%d')}.")
+        return pd.DataFrame()
+
+    rows = []
+    for game in games:
+        game_time_str = game['date']
+        game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
+        comps = game['competitions'][0]['competitors']
+        home_comp = next((c for c in comps if c['homeAway'] == 'home'), None)
+        away_comp = next((c for c in comps if c['homeAway'] == 'away'), None)
+        if not home_comp or not away_comp:
+            continue
+
+        home_team = home_comp['team']['displayName']
+        away_team = away_comp['team']['displayName']
+        rows.append({
+            'gameday': game_time,
+            'home_team': home_team,
+            'away_team': away_team
+        })
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df.sort_values('gameday', inplace=True)
+    return df
 
 ################################################################################
 # UI COMPONENTS
