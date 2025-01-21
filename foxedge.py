@@ -373,60 +373,64 @@ def load_ncaab_data_current_season(season=2025):
     """
     Load finished or in-progress NCAAB games + box scores to compute pace & efficiency.
     """
+    # Fetch game data using cbbpy
     info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
-    if info_df.empty or box_dfs.empty:
+    
+    # Handle empty data
+    if info_df.empty or not box_dfs:
         return pd.DataFrame()
 
-    # Convert to datetime
+    # Ensure box_dfs is iterable or handle it as a single DataFrame
+    if isinstance(box_dfs, pd.DataFrame):
+        df_box = box_dfs
+    elif isinstance(box_dfs, list):
+        df_box = pd.concat(box_dfs, ignore_index=True)
+    else:
+        raise ValueError("Unexpected format for box_dfs. Expected a DataFrame or list of DataFrames.")
+
+    # Convert game_day to datetime if not already in datetime format
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
 
-    # We'll merge each box score with the 'info' to compute team-level pace & rating
-    # cbbpy returns multiple DataFrames in box_dfs. We'll union them.
-    df_box = pd.concat(box_dfs, ignore_index=True)
+    # Drop rows with missing scores and sort by game_id
     df_box.dropna(subset=['score'], how='any', inplace=True)
     df_box.sort_values('game_id', inplace=True)
 
-    # Compute possessions at team level
-    # In NCAAB box: fgm, fga, 3pm, 3pa, ftm, fta, to, oreb, ...
-    # Approx possessions = FGA + 0.475*FTA + TO - OREB (some use 0.44 in NBA)
-    # We'll do a groupby by [game_id, team].
-    df_box[['fga', 'fta', 'to', 'oreb', 'score']] = df_box[['fga','fta','to','oreb','score']].fillna(0)
+    # Fill missing values in key columns
+    df_box[['fga', 'fta', 'to', 'oreb', 'score']] = df_box[['fga', 'fta', 'to', 'oreb', 'score']].fillna(0)
+
+    # Calculate possessions for each team
     df_box['possessions'] = df_box['fga'] + 0.475 * df_box['fta'] + df_box['to'] - df_box['oreb']
     df_box.loc[df_box['possessions'] < 0, 'possessions'] = np.nan
 
-    team_level = df_box.groupby(['game_id','team'], as_index=False).agg({
+    # Aggregate team-level stats by game_id and team
+    team_level = df_box.groupby(['game_id', 'team'], as_index=False).agg({
         'score': 'sum',
         'possessions': 'sum'
     })
-    team_level.rename(columns={'score':'team_score', 'possessions':'team_possessions'}, inplace=True)
+    team_level.rename(columns={'score': 'team_score', 'possessions': 'team_possessions'}, inplace=True)
 
-    # Merge with info_df to get home/away, final scores, etc.
-    # info_df has columns: [game_id, home_team, home_score, away_team, away_score, game_day, ...]
-    # We'll do a left merge to align. Then we compute OffRating, DefRating for home & away
-    merged = pd.merge(info_df, team_level, how='left', left_on=['game_id','home_team'], right_on=['game_id','team'])
-    merged.rename(columns={'team_score':'home_team_score_adv','team_possessions':'home_poss'}, inplace=True)
+    # Merge team-level stats with game info for home and away teams
+    merged = pd.merge(info_df, team_level, how='left', left_on=['game_id', 'home_team'], right_on=['game_id', 'team'])
+    merged.rename(columns={'team_score': 'home_team_score_adv', 'team_possessions': 'home_poss'}, inplace=True)
     merged.drop('team', axis=1, inplace=True)
 
-    merged = pd.merge(merged, team_level, how='left', left_on=['game_id','away_team'], right_on=['game_id','team'])
-    merged.rename(columns={'team_score':'away_team_score_adv','team_possessions':'away_poss'}, inplace=True)
+    merged = pd.merge(merged, team_level, how='left', left_on=['game_id', 'away_team'], right_on=['game_id', 'team'])
+    merged.rename(columns={'team_score': 'away_team_score_adv', 'team_possessions': 'away_poss'}, inplace=True)
     merged.drop('team', axis=1, inplace=True)
 
-    # Build final "long" format: We'll have two rows per game (home + away)
-    # Because we want columns: [gameday, team, score, pace, off_rating, def_rating]
+    # Build final "long" format with two rows per game (home and away teams)
     final_rows = []
-    for idx, row_ in merged.iterrows():
+    for _, row_ in merged.iterrows():
         gameday = row_['game_day']
-        # Home
+
+        # Home team stats
         if not pd.isnull(row_['home_team']):
-            h_poss = row_['home_poss'] if row_['home_poss'] and row_['home_poss']>0 else np.nan
-            a_poss = row_['away_poss'] if row_['away_poss'] and row_['away_poss']>0 else np.nan
-            if pd.notnull(h_poss) and pd.notnull(a_poss):
-                pace = (h_poss + a_poss)/2.0
-                off_rating = (row_['home_team_score_adv']/h_poss)*100 if h_poss>0 else np.nan
-                def_rating = (row_['away_team_score_adv']/h_poss)*100 if h_poss>0 else np.nan
-            else:
-                pace, off_rating, def_rating = np.nan, np.nan, np.nan
+            h_poss = row_['home_poss'] if row_['home_poss'] and row_['home_poss'] > 0 else np.nan
+            a_poss = row_['away_poss'] if row_['away_poss'] and row_['away_poss'] > 0 else np.nan
+            pace = (h_poss + a_poss) / 2.0 if pd.notnull(h_poss) and pd.notnull(a_poss) else np.nan
+            off_rating = (row_['home_team_score_adv'] / h_poss) * 100 if h_poss > 0 else np.nan
+            def_rating = (row_['away_team_score_adv'] / h_poss) * 100 if h_poss > 0 else np.nan
 
             final_rows.append({
                 'gameday': gameday,
@@ -437,16 +441,13 @@ def load_ncaab_data_current_season(season=2025):
                 'def_rating': def_rating
             })
 
-        # Away
+        # Away team stats
         if not pd.isnull(row_['away_team']):
-            a_poss = row_['away_poss'] if row_['away_poss'] and row_['away_poss']>0 else np.nan
-            h_poss = row_['home_poss'] if row_['home_poss'] and row_['home_poss']>0 else np.nan
-            if pd.notnull(a_poss) and pd.notnull(h_poss):
-                pace = (a_poss + h_poss)/2.0
-                off_rating = (row_['away_team_score_adv']/a_poss)*100 if a_poss>0 else np.nan
-                def_rating = (row_['home_team_score_adv']/a_poss)*100 if a_poss>0 else np.nan
-            else:
-                pace, off_rating, def_rating = np.nan, np.nan, np.nan
+            a_poss = row_['away_poss'] if row_['away_poss'] and row_['away_poss'] > 0 else np.nan
+            h_poss = row_['home_poss'] if row_['home_poss'] and row_['home_poss'] > 0 else np.nan
+            pace = (a_poss + h_poss) / 2.0 if pd.notnull(a_poss) and pd.notnull(h_poss) else np.nan
+            off_rating = (row_['away_team_score_adv'] / a_poss) * 100 if a_poss > 0 else np.nan
+            def_rating = (row_['home_team_score_adv'] / a_poss) * 100 if a_poss > 0 else np.nan
 
             final_rows.append({
                 'gameday': gameday,
@@ -457,14 +458,16 @@ def load_ncaab_data_current_season(season=2025):
                 'def_rating': def_rating
             })
 
+    # Return an empty DataFrame if no rows are generated
     if not final_rows:
         return pd.DataFrame()
 
+    # Create the final DataFrame and clean up missing values
     final_df = pd.DataFrame(final_rows)
     final_df.dropna(subset=['score'], inplace=True)
     final_df.sort_values('gameday', inplace=True)
 
-    for col in ['pace','off_rating','def_rating']:
+    for col in ['pace', 'off_rating', 'def_rating']:
         final_df[col].fillna(final_df[col].mean(), inplace=True)
 
     return final_df
