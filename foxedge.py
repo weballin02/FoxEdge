@@ -369,65 +369,150 @@ def fetch_upcoming_nba_games(days_ahead=3):
 # NCAAB DATA LOADING (UPDATED FOR CBBpy LIBRARY)
 ################################################################################
 @st.cache_data(ttl=3600)
-def load_ncaab_data_current_season(season: int) -> pd.DataFrame:
+def load_ncaab_data_current_season(season=2025):
     """
-    Load and process NCAAB data for the current season with improved error handling
-    and column verification.
-    
-    Args:
-        season (int): The season year to load data for
-        
-    Returns:
-        pd.DataFrame: Processed NCAAB data
+    Load finished or in-progress NCAAB games + box scores to compute pace & efficiency.
+    Includes improved error handling and data validation.
     """
+    # Fetch game info and box scores using the updated CBBpy library
     try:
-        # Load the data (assuming this part works from your existing code)
-        info_df = pd.DataFrame()  # Replace with your actual data loading
-        box_df = pd.DataFrame()   # Replace with your actual data loading
-        
-        # Convert game_day to datetime if it exists
-        if 'game_day' in info_df.columns:
-            info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors='coerce')
-            
-        # Check what columns we actually have
-        print("Available columns in box_df:", box_df.columns.tolist())
-        
-        # Try different possible score column names
-        score_columns = ['score', 'team_score', 'points', 'final_score']
-        found_score_col = None
-        
-        for col in score_columns:
-            if col in box_df.columns:
-                found_score_col = col
-                break
-                
-        if found_score_col:
-            # Use the found score column
-            box_df.dropna(subset=[found_score_col], how='any', inplace=True)
-        else:
-            # If no score column is found, create one if possible
-            if 'pts' in box_df.columns:  # Another common column name for points
-                box_df['score'] = box_df['pts']
-            else:
-                print("Warning: No score column found. Available columns:", box_df.columns.tolist())
-                # Don't drop NA values if we can't find a score column
-        
-        # Sort by game_id if it exists
-        if 'game_id' in box_df.columns:
-            box_df.sort_values('game_id', inplace=True)
-        
-        # Fill missing values for key stats
-        numeric_columns = box_df.select_dtypes(include=['float64', 'int64']).columns
-        box_df[numeric_columns] = box_df[numeric_columns].fillna(0)
-        
-        return box_df
-        
+        info_df, box_df, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
     except Exception as e:
-        print(f"Error processing NCAAB data: {str(e)}")
-        print(f"Error type: {type(e).__name__}")
-        # Return empty DataFrame on error
+        st.error(f"Error fetching data from CBBpy: {e}")
         return pd.DataFrame()
 
+    # Handle empty DataFrames
+    if info_df.empty or box_df.empty:
+        return pd.DataFrame()
+
+    # Debug print to see available columns
+    print("Box DataFrame columns:", box_df.columns.tolist())
+    print("Info DataFrame columns:", info_df.columns.tolist())
+
+    # Convert game_day to datetime
+    if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
+        info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
+
+    # Instead of dropping NA scores, ensure we have the correct scoring data
+    stats_cols = ['fga', 'fta', 'to', 'oreb']
+    
+    # Check if 'pts' exists instead of 'score' in box_df
+    if 'pts' in box_df.columns:
+        box_df['score'] = box_df['pts']
+    elif 'points' in box_df.columns:
+        box_df['score'] = box_df['points']
+    
+    # Ensure all required columns exist
+    missing_cols = [col for col in stats_cols if col not in box_df.columns]
+    if missing_cols:
+        print(f"Warning: Missing columns in box_df: {missing_cols}")
+        for col in missing_cols:
+            box_df[col] = 0
+
+    # Sort values before calculations
+    box_df.sort_values('game_id', inplace=True)
+
+    # Fill missing values for key stats
+    stats_cols.append('score')
+    for col in stats_cols:
+        if col in box_df.columns:
+            box_df[col] = box_df[col].fillna(0)
+
+    # Compute possessions at the team level with error handling
+    try:
+        box_df['possessions'] = (
+            box_df['fga'] + 0.475 * box_df['fta'] + box_df['to'] - box_df['oreb']
+        )
+        box_df.loc[box_df['possessions'] < 0, 'possessions'] = np.nan
+    except Exception as e:
+        print(f"Error computing possessions: {e}")
+        box_df['possessions'] = np.nan
+
+    # Aggregate team-level stats
+    team_level = box_df.groupby(['game_id', 'team'], as_index=False).agg({
+        'score': 'sum',
+        'possessions': 'sum'
+    })
+    team_level.rename(columns={'score': 'team_score', 'possessions': 'team_possessions'}, inplace=True)
+
+    # Merge with game info to calculate advanced stats
+    merged = pd.merge(info_df, team_level, how='left', left_on=['game_id', 'home_team'], right_on=['game_id', 'team'])
+    merged.rename(columns={'team_score': 'home_team_score_adv', 'team_possessions': 'home_poss'}, inplace=True)
+    merged.drop('team', axis=1, inplace=True)
+
+    merged = pd.merge(merged, team_level, how='left', left_on=['game_id', 'away_team'], right_on=['game_id', 'team'])
+    merged.rename(columns={'team_score': 'away_team_score_adv', 'team_possessions': 'away_poss'}, inplace=True)
+    merged.drop('team', axis=1, inplace=True)
+
+    # Build final "long" format DataFrame with additional error handling
+    final_rows = []
+    for _, row_ in merged.iterrows():
+        gameday = row_['game_day']
+
+        # Home Team Stats
+        if not pd.isnull(row_['home_team']):
+            try:
+                h_poss = row_['home_poss'] if pd.notnull(row_['home_poss']) and row_['home_poss'] > 0 else np.nan
+                a_poss = row_['away_poss'] if pd.notnull(row_['away_poss']) and row_['away_poss'] > 0 else np.nan
+                
+                if pd.notnull(h_poss) and pd.notnull(a_poss):
+                    pace = (h_poss + a_poss) / 2.0
+                    off_rating = (row_['home_team_score_adv'] / h_poss) * 100 if h_poss > 0 else np.nan
+                    def_rating = (row_['away_team_score_adv'] / h_poss) * 100 if h_poss > 0 else np.nan
+                else:
+                    pace, off_rating, def_rating = np.nan, np.nan, np.nan
+
+                final_rows.append({
+                    'gameday': gameday,
+                    'team': row_['home_team'],
+                    'score': row_['home_score'] if 'home_score' in row_ else row_['home_team_score_adv'],
+                    'pace': pace,
+                    'off_rating': off_rating,
+                    'def_rating': def_rating
+                })
+            except Exception as e:
+                print(f"Error processing home team stats: {e}")
+
+        # Away Team Stats
+        if not pd.isnull(row_['away_team']):
+            try:
+                a_poss = row_['away_poss'] if pd.notnull(row_['away_poss']) and row_['away_poss'] > 0 else np.nan
+                h_poss = row_['home_poss'] if pd.notnull(row_['home_poss']) and row_['home_poss'] > 0 else np.nan
+                
+                if pd.notnull(a_poss) and pd.notnull(h_poss):
+                    pace = (a_poss + h_poss) / 2.0
+                    off_rating = (row_['away_team_score_adv'] / a_poss) * 100 if a_poss > 0 else np.nan
+                    def_rating = (row_['home_team_score_adv'] / a_poss) * 100 if a_poss > 0 else np.nan
+                else:
+                    pace, off_rating, def_rating = np.nan, np.nan, np.nan
+
+                final_rows.append({
+                    'gameday': gameday,
+                    'team': row_['away_team'],
+                    'score': row_['away_score'] if 'away_score' in row_ else row_['away_team_score_adv'],
+                    'pace': pace,
+                    'off_rating': off_rating,
+                    'def_rating': def_rating
+                })
+            except Exception as e:
+                print(f"Error processing away team stats: {e}")
+
+    # Return final DataFrame or empty DataFrame if no rows exist
+    if not final_rows:
+        return pd.DataFrame()
+
+    final_df = pd.DataFrame(final_rows)
+    
+    # Remove any rows where score is NA before further processing
+    final_df = final_df.dropna(subset=['score'])
+    final_df.sort_values('gameday', inplace=True)
+
+    # Fill missing values in advanced stats with the column mean
+    for col in ['pace', 'off_rating', 'def_rating']:
+        if col in final_df.columns:
+            final_df[col].fillna(final_df[col].mean(), inplace=True)
+
+    return final_df
 
 ################################################################################
 # FETCH UPCOMING NCAAB GAMES (UPDATED ESPN API HANDLING)
