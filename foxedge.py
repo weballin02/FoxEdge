@@ -368,6 +368,12 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 # NCAAB DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
+import pandas as pd
+import pytz
+from datetime import datetime
+import requests
+import streamlit as st
+
 @st.cache_data(ttl=3600)
 def load_ncaab_data_current_season(season=2025, use_streamlit=True):
     """
@@ -404,7 +410,7 @@ def load_ncaab_data_current_season(season=2025, use_streamlit=True):
             merged = pd.merge(df_box, info_df, on='game_id', how='left')
         else:
             if use_streamlit:
-                st.error("Required 'game_id' column missing from data")
+                st.error("Required 'game_id' column missing from data.")
             return pd.DataFrame(columns=['gameday', 'team', 'score'])
 
         # Standardize column names
@@ -422,23 +428,33 @@ def load_ncaab_data_current_season(season=2025, use_streamlit=True):
         return final_df.sort_values('gameday')
 
     except Exception as e:
+        error_message = f"Error loading NCAAB data: {str(e)}"
         if use_streamlit:
-            st.error(f"Error loading NCAAB data: {str(e)}")
+            st.error(error_message)
         else:
             import logging
-            logging.error(f"Error loading NCAAB data: {str(e)}")
+            logging.error(error_message)
         return pd.DataFrame(columns=['gameday', 'team', 'score'])
 
+
+################################################################################
+# FETCH UPCOMING NCAAB GAMES FROM ESPN API
+################################################################################
+
+@st.cache_data(ttl=600)
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     """
     Fetch upcoming NCAAB games from ESPN API.
     Returns DataFrame with ['gameday', 'home_team', 'away_team'] columns.
+
+    Returns:
+        pd.DataFrame: Upcoming games sorted by gameday.
     """
     try:
         timezone = pytz.timezone('America/Los_Angeles')
         current_time = datetime.now(timezone)
-        
-        # Fetch today's games
+
+        # Prepare API request parameters
         date_str = current_time.strftime('%Y%m%d')
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         params = {
@@ -448,11 +464,15 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
         }
 
         response = requests.get(url, params=params)
+        
+        # Handle API response errors
         if response.status_code != 200:
             st.warning(f"ESPN API request failed with status code {response.status_code}")
             return pd.DataFrame()
 
         data = response.json()
+        
+        # Extract games from the response
         games = data.get('events', [])
         
         if not games:
@@ -460,33 +480,32 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
             return pd.DataFrame()
 
         rows = []
+        
         for game in games:
             try:
-                # Get game time
+                # Parse game time
                 game_time_str = game.get('date')
                 if not game_time_str:
                     continue
-                    
+
                 game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
-                
-                # Get teams
+
+                # Extract teams information
                 competitions = game.get('competitions', [])
-                if not competitions:
+                if not competitions or len(competitions) == 0:
                     continue
-                    
-                comps = competitions[0].get('competitors', [])
+
+                competitors = competitions[0].get('competitors', [])
                 
-                # Find home and away teams
-                home_comp = next((c for c in comps if c.get('homeAway') == 'home'), None)
-                away_comp = next((c for c in comps if c.get('homeAway') == 'away'), None)
-                
+                home_comp = next((c for c in competitors if c.get('homeAway') == 'home'), None)
+                away_comp = next((c for c in competitors if c.get('homeAway') == 'away'), None)
+
                 if not home_comp or not away_comp:
                     continue
 
-                # Get team names
                 home_team = home_comp.get('team', {}).get('displayName')
                 away_team = away_comp.get('team', {}).get('displayName')
-                
+
                 if home_team and away_team:
                     rows.append({
                         'gameday': game_time,
@@ -495,65 +514,20 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
                     })
 
             except Exception as e:
-                st.warning(f"Error processing game: {str(e)}")
+                st.warning(f"Error processing a game: {str(e)}")
                 continue
 
+        # Return sorted DataFrame of games
         if not rows:
             return pd.DataFrame()
-            
-        df = pd.DataFrame(rows)
-        return df.sort_values('gameday')
+
+        df_games = pd.DataFrame(rows)
+        return df_games.sort_values('gameday')
 
     except Exception as e:
-        st.error(f"Error fetching NCAAB games: {str(e)}")
+        error_message = f"Error fetching NCAAB games: {str(e)}"
+        st.error(error_message)
         return pd.DataFrame()
-
-def fetch_upcoming_ncaab_games() -> pd.DataFrame:
-    timezone = pytz.timezone('America/Los_Angeles')
-    current_time = datetime.now(timezone)
-
-    date_str = current_time.strftime('%Y%m%d')
-    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-    params = {
-        'dates': date_str,
-        'groups': '50',
-        'limit': '357'
-    }
-
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
-        st.warning(f"ESPN API request failed with status code {response.status_code}")
-        return pd.DataFrame()
-
-    data = response.json()
-    games = data.get('events', [])
-    if not games:
-        st.info(f"No upcoming NCAAB games for {current_time.strftime('%Y-%m-%d')}.")
-        return pd.DataFrame()
-
-    rows = []
-    for game in games:
-        game_time_str = game['date']
-        game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
-        comps = game['competitions'][0]['competitors']
-        home_comp = next((c for c in comps if c['homeAway'] == 'home'), None)
-        away_comp = next((c for c in comps if c['homeAway'] == 'away'), None)
-        if not home_comp or not away_comp:
-            continue
-
-        home_team = home_comp['team']['displayName']
-        away_team = away_comp['team']['displayName']
-        rows.append({
-            'gameday': game_time,
-            'home_team': home_team,
-            'away_team': away_team
-        })
-
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df.sort_values('gameday', inplace=True)
-    return df
 
 ################################################################################
 # UI COMPONENTS
