@@ -372,21 +372,45 @@ def fetch_upcoming_nba_games(days_ahead=3):
 def load_ncaab_data_current_season(season=2025):
     """
     Load finished or in-progress NCAAB games + box scores to compute pace & efficiency.
+    
+    Args:
+        season (int): The season year (defaults to 2025)
+        
+    Returns:
+        pd.DataFrame: Combined game and box score data, or empty DataFrame if no data
     """
     # Fetch game data using cbbpy
     info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
     
     # Handle empty data
-    if info_df.empty or not box_dfs:
+    if info_df.empty:
         return pd.DataFrame()
 
-    # Ensure box_dfs is iterable or handle it as a single DataFrame
-    if isinstance(box_dfs, pd.DataFrame):
-        df_box = box_dfs
-    elif isinstance(box_dfs, list):
-        df_box = pd.concat(box_dfs, ignore_index=True)
-    else:
-        raise ValueError("Unexpected format for box_dfs. Expected a DataFrame or list of DataFrames.")
+    # Process box score data
+    if box_dfs is None or (isinstance(box_dfs, list) and not box_dfs):
+        return pd.DataFrame()
+        
+    try:
+        # Handle box scores based on type
+        if isinstance(box_dfs, pd.DataFrame):
+            df_box = box_dfs
+        elif isinstance(box_dfs, list):
+            # Ensure all elements in list are DataFrames
+            if all(isinstance(df, pd.DataFrame) for df in box_dfs):
+                df_box = pd.concat(box_dfs, ignore_index=True)
+            else:
+                st.warning("Some box score data frames are invalid")
+                return pd.DataFrame()
+        else:
+            st.error(f"Unexpected format for box_dfs: {type(box_dfs)}")
+            return pd.DataFrame()
+            
+        # Further processing can be added here
+        return df_box
+        
+    except Exception as e:
+        st.error(f"Error processing box scores: {str(e)}")
+        return pd.DataFrame()
 
     # Convert game_day to datetime if not already in datetime format
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
