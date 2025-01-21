@@ -368,166 +368,109 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 # NCAAB DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
-import pandas as pd
-import pytz
-from datetime import datetime
-import requests
-import streamlit as st
-
 @st.cache_data(ttl=3600)
-def load_ncaab_data_current_season(season=2025, use_streamlit=True):
+def load_ncaab_data(start_date=None, end_date=None):
     """
-    Load and preprocess NCAAB game data for the current season.
-    Ensures output matches required format: DataFrame with ['gameday', 'team', 'score'] columns.
+    Load and preprocess NCAAB game data for a specified date range.
+    Ensures output matches the required format: DataFrame with ['gameday', 'team', 'score'] columns.
 
     Args:
-        season (int): The season year (defaults to 2025).
-        use_streamlit (bool): Whether to use Streamlit warnings/errors (default: True).
+        start_date (str): Start date in 'YYYY-MM-DD' format. Defaults to 7 days ago.
+        end_date (str): End date in 'YYYY-MM-DD' format. Defaults to today.
 
     Returns:
         pd.DataFrame: Processed game data with required columns.
     """
     try:
-        # Fetch game data using cbbpy
-        info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
+        # Default date range: last 7 days
+        if start_date is None:
+            start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y-%m-%d')
 
-        # Validate input data
-        if info_df.empty:
-            if use_streamlit:
-                st.warning("No NCAAB game information found.")
+        # Fetch boxscores for the given date range
+        boxscores = Boxscores(datetime.strptime(start_date, '%Y-%m-%d'), datetime.strptime(end_date, '%Y-%m-%d'))
+        games = boxscores.games
+
+        rows = []
+        for date, matchups in games.items():
+            for game in matchups:
+                try:
+                    rows.append({
+                        'gameday': pd.to_datetime(date),
+                        'team': game['home_name'],
+                        'score': game['home_score']
+                    })
+                    rows.append({
+                        'gameday': pd.to_datetime(date),
+                        'team': game['away_name'],
+                        'score': game['away_score']
+                    })
+                except Exception as e:
+                    st.warning(f"Error processing game on {date}: {e}")
+                    continue
+
+        if not rows:
+            st.warning("No NCAAB games found in the specified date range.")
             return pd.DataFrame(columns=['gameday', 'team', 'score'])
 
-        if not box_dfs or (isinstance(box_dfs, list) and not box_dfs):
-            if use_streamlit:
-                st.warning("No NCAAB box score data found.")
-            return pd.DataFrame(columns=['gameday', 'team', 'score'])
+        # Create DataFrame and validate columns
+        df = pd.DataFrame(rows)
+        df.dropna(subset=['gameday', 'team', 'score'], inplace=True)
+        df.sort_values('gameday', inplace=True)
 
-        # Standardize box score data format
-        df_box = pd.concat(box_dfs, ignore_index=True) if isinstance(box_dfs, list) else box_dfs
-
-        # Merge game info with box scores
-        if 'game_id' in df_box.columns and 'game_id' in info_df.columns:
-            merged = pd.merge(df_box, info_df, on='game_id', how='left')
-        else:
-            if use_streamlit:
-                st.error("Required 'game_id' column missing from data.")
-            return pd.DataFrame(columns=['gameday', 'team', 'score'])
-
-        # Standardize column names
-        merged.rename(columns={'game_day': 'gameday', 'date': 'gameday', 'pts': 'score'}, inplace=True)
-
-        # Process valid rows
-        merged['gameday'] = pd.to_datetime(merged['gameday'], errors='coerce')
-        final_df = merged[['gameday', 'team', 'score']].dropna(subset=['gameday', 'team', 'score']).copy()
-
-        # Add advanced stats if available
-        for col in ['pace', 'off_rating', 'def_rating']:
-            if col in merged.columns:
-                final_df[col] = merged[col].fillna(merged[col].mean())
-
-        return final_df.sort_values('gameday')
+        return df
 
     except Exception as e:
-        error_message = f"Error loading NCAAB data: {str(e)}"
-        if use_streamlit:
-            st.error(error_message)
-        else:
-            import logging
-            logging.error(error_message)
+        st.error(f"Error loading NCAAB data: {e}")
         return pd.DataFrame(columns=['gameday', 'team', 'score'])
 
 
-################################################################################
-# FETCH UPCOMING NCAAB GAMES FROM ESPN API
-################################################################################
-
 @st.cache_data(ttl=600)
-def fetch_upcoming_ncaab_games() -> pd.DataFrame:
+def fetch_upcoming_ncaab_games(days_ahead=3):
     """
-    Fetch upcoming NCAAB games from ESPN API.
-    Returns DataFrame with ['gameday', 'home_team', 'away_team'] columns.
+    Fetch upcoming NCAAB games for the next few days using sportsipy.
+
+    Args:
+        days_ahead (int): Number of days ahead to fetch games. Defaults to 3.
 
     Returns:
-        pd.DataFrame: Upcoming games sorted by gameday.
+        pd.DataFrame: Upcoming games with ['gameday', 'home_team', 'away_team'] columns.
     """
     try:
-        timezone = pytz.timezone('America/Los_Angeles')
-        current_time = datetime.now(timezone)
+        now = datetime.now()
+        future_date = now + timedelta(days=days_ahead)
 
-        # Prepare API request parameters
-        date_str = current_time.strftime('%Y%m%d')
-        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-        params = {
-            'dates': date_str,
-            'groups': '50',
-            'limit': '357'
-        }
-
-        response = requests.get(url, params=params)
-        
-        # Handle API response errors
-        if response.status_code != 200:
-            st.warning(f"ESPN API request failed with status code {response.status_code}")
-            return pd.DataFrame()
-
-        data = response.json()
-        
-        # Extract games from the response
-        games = data.get('events', [])
-        
-        if not games:
-            st.info(f"No upcoming NCAAB games found for {current_time.strftime('%Y-%m-%d')}.")
-            return pd.DataFrame()
+        # Fetch upcoming games from sportsipy
+        boxscores = Boxscores(now, future_date)
+        games = boxscores.games
 
         rows = []
-        
-        for game in games:
-            try:
-                # Parse game time
-                game_time_str = game.get('date')
-                if not game_time_str:
-                    continue
-
-                game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
-
-                # Extract teams information
-                competitions = game.get('competitions', [])
-                if not competitions or len(competitions) == 0:
-                    continue
-
-                competitors = competitions[0].get('competitors', [])
-                
-                home_comp = next((c for c in competitors if c.get('homeAway') == 'home'), None)
-                away_comp = next((c for c in competitors if c.get('homeAway') == 'away'), None)
-
-                if not home_comp or not away_comp:
-                    continue
-
-                home_team = home_comp.get('team', {}).get('displayName')
-                away_team = away_comp.get('team', {}).get('displayName')
-
-                if home_team and away_team:
+        for date, matchups in games.items():
+            for game in matchups:
+                try:
                     rows.append({
-                        'gameday': game_time,
-                        'home_team': home_team,
-                        'away_team': away_team
+                        'gameday': pd.to_datetime(date),
+                        'home_team': game['home_name'],
+                        'away_team': game['away_name']
                     })
+                except Exception as e:
+                    st.warning(f"Error processing upcoming game on {date}: {e}")
+                    continue
 
-            except Exception as e:
-                st.warning(f"Error processing a game: {str(e)}")
-                continue
-
-        # Return sorted DataFrame of games
         if not rows:
-            return pd.DataFrame()
+            st.info("No upcoming NCAAB games found.")
+            return pd.DataFrame(columns=['gameday', 'home_team', 'away_team'])
 
-        df_games = pd.DataFrame(rows)
-        return df_games.sort_values('gameday')
+        # Create DataFrame and sort by gameday
+        df = pd.DataFrame(rows)
+        df.sort_values('gameday', inplace=True)
+
+        return df
 
     except Exception as e:
-        error_message = f"Error fetching NCAAB games: {str(e)}"
-        st.error(error_message)
-        return pd.DataFrame()
+        st.error(f"Error fetching upcoming NCAAB games: {e}")
+        return pd.DataFrame(columns=['gameday', 'home_team', 'away_team'])
 
 ################################################################################
 # UI COMPONENTS
