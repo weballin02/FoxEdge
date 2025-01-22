@@ -98,22 +98,24 @@ def round_half(number):
 @st.cache_data(ttl=3600)
 def train_team_models(team_data: pd.DataFrame):
     """
-    Trains GradientBoostingRegressor + ARIMA for each team's 'score'.
-    Returns: gbr_models, arima_models, team_stats
+    Trains GradientBoostingRegressor (with basic hyperparameter tuning) 
+    and ARIMA for each team. Returns gbr_models, arima_models, team_stats.
     """
     gbr_models = {}
     arima_models = {}
     team_stats = {}
 
     all_teams = team_data['team'].unique()
+    
     for team in all_teams:
-        df_team = team_data[team_data['team'] == team].copy()
-        df_team.sort_values('gameday', inplace=True)
-        scores = df_team['score'].reset_index(drop=True)
+        # Extract data for this team
+        team_df = team_data[team_data['team'] == team].copy()
+        scores = team_df['score'].reset_index(drop=True)
 
         if len(scores) < 3:
             continue
 
+        # Basic descriptive stats for this team
         team_stats[team] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
@@ -121,15 +123,32 @@ def train_team_models(team_data: pd.DataFrame):
             'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
         }
 
-        # Train GBR if enough data
+        # ---------- Train GradientBoostingRegressor ----------
         if len(scores) >= 10:
-            X = np.arange(len(scores)).reshape(-1, 1)
+            # Prepare features: game_index, is_home, rolling_mean_3, rolling_std_3
+            X = team_df[['game_index', 'is_home', 'rolling_mean_3', 'rolling_std_3']].values
             y = scores.values
-            gbr = GradientBoostingRegressor(random_state=42)
-            gbr.fit(X, y)
-            gbr_models[team] = gbr
 
-        # Train ARIMA if enough data
+            # Simple hyperparameter grid search
+            param_grid = {
+                'learning_rate': [0.01, 0.05],
+                'n_estimators': [50, 100],
+                'max_depth': [2, 3]
+            }
+            gbr = GradientBoostingRegressor(random_state=42)
+            grid_search = GridSearchCV(
+                estimator=gbr,
+                param_grid=param_grid,
+                scoring='neg_mean_squared_error',
+                cv=3,
+                n_jobs=-1,
+                verbose=0
+            )
+            grid_search.fit(X, y)
+            best_gbr = grid_search.best_estimator_
+            gbr_models[team] = best_gbr
+
+        # ---------- Train ARIMA ----------
         if len(scores) >= 7:
             arima = auto_arima(
                 scores,
@@ -144,27 +163,57 @@ def train_team_models(team_data: pd.DataFrame):
 
     return gbr_models, arima_models, team_stats
 
-def predict_team_score(team, gbr_models, arima_models, team_stats, team_data):
-    """Predict a team's next-game score by blending ARIMA & GBR outputs."""
+def get_next_features(team, team_data, is_home_flag=0):
+    """
+    Generate the next row of features for a future game for the given team:
+    - game_index (one more than last game)
+    - is_home (passed in)
+    - rolling_mean_3, rolling_std_3 (based on the last 3 known scores)
+    """
+    team_df = team_data[team_data['team'] == team].copy()
+    if team_df.empty:
+        return None
+    
+    last_row = team_df.iloc[-1]
+    next_game_index = last_row['game_index'] + 1
+
+    # Grab last 3 scores for rolling stats
+    last_3_scores = team_df['score'].tail(3)
+    next_rolling_mean_3 = last_3_scores.mean()
+    next_rolling_std_3 = last_3_scores.std(ddof=1) if len(last_3_scores) > 1 else 0.0
+
+    # Construct a single feature row
+    X_next = np.array([[next_game_index, is_home_flag, next_rolling_mean_3, next_rolling_std_3]])
+    return X_next
+
+def predict_team_score(team, gbr_models, arima_models, team_stats, team_data, is_home=0):
+    """
+    Predict the next game score for the specified team. 
+    is_home=1 if the upcoming game is at home, else 0.
+    """
     if team not in team_stats:
         return None, (None, None)
 
-    df_team = team_data[team_data['team'] == team]
-    data_len = len(df_team)
     gbr_pred = None
     arima_pred = None
 
-    # Gradient Boosting
-    if team in gbr_models:
-        X_next = np.array([[data_len]])
-        gbr_pred = gbr_models[team].predict(X_next)[0]
+    # -- Generate features for next game (GBR) --
+    feature_row = get_next_features(team, team_data, is_home_flag=is_home)
+    if feature_row is None:
+        # If we can't generate features, no prediction
+        return None, (None, None)
 
-    # ARIMA
+    # If we have a trained GBR model for this team, predict
+    if team in gbr_models:
+        gbr_pred = gbr_models[team].predict(feature_row)[0]
+
+    # If we have an ARIMA model for this team, forecast
     if team in arima_models:
         forecast = arima_models[team].predict(n_periods=1)
-        arima_pred = forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast.iloc[0]
+        arima_pred = (forecast[0] if isinstance(forecast, (list, np.ndarray)) 
+                      else forecast.iloc[0])
 
-    # Blend
+    # Simple ensemble (average) if both exist
     if gbr_pred is not None and arima_pred is not None:
         ensemble = (gbr_pred + arima_pred) / 2
     elif gbr_pred is not None:
@@ -174,18 +223,18 @@ def predict_team_score(team, gbr_models, arima_models, team_stats, team_data):
     else:
         ensemble = None
 
-    if ensemble is None:
-        return None, (None, None)
-
+    # Confidence interval placeholders (from mean ± 1.96 * std)
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
 
+    if ensemble is None:
+        return None, (conf_low, conf_high)
+
     return round_half(ensemble), (conf_low, conf_high)
 
 def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
-    """Compute predicted spread, total, and confidence for a single matchup."""
     if home_pred is None or away_pred is None:
         return None
 
@@ -200,16 +249,18 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
     winner = home_team if diff > 0 else away_team
 
-    # Example threshold for NCAAB. Adjust if needed for NBA or NFL.
+    # For NCAAB, let's pick 145 as a typical threshold
     ou_threshold = 145
+    spread_text = f"Lean {winner} by {round_half(diff):.1f}"
+    ou_text = f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
 
     return {
         'predicted_winner': winner,
         'diff': round_half(diff),
         'total_points': round_half(total_points),
         'confidence': confidence,
-        'spread_suggestion': f"Lean {winner} by {round_half(diff):.1f}",
-        'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
+        'spread_suggestion': spread_text,
+        'ou_suggestion': ou_text
     }
 
 def find_top_bets(matchups, threshold=70.0):
