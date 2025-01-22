@@ -712,6 +712,7 @@ def main():
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
+    # Simple authentication logic
     if not st.session_state['logged_in']:
         st.title("Login to FoxEdge Sports Betting Insights")
 
@@ -738,6 +739,7 @@ def main():
             logout_user()
             st.rerun()
 
+    # Main UI
     st.title("🦊 FoxEdge Sports Betting Insights")
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
@@ -750,9 +752,10 @@ def main():
 
     st.sidebar.markdown(
         "### About FoxEdge\n"
-        "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
+        "FoxEdge provides advanced data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions with high confidence."
     )
-    st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
+    st.sidebar.markdown("#### Powered by 🧠 AI and 🔍 Statistical Analysis")
+    st.sidebar.markdown("Feel free to reach out for feedback or support!")
 
     if st.button("Save Predictions to CSV"):
         save_predictions_to_csv(results)
