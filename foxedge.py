@@ -369,7 +369,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 # NCAAB DATA LOADING (UPDATED FOR CBBpy LIBRARY)
 ################################################################################
 @st.cache_data(ttl=3600)
-def load_ncaab_data_current_season(season=2025):
+def load_ncaab_data_current_season(season=2024):
     """
     Load finished or in-progress NCAAB games + box scores with explicit boolean casting
     to avoid FutureWarning.
