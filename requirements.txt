@@ -72,7 +72,7 @@ joblib
 pytz
 matplotlib
 plotly
-CBBpy==2.1.0
+CBBpy
 PyMuPDF
 html2text
 xgboost
