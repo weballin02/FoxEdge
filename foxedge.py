@@ -628,26 +628,34 @@ def run_league_pipeline(league_choice):
             return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
 
-    else:  # NCAAB
+        else:  # NCAAB
+        # 1) Load historical data via cbbpy
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
-            st.error("Unable to load NCAAB data.")
+            st.error("Unable to load NCAAB data. Please try again later.")
             return
-        upcoming = fetch_upcoming_ncaab_games()
 
-    if team_data.empty or upcoming.empty:
-        st.warning(f"No upcoming {league_choice} data available for analysis.")
+        # 2) Fetch upcoming games from ESPN scoreboard
+        with st.spinner("Fetching upcoming NCAAB games..."):
+            upcoming = fetch_upcoming_ncaab_games()
+
+    if team_data.empty:
+        st.warning(f"No {league_choice} data available for analysis.")
         return
 
+    # Train models
     with st.spinner("Analyzing recent performance data..."):
         gbr_models, arima_models, team_stats = train_team_models(team_data)
         team_stats_global = team_stats
         results.clear()
 
         for _, row in upcoming.iterrows():
-            home, away = row['home_team'], row['away_team']
-            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
-            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
+            home = row['home_team']
+            away = row['away_team']
+            
+            # Pass is_home=1 for home, 0 for away
+            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data, is_home=1)
+            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data, is_home=0)
 
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
