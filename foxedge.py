@@ -14,7 +14,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 
 # cbbpy for NCAAB
-import cbbpy.mens_scraper as s
+import cbbpy.mens_scraper as cbb
 
 ################################################################################
 # FIREBASE CONFIGURATION
