@@ -98,24 +98,22 @@ def round_half(number):
 @st.cache_data(ttl=3600)
 def train_team_models(team_data: pd.DataFrame):
     """
-    Trains GradientBoostingRegressor (with basic hyperparameter tuning) 
-    and ARIMA for each team. Returns gbr_models, arima_models, team_stats.
+    Trains GradientBoostingRegressor + ARIMA for each team's 'score'.
+    Returns: gbr_models, arima_models, team_stats
     """
     gbr_models = {}
     arima_models = {}
     team_stats = {}
 
     all_teams = team_data['team'].unique()
-    
     for team in all_teams:
-        # Extract data for this team
-        team_df = team_data[team_data['team'] == team].copy()
-        scores = team_df['score'].reset_index(drop=True)
+        df_team = team_data[team_data['team'] == team].copy()
+        df_team.sort_values('gameday', inplace=True)
+        scores = df_team['score'].reset_index(drop=True)
 
         if len(scores) < 3:
             continue
 
-        # Basic descriptive stats for this team
         team_stats[team] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
@@ -123,32 +121,15 @@ def train_team_models(team_data: pd.DataFrame):
             'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
         }
 
-        # ---------- Train GradientBoostingRegressor ----------
+        # Train GBR if enough data
         if len(scores) >= 10:
-            # Prepare features: game_index, is_home, rolling_mean_3, rolling_std_3
-            X = team_df[['game_index', 'is_home', 'rolling_mean_3', 'rolling_std_3']].values
+            X = np.arange(len(scores)).reshape(-1, 1)
             y = scores.values
-
-            # Simple hyperparameter grid search
-            param_grid = {
-                'learning_rate': [0.01, 0.05],
-                'n_estimators': [50, 100],
-                'max_depth': [2, 3]
-            }
             gbr = GradientBoostingRegressor(random_state=42)
-            grid_search = GridSearchCV(
-                estimator=gbr,
-                param_grid=param_grid,
-                scoring='neg_mean_squared_error',
-                cv=3,
-                n_jobs=-1,
-                verbose=0
-            )
-            grid_search.fit(X, y)
-            best_gbr = grid_search.best_estimator_
-            gbr_models[team] = best_gbr
+            gbr.fit(X, y)
+            gbr_models[team] = gbr
 
-        # ---------- Train ARIMA ----------
+        # Train ARIMA if enough data
         if len(scores) >= 7:
             arima = auto_arima(
                 scores,
@@ -163,57 +144,27 @@ def train_team_models(team_data: pd.DataFrame):
 
     return gbr_models, arima_models, team_stats
 
-def get_next_features(team, team_data, is_home_flag=0):
-    """
-    Generate the next row of features for a future game for the given team:
-    - game_index (one more than last game)
-    - is_home (passed in)
-    - rolling_mean_3, rolling_std_3 (based on the last 3 known scores)
-    """
-    team_df = team_data[team_data['team'] == team].copy()
-    if team_df.empty:
-        return None
-    
-    last_row = team_df.iloc[-1]
-    next_game_index = last_row['game_index'] + 1
-
-    # Grab last 3 scores for rolling stats
-    last_3_scores = team_df['score'].tail(3)
-    next_rolling_mean_3 = last_3_scores.mean()
-    next_rolling_std_3 = last_3_scores.std(ddof=1) if len(last_3_scores) > 1 else 0.0
-
-    # Construct a single feature row
-    X_next = np.array([[next_game_index, is_home_flag, next_rolling_mean_3, next_rolling_std_3]])
-    return X_next
-
-def predict_team_score(team, gbr_models, arima_models, team_stats, team_data, is_home=0):
-    """
-    Predict the next game score for the specified team. 
-    is_home=1 if the upcoming game is at home, else 0.
-    """
+def predict_team_score(team, gbr_models, arima_models, team_stats, team_data):
+    """Predict a team's next-game score by blending ARIMA & GBR outputs."""
     if team not in team_stats:
         return None, (None, None)
 
+    df_team = team_data[team_data['team'] == team]
+    data_len = len(df_team)
     gbr_pred = None
     arima_pred = None
 
-    # -- Generate features for next game (GBR) --
-    feature_row = get_next_features(team, team_data, is_home_flag=is_home)
-    if feature_row is None:
-        # If we can't generate features, no prediction
-        return None, (None, None)
-
-    # If we have a trained GBR model for this team, predict
+    # Gradient Boosting
     if team in gbr_models:
-        gbr_pred = gbr_models[team].predict(feature_row)[0]
+        X_next = np.array([[data_len]])
+        gbr_pred = gbr_models[team].predict(X_next)[0]
 
-    # If we have an ARIMA model for this team, forecast
+    # ARIMA
     if team in arima_models:
         forecast = arima_models[team].predict(n_periods=1)
-        arima_pred = (forecast[0] if isinstance(forecast, (list, np.ndarray)) 
-                      else forecast.iloc[0])
+        arima_pred = forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast.iloc[0]
 
-    # Simple ensemble (average) if both exist
+    # Blend
     if gbr_pred is not None and arima_pred is not None:
         ensemble = (gbr_pred + arima_pred) / 2
     elif gbr_pred is not None:
@@ -223,18 +174,18 @@ def predict_team_score(team, gbr_models, arima_models, team_stats, team_data, is
     else:
         ensemble = None
 
-    # Confidence interval placeholders (from mean ± 1.96 * std)
+    if ensemble is None:
+        return None, (None, None)
+
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
 
-    if ensemble is None:
-        return None, (conf_low, conf_high)
-
     return round_half(ensemble), (conf_low, conf_high)
 
 def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
+    """Compute predicted spread, total, and confidence for a single matchup."""
     if home_pred is None or away_pred is None:
         return None
 
@@ -249,18 +200,16 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
     winner = home_team if diff > 0 else away_team
 
-    # For NCAAB, let's pick 145 as a typical threshold
+    # Example threshold for NCAAB. Adjust if needed for NBA or NFL.
     ou_threshold = 145
-    spread_text = f"Lean {winner} by {round_half(diff):.1f}"
-    ou_text = f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
 
     return {
         'predicted_winner': winner,
         'diff': round_half(diff),
         'total_points': round_half(total_points),
         'confidence': confidence,
-        'spread_suggestion': spread_text,
-        'ou_suggestion': ou_text
+        'spread_suggestion': f"Lean {winner} by {round_half(diff):.1f}",
+        'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
     }
 
 def find_top_bets(matchups, threshold=70.0):
@@ -416,72 +365,119 @@ def fetch_upcoming_nba_games(days_ahead=3):
     upcoming.sort_values('gameday', inplace=True)
     return upcoming
 
-########################################
-# NCAAB HISTORICAL LOADER
-########################################
+################################################################################
+# NCAAB DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
+################################################################################
 @st.cache_data(ttl=3600)
 def load_ncaab_data_current_season(season=2025):
     """
-    Loads finished or in-progress NCAA MBB games for the given season
-    using cbbpy. Adds is_home=1 for home team, is_home=0 for away.
+    Load finished or in-progress NCAAB games + box scores to compute pace & efficiency.
     """
-    info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
-    if info_df.empty:
+    info_df, box_dfs, _ = cbb.get_games_season(season=season, info=True, box=True, pbp=False)
+    if info_df.empty or box_dfs.empty:
         return pd.DataFrame()
 
-    # Convert "game_day" to datetime if needed
+    # Convert to datetime
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
 
-    home_df = info_df.rename(columns={
-        "home_team": "team",
-        "home_score": "score",
-        "game_day": "gameday"
-    })[["gameday", "team", "score"]]
-    home_df['is_home'] = 1
+    # We'll merge each box score with the 'info' to compute team-level pace & rating
+    # cbbpy returns multiple DataFrames in box_dfs. We'll union them.
+    df_box = pd.concat(box_dfs, ignore_index=True)
+    df_box.dropna(subset=['score'], how='any', inplace=True)
+    df_box.sort_values('game_id', inplace=True)
 
-    away_df = info_df.rename(columns={
-        "away_team": "team",
-        "away_score": "score",
-        "game_day": "gameday"
-    })[["gameday", "team", "score"]]
-    away_df['is_home'] = 0
+    # Compute possessions at team level
+    # In NCAAB box: fgm, fga, 3pm, 3pa, ftm, fta, to, oreb, ...
+    # Approx possessions = FGA + 0.475*FTA + TO - OREB (some use 0.44 in NBA)
+    # We'll do a groupby by [game_id, team].
+    df_box[['fga', 'fta', 'to', 'oreb', 'score']] = df_box[['fga','fta','to','oreb','score']].fillna(0)
+    df_box['possessions'] = df_box['fga'] + 0.475 * df_box['fta'] + df_box['to'] - df_box['oreb']
+    df_box.loc[df_box['possessions'] < 0, 'possessions'] = np.nan
 
-    data = pd.concat([home_df, away_df], ignore_index=True)
-    data.dropna(subset=["score"], inplace=True)
-    data.sort_values("gameday", inplace=True)
+    team_level = df_box.groupby(['game_id','team'], as_index=False).agg({
+        'score': 'sum',
+        'possessions': 'sum'
+    })
+    team_level.rename(columns={'score':'team_score', 'possessions':'team_possessions'}, inplace=True)
 
-    # Add rolling features
-    data.sort_values(['team', 'gameday'], inplace=True)
-    data['game_index'] = data.groupby('team').cumcount()
+    # Merge with info_df to get home/away, final scores, etc.
+    # info_df has columns: [game_id, home_team, home_score, away_team, away_score, game_day, ...]
+    # We'll do a left merge to align. Then we compute OffRating, DefRating for home & away
+    merged = pd.merge(info_df, team_level, how='left', left_on=['game_id','home_team'], right_on=['game_id','team'])
+    merged.rename(columns={'team_score':'home_team_score_adv','team_possessions':'home_poss'}, inplace=True)
+    merged.drop('team', axis=1, inplace=True)
 
-    data['rolling_mean_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).mean()
-    )
-    data['rolling_std_3'] = data.groupby('team')['score'].transform(
-        lambda x: x.rolling(3, min_periods=1).std(ddof=1)
-    )
+    merged = pd.merge(merged, team_level, how='left', left_on=['game_id','away_team'], right_on=['game_id','team'])
+    merged.rename(columns={'team_score':'away_team_score_adv','team_possessions':'away_poss'}, inplace=True)
+    merged.drop('team', axis=1, inplace=True)
 
-    data['rolling_mean_3'].fillna(data['score'], inplace=True)
-    data['rolling_std_3'].fillna(0, inplace=True)
+    # Build final "long" format: We'll have two rows per game (home + away)
+    # Because we want columns: [gameday, team, score, pace, off_rating, def_rating]
+    final_rows = []
+    for idx, row_ in merged.iterrows():
+        gameday = row_['game_day']
+        # Home
+        if not pd.isnull(row_['home_team']):
+            h_poss = row_['home_poss'] if row_['home_poss'] and row_['home_poss']>0 else np.nan
+            a_poss = row_['away_poss'] if row_['away_poss'] and row_['away_poss']>0 else np.nan
+            if pd.notnull(h_poss) and pd.notnull(a_poss):
+                pace = (h_poss + a_poss)/2.0
+                off_rating = (row_['home_team_score_adv']/h_poss)*100 if h_poss>0 else np.nan
+                def_rating = (row_['away_team_score_adv']/h_poss)*100 if h_poss>0 else np.nan
+            else:
+                pace, off_rating, def_rating = np.nan, np.nan, np.nan
 
-    return data
+            final_rows.append({
+                'gameday': gameday,
+                'team': row_['home_team'],
+                'score': row_['home_score'],
+                'pace': pace,
+                'off_rating': off_rating,
+                'def_rating': def_rating
+            })
 
-########################################
-# NCAAB UPCOMING: ESPN method (NEW)
-########################################
+        # Away
+        if not pd.isnull(row_['away_team']):
+            a_poss = row_['away_poss'] if row_['away_poss'] and row_['away_poss']>0 else np.nan
+            h_poss = row_['home_poss'] if row_['home_poss'] and row_['home_poss']>0 else np.nan
+            if pd.notnull(a_poss) and pd.notnull(h_poss):
+                pace = (a_poss + h_poss)/2.0
+                off_rating = (row_['away_team_score_adv']/a_poss)*100 if a_poss>0 else np.nan
+                def_rating = (row_['home_team_score_adv']/a_poss)*100 if a_poss>0 else np.nan
+            else:
+                pace, off_rating, def_rating = np.nan, np.nan, np.nan
+
+            final_rows.append({
+                'gameday': gameday,
+                'team': row_['away_team'],
+                'score': row_['away_score'],
+                'pace': pace,
+                'off_rating': off_rating,
+                'def_rating': def_rating
+            })
+
+    if not final_rows:
+        return pd.DataFrame()
+
+    final_df = pd.DataFrame(final_rows)
+    final_df.dropna(subset=['score'], inplace=True)
+    final_df.sort_values('gameday', inplace=True)
+
+    for col in ['pace','off_rating','def_rating']:
+        final_df[col].fillna(final_df[col].mean(), inplace=True)
+
+    return final_df
+
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
-    """
-    Fetches upcoming NCAAB games for 'today' using ESPN's scoreboard API.
-    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
 
-    date_str = current_time.strftime('%Y%m%d')  # e.g. 20231205
+    date_str = current_time.strftime('%Y%m%d')
     url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
     params = {
         'dates': date_str,
-        'groups': '50',   # D1 men's
+        'groups': '50',
         'limit': '357'
     }
 
@@ -498,28 +494,24 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 
     rows = []
     for game in games:
-        game_time_str = game['date']  # ISO8601
+        game_time_str = game['date']
         game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
-
-        competitors = game['competitions'][0]['competitors']
-        home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
-        away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
-
+        comps = game['competitions'][0]['competitors']
+        home_comp = next((c for c in comps if c['homeAway'] == 'home'), None)
+        away_comp = next((c for c in comps if c['homeAway'] == 'away'), None)
         if not home_comp or not away_comp:
             continue
 
         home_team = home_comp['team']['displayName']
         away_team = away_comp['team']['displayName']
-
         rows.append({
-            'gameday': game_time, 
+            'gameday': game_time,
             'home_team': home_team,
             'away_team': away_team
         })
 
     if not rows:
         return pd.DataFrame()
-
     df = pd.DataFrame(rows)
     df.sort_values('gameday', inplace=True)
     return df
@@ -629,33 +621,25 @@ def run_league_pipeline(league_choice):
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
 
     else:  # NCAAB
-        # 1) Load historical data via cbbpy
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
-            st.error("Unable to load NCAAB data. Please try again later.")
+            st.error("Unable to load NCAAB data.")
             return
+        upcoming = fetch_upcoming_ncaab_games()
 
-        # 2) Fetch upcoming games from ESPN scoreboard
-        with st.spinner("Fetching upcoming NCAAB games..."):
-            upcoming = fetch_upcoming_ncaab_games()
-
-    if team_data.empty:
-        st.warning(f"No {league_choice} data available for analysis.")
+    if team_data.empty or upcoming.empty:
+        st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
 
-    # Train models
     with st.spinner("Analyzing recent performance data..."):
         gbr_models, arima_models, team_stats = train_team_models(team_data)
         team_stats_global = team_stats
         results.clear()
 
         for _, row in upcoming.iterrows():
-            home = row['home_team']
-            away = row['away_team']
-            
-            # Pass is_home=1 for home, 0 for away
-            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data, is_home=1)
-            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data, is_home=0)
+            home, away = row['home_team'], row['away_team']
+            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
 
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
@@ -712,7 +696,6 @@ def main():
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
-    # Simple authentication logic
     if not st.session_state['logged_in']:
         st.title("Login to FoxEdge Sports Betting Insights")
 
@@ -739,7 +722,6 @@ def main():
             logout_user()
             st.rerun()
 
-    # Main UI
     st.title("🦊 FoxEdge Sports Betting Insights")
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
@@ -752,10 +734,9 @@ def main():
 
     st.sidebar.markdown(
         "### About FoxEdge\n"
-        "FoxEdge provides advanced data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions with high confidence."
+        "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
     )
-    st.sidebar.markdown("#### Powered by 🧠 AI and 🔍 Statistical Analysis")
-    st.sidebar.markdown("Feel free to reach out for feedback or support!")
+    st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
 
     if st.button("Save Predictions to CSV"):
         save_predictions_to_csv(results)
