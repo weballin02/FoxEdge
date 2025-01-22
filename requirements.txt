@@ -1,3 +1,4 @@
+
 altair==5.4.1
 appdirs==1.4.4
 attrs==24.2.0
@@ -72,7 +73,7 @@ joblib
 pytz
 matplotlib
 plotly
-CBBpy
+cbbpy
 PyMuPDF
 html2text
 xgboost
