@@ -628,7 +628,7 @@ def run_league_pipeline(league_choice):
             return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
 
-        else:  # NCAAB
+    else:  # NCAAB
         # 1) Load historical data via cbbpy
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
