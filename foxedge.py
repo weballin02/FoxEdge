@@ -14,7 +14,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 
 # cbbpy for NCAAB
-import cbbpy.mens_scraper as cbb
+import cbbpy.mens_scraper as s
 
 ################################################################################
 # FIREBASE CONFIGURATION
@@ -371,8 +371,8 @@ def fetch_upcoming_nba_games(days_ahead=3):
 @st.cache_data(ttl=3600)
 def load_ncaab_data_current_season(season=2025):
     """
-    Load finished or in-progress NCAAB games + box scores to compute pace & efficiency.
-    Uses CBBpy library to fetch and process data.
+    Load finished or in-progress NCAAB games + box scores with explicit boolean casting
+    to avoid FutureWarning.
     """
     try:
         # Get games data using CBBpy
@@ -388,6 +388,12 @@ def load_ncaab_data_current_season(season=2025):
         box_stats = []
         for team_box in box_df:
             if not team_box.empty:
+                # Explicitly cast boolean columns to bool dtype
+                bool_columns = team_box.select_dtypes(include=['object']).columns
+                for col in bool_columns:
+                    if team_box[col].isin([True, False]).all():
+                        team_box[col] = team_box[col].astype('bool')
+                
                 # Calculate possessions using the basic formula
                 team_box['possessions'] = (
                     team_box['fga'].fillna(0) + 
@@ -396,11 +402,17 @@ def load_ncaab_data_current_season(season=2025):
                     team_box['to'].fillna(0)
                 )
                 
+                # Ensure numeric columns are properly typed
+                numeric_columns = ['fga', 'fta', 'oreb', 'to', 'score', 'min']
+                for col in numeric_columns:
+                    if col in team_box.columns:
+                        team_box[col] = pd.to_numeric(team_box[col], errors='coerce')
+                
                 # Group by game and team to get team-level stats
                 team_stats = team_box.groupby(['game_id', 'team'], as_index=False).agg({
                     'score': 'sum',
                     'possessions': 'sum',
-                    'min': 'sum'  # Total minutes played
+                    'min': 'sum'
                 }).copy()
                 
                 box_stats.append(team_stats)
@@ -410,6 +422,12 @@ def load_ncaab_data_current_season(season=2025):
             
         # Combine all box scores
         combined_box = pd.concat(box_stats, ignore_index=True)
+        
+        # Ensure boolean columns in combined_box are properly typed
+        bool_columns = combined_box.select_dtypes(include=['object']).columns
+        for col in bool_columns:
+            if combined_box[col].isin([True, False]).all():
+                combined_box[col] = combined_box[col].astype('bool')
         
         # Merge with game info to get home/away designation
         game_data = []
@@ -430,15 +448,23 @@ def load_ncaab_data_current_season(season=2025):
             
             if home_stats is not None and away_stats is not None:
                 # Calculate pace factor
-                pace = 40 * (
-                    (home_stats['possessions'] + away_stats['possessions']) / 
-                    (2 * (home_stats['min'] / 5))  # Divide by 5 for team minutes
-                )
+                try:
+                    pace = 40 * (
+                        (home_stats['possessions'] + away_stats['possessions']) / 
+                        (2 * (home_stats['min'] / 5))
+                    )
+                except ZeroDivisionError:
+                    pace = None
                 
                 # Add home team row
                 if home_stats['possessions'] > 0:
-                    off_rating = (home_stats['score'] / home_stats['possessions']) * 100
-                    def_rating = (away_stats['score'] / home_stats['possessions']) * 100
+                    try:
+                        off_rating = (home_stats['score'] / home_stats['possessions']) * 100
+                        def_rating = (away_stats['score'] / home_stats['possessions']) * 100
+                    except ZeroDivisionError:
+                        off_rating = None
+                        def_rating = None
+                        
                     game_data.append({
                         'gameday': row['game_day'],
                         'team': row['home_team'],
@@ -446,13 +472,18 @@ def load_ncaab_data_current_season(season=2025):
                         'pace': pace,
                         'off_rating': off_rating,
                         'def_rating': def_rating,
-                        'is_home': 1
+                        'is_home': True  # Explicitly boolean
                     })
                 
                 # Add away team row
                 if away_stats['possessions'] > 0:
-                    off_rating = (away_stats['score'] / away_stats['possessions']) * 100
-                    def_rating = (home_stats['score'] / away_stats['possessions']) * 100
+                    try:
+                        off_rating = (away_stats['score'] / away_stats['possessions']) * 100
+                        def_rating = (home_stats['score'] / away_stats['possessions']) * 100
+                    except ZeroDivisionError:
+                        off_rating = None
+                        def_rating = None
+                        
                     game_data.append({
                         'gameday': row['game_day'],
                         'team': row['away_team'],
@@ -460,13 +491,16 @@ def load_ncaab_data_current_season(season=2025):
                         'pace': pace,
                         'off_rating': off_rating,
                         'def_rating': def_rating,
-                        'is_home': 0
+                        'is_home': False  # Explicitly boolean
                     })
         
         if not game_data:
             return pd.DataFrame()
             
         final_df = pd.DataFrame(game_data)
+        
+        # Ensure is_home is boolean type
+        final_df['is_home'] = final_df['is_home'].astype('bool')
         
         # Clean up the data
         final_df = final_df.dropna(subset=['score'])
@@ -489,17 +523,12 @@ def load_ncaab_data_current_season(season=2025):
 
 def fetch_upcoming_ncaab_games():
     """
-    Fetch upcoming NCAAB games using CBBpy's scheduling functions.
-    Returns a DataFrame with gameday, home_team, and away_team.
+    Fetch upcoming NCAAB games with proper boolean handling.
     """
     try:
-        # Get current date
         current_date = datetime.now()
-        
-        # Use CBBpy to get schedule for the next week
         end_date = current_date + timedelta(days=7)
         
-        # Get games in date range
         games_tuple = cbb.get_games_range(
             start_date=current_date.strftime('%m-%d-%Y'),
             end_date=end_date.strftime('%m-%d-%Y'),
@@ -512,6 +541,10 @@ def fetch_upcoming_ncaab_games():
             return pd.DataFrame()
             
         games_df = games_tuple[0]
+        
+        # Ensure score columns are numeric
+        games_df['home_score'] = pd.to_numeric(games_df['home_score'], errors='coerce')
+        games_df['away_score'] = pd.to_numeric(games_df['away_score'], errors='coerce')
         
         # Filter for upcoming games (those without scores)
         upcoming_games = games_df[
@@ -526,17 +559,15 @@ def fetch_upcoming_ncaab_games():
             'away_team'
         ]].copy()
         
-        # Convert game_day to datetime if it isn't already
+        # Convert game_day to datetime
         result_df['gameday'] = pd.to_datetime(
             result_df['game_day'],
             format='%B %d, %Y',
             errors='coerce'
         )
         
-        # Drop the original game_day column
+        # Drop the original game_day column and sort
         result_df = result_df.drop('game_day', axis=1)
-        
-        # Sort by game date
         result_df = result_df.sort_values('gameday')
         
         return result_df
