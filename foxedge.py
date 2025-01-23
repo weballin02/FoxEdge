@@ -819,11 +819,15 @@ def main():
                     if user_data:
                         st.session_state['logged_in'] = True
                         st.session_state['email'] = user_data['email']
-                        st.success(f"Welcome, {user_data['email']}!")
-                        st.rerun()
+                        st.session_state['selected_league'] = None  # Reset selected league
+                        st.rerun()  # Crucial: Rerun to display homepage
             with login_col2:
                 if st.button("Sign Up"):
-                    signup_user(email, password)
+                    if signup_user(email, password): # Check if signup was successful
+                        st.session_state['logged_in'] = True
+                        st.session_state['email'] = email # Set email after successful signup
+                        st.session_state['selected_league'] = None  # Reset selected league
+                        st.rerun()  # Crucial: Rerun to display homepage
 
         with col2:
             st.markdown("""
@@ -835,7 +839,7 @@ def main():
             """)
         return
 
-    else:
+    else:  # User is logged in
         st.sidebar.title("Account")
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
@@ -845,7 +849,7 @@ def main():
         st.sidebar.markdown("---")
         st.sidebar.header("Navigation")
 
-        if st.sidebar.button("🏠 Home"):
+        if st.sidebar.button("🏠 Home"): # Home button now works correctly
             st.session_state['selected_league'] = None
             st.rerun()
 
