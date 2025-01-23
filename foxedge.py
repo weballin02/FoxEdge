@@ -531,7 +531,7 @@ def display_bet_card(bet):
 
         with col2:
             if bet['confidence'] >= 80:
-                st.markdown("🔥 **High-Confidence Bet** 🔥")
+                st.markdown("ð¥ **High-Confidence Bet** ð¥")
             st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
             st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
 
@@ -556,7 +556,7 @@ def display_homepage():
     """
     # Welcome Header
     st.markdown("""
-    # 🦊 Welcome to FoxEdge Sports Betting
+    # ð¦ Welcome to FoxEdge Sports Betting
     ### Your AI-Powered Sports Betting Analytics Platform
     """)
 
@@ -571,29 +571,29 @@ def display_homepage():
 
     # Navigation Buttons
     st.markdown("---")
-    st.markdown("### 🔍 Explore Our Features")
+    st.markdown("### ð Explore Our Features")
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("🏈 NFL Analysis", use_container_width=True):
+        if st.button("ð NFL Analysis", use_container_width=True):
             st.session_state['selected_page'] = "NFL"
             st.rerun()
     with col2:
-        if st.button("🏀 NBA Analysis", use_container_width=True):
+        if st.button("ð NBA Analysis", use_container_width=True):
             st.session_state['selected_page'] = "NBA"
             st.rerun()
     with col3:
-        if st.button("🏀 NCAAB Analysis", use_container_width=True):
+        if st.button("ð NCAAB Analysis", use_container_width=True):
             st.session_state['selected_page'] = "NCAAB"
             st.rerun()
 
     # Features Section
     st.markdown("---")
-    st.markdown("### 🚀 Why Choose FoxEdge?")
+    st.markdown("### ð Why Choose FoxEdge?")
     col1, col2, col3 = st.columns(3)
     
     with col1:
         st.markdown("""
-        #### 📊 Advanced Analytics
+        #### ð Advanced Analytics
         - AI-powered predictions
         - Historical performance data
         - Team-specific insights
@@ -601,7 +601,7 @@ def display_homepage():
         
     with col2:
         st.markdown("""
-        #### 📈 Real-time Updates
+        #### ð Real-time Updates
         - Live odds tracking
         - Injury reports impact
         - Line movement alerts
@@ -609,14 +609,14 @@ def display_homepage():
         
     with col3:
         st.markdown("""
-        #### 📱 Custom Tools
+        #### ð± Custom Tools
         - Bet tracking
         - Performance metrics
         - ROI calculator
         """)
 
     # Educational Section for Beginners
-    with st.expander("📚 New to Sports Betting?"):
+    with st.expander("ð New to Sports Betting?"):
         st.markdown("""
         ### Getting Started with FoxEdge
         1. **Choose your league**: Select NFL, NBA, or NCAAB.
@@ -640,7 +640,7 @@ def run_league_pipeline(league_choice):
     global results
     global team_stats_global
 
-    st.header(f"Today's {league_choice} Best Bets 🎯")
+    st.header(f"Today's {league_choice} Best Bets ð¯")
 
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
@@ -694,8 +694,8 @@ def run_league_pipeline(league_choice):
                     'ou_suggestion': outcome['ou_suggestion']
                 })
 
-    view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
-    if view_mode == "🎯 Top Bets Only":
+    view_mode = st.radio("View Mode", ["ð¯ Top Bets Only", "ð All Games"], horizontal=True)
+    if view_mode == "ð¯ Top Bets Only":
         conf_threshold = st.slider(
             "Minimum Confidence Level",
             min_value=50.0,
@@ -706,14 +706,14 @@ def run_league_pipeline(league_choice):
         )
         top_bets = find_top_bets(results, threshold=conf_threshold)
         if not top_bets.empty:
-            st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
+            st.markdown(f"### ð¥ Top {len(top_bets)} Bets for Today")
             for _, bet in top_bets.iterrows():
                 display_bet_card(bet)
         else:
             st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
         if results:
-            st.markdown("### 📊 All Games Analysis")
+            st.markdown("### ð All Games Analysis")
             for bet in results:
                 display_bet_card(bet)
         else:
@@ -729,7 +729,7 @@ def main():
     # Set page configuration
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
-        page_icon="🦊",
+        page_icon="ð¦",
         layout="wide"
     )
 
@@ -795,8 +795,7 @@ def main():
             st.rerun()
 
         # Run League Pipeline for Selected League (if chosen)
-        if st.session_state.get('selected_page'):
-           run_league_pipeline(st.session_state['selected_page'])
+        run_league_pipeline(st.session_state['selected_page'])
         else:
             display_homepage()
 
