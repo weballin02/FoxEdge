@@ -876,7 +876,7 @@ def main():
 
         # Run League Pipeline for Selected League (if chosen)
         if not st.session_state.get('selected_page'):
-        run_league_pipeline(st.session_state['selected_page'])
+            run_league_pipeline(st.session_state['selected_page'])
         else:
             display_homepage()
 
