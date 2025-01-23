@@ -224,7 +224,7 @@ def find_top_bets(matchups, threshold=70.0):
 @st.cache_data(ttl=14400)
 def load_nfl_schedule():
     current_year = datetime.now().year
-    years = [current_year - 2, current_year - 1, current_year]
+    years = [current_year - 5, current_year - 4, current_year - 3, current_year - 2, current_year - 1, current_year]
     schedule = nfl.import_schedules(years)
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
