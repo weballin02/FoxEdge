@@ -875,12 +875,13 @@ def main():
             st.rerun()
 
         # Run League Pipeline for Selected League (if chosen)
-        if run_league_pipeline(st.session_state['selected_page'])
-        else:
-            display_homepage()
+        if st.session_state['selected_page']:
+        run_league_pipeline(st.session_state['selected_page'])
+else:
+    display_homepage()
 
-        if st.sidebar.button("Save Predictions to CSV"):
-            save_predictions_to_csv(results)
+if st.sidebar.button("Save Predictions to CSV"):
+    save_predictions_to_csv(results)
 
 if __name__ == "__main__":
     main()
