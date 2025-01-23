@@ -95,7 +95,7 @@ def round_half(number):
 ################################################################################
 # MODEL TRAINING & PREDICTION (ARIMA + GBR ENSEMBLE)
 ################################################################################
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def train_team_models(team_data: pd.DataFrame):
     """
     Trains GradientBoostingRegressor + ARIMA for each team's 'score'.
@@ -221,7 +221,7 @@ def find_top_bets(matchups, threshold=70.0):
 ################################################################################
 # NFL DATA LOADING
 ################################################################################
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def load_nfl_schedule():
     current_year = datetime.now().year
     years = [current_year - 2, current_year - 1, current_year]
@@ -256,11 +256,11 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ################################################################################
 # NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def load_nba_data():
     """Load multi-season team logs with pace & efficiency integrated."""
     nba_teams_list = nba_teams.get_teams()
-    seasons = ['2022-23', '2023-24']  # Adjust as needed
+    seasons = ['2020-21', '2021-22', '2022-23', '2023-24', '2024-25']  # Adjust as needed
     all_rows = []
 
     for season in seasons:
@@ -368,7 +368,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ########################################
 # NCAAB HISTORICAL LOADER
 ########################################
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
     """
     Loads finished or in-progress NCAA MBB games for the given season
