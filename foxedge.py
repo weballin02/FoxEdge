@@ -6,10 +6,7 @@ from datetime import datetime, timedelta
 import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
 from nba_api.stats.static import teams as nba_teams
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import GradientBoostingRegressor
 from pmdarima import auto_arima
 from pathlib import Path
 import requests
@@ -18,107 +15,6 @@ from firebase_admin import credentials, auth
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
-
-################################################################################
-# ADVANCED FEATURE ENGINEERING UTILITIES
-################################################################################
-def engineer_sports_features(data, league='NFL'):
-    """
-    Advanced feature engineering for sports data
-    """
-    # Sort data chronologically
-    data.sort_values(['team', 'gameday'], inplace=True)
-    
-    # Rolling performance metrics
-    performance_windows = [3, 5, 10]
-    for window in performance_windows:
-        # Win rate calculation
-        data[f'win_rate_{window}'] = data.groupby('team')['score'].transform(
-            lambda x: (x > x.rolling(window, min_periods=1).mean()).rolling(window, min_periods=1).mean()
-        )
-        
-        # Score volatility
-        data[f'score_volatility_{window}'] = data.groupby('team')['score'].transform(
-            lambda x: x.rolling(window, min_periods=1).std()
-        )
-    
-    # Rest days feature
-    data['rest_days'] = data.groupby('team')['gameday'].diff().dt.days.fillna(0)
-    
-    # League-specific adjustments
-    if league == 'NFL':
-        data['is_home'] = data.index < len(data) // 2
-    
-    # Opponent strength indicator
-    def calculate_opponent_strength(group):
-        return group['score'].rolling(window=5, min_periods=1).mean()
-    
-    data['opponent_avg_score'] = data.groupby('team').apply(
-        lambda x: calculate_opponent_strength(x.sort_values('gameday'))
-    ).reset_index(level=0, drop=True)
-    
-    # Performance differential (home vs away)
-    data['performance_differential'] = data.groupby('team').apply(
-        lambda x: x[x['is_home']]['score'].mean() - x[~x['is_home']]['score'].mean()
-    ).reset_index(level=0, drop=True)
-    
-    # Adjusted performance rating
-    league_avg_score = data['score'].mean()
-    data['adjusted_performance_rating'] = (data['score'] / league_avg_score) * 100
-    
-    return data
-
-def advanced_model_training(team_data, league='NFL'):
-    """
-    Enhanced model training with multiple algorithms and blending
-    """
-    # Feature engineering
-    enhanced_data = engineer_sports_features(team_data, league)
-    
-    # Prepare features and target
-    features = [
-        col for col in enhanced_data.columns 
-        if col not in ['team', 'gameday', 'score', 'is_home']
-    ]
-    
-    X = enhanced_data[features]
-    y = enhanced_data['score']
-    
-    # Scaling features
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    # Multiple model training
-    models = {
-        'GradientBoosting': GradientBoostingRegressor(random_state=42),
-        'RandomForest': RandomForestRegressor(random_state=42),
-    }
-    
-    # Train and evaluate models
-    model_performance = {}
-    for name, model in models.items():
-        cv_scores = cross_val_score(model, X_scaled, y, cv=5)
-        model.fit(X_scaled, y)
-        
-        model_performance[name] = {
-            'model': model,
-            'cv_mean_score': cv_scores.mean(),
-            'cv_std_score': cv_scores.std()
-        }
-    
-    # Model blending (simple average)
-    def blended_prediction(X_test):
-        predictions = [
-            model_performance[name]['model'].predict(X_test) 
-            for name in models.keys()
-        ]
-        return np.mean(predictions, axis=0)
-    
-    return {
-        'models': model_performance,
-        'scaler': scaler,
-        'blended_predictor': blended_prediction
-    }
 
 ################################################################################
 # FIREBASE CONFIGURATION
@@ -197,23 +93,19 @@ def round_half(number):
     return round(number * 2) / 2
 
 ################################################################################
-# MODEL TRAINING & PREDICTION (ENHANCED)
+# MODEL TRAINING & PREDICTION (ARIMA + GBR ENSEMBLE)
 ################################################################################
 @st.cache_data(ttl=3600)
-def train_team_models(team_data: pd.DataFrame, league='NFL'):
+def train_team_models(team_data: pd.DataFrame):
     """
-    Enhanced training of models with multiple algorithms
+    Trains GradientBoostingRegressor + ARIMA for each team's 'score'.
+    Returns: gbr_models, arima_models, team_stats
     """
-    # Feature engineered data
-    enhanced_data = engineer_sports_features(team_data, league)
-    
-    # Multiple model training
-    models_data = advanced_model_training(team_data, league)
-    
-    # Compute team stats
+    gbr_models = {}
+    arima_models = {}
     team_stats = {}
+
     all_teams = team_data['team'].unique()
-    
     for team in all_teams:
         df_team = team_data[team_data['team'] == team].copy()
         df_team.sort_values('gameday', inplace=True)
@@ -229,44 +121,71 @@ def train_team_models(team_data: pd.DataFrame, league='NFL'):
             'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
         }
 
-    return models_data, team_stats
+        # Train GBR if enough data
+        if len(scores) >= 10:
+            X = np.arange(len(scores)).reshape(-1, 1)
+            y = scores.values
+            gbr = GradientBoostingRegressor(random_state=42)
+            gbr.fit(X, y)
+            gbr_models[team] = gbr
 
-def predict_team_score(team, models_data, team_stats, team_data):
-    """
-    Enhanced score prediction leveraging multiple models
-    """
+        # Train ARIMA if enough data
+        if len(scores) >= 7:
+            arima = auto_arima(
+                scores,
+                seasonal=False,
+                trace=False,
+                error_action='ignore',
+                suppress_warnings=True,
+                max_p=3,
+                max_q=3
+            )
+            arima_models[team] = arima
+
+    return gbr_models, arima_models, team_stats
+
+def predict_team_score(team, gbr_models, arima_models, team_stats, team_data):
+    """Predict a team's next-game score by blending ARIMA & GBR outputs."""
     if team not in team_stats:
         return None, (None, None)
 
-    # Prepare team data
     df_team = team_data[team_data['team'] == team]
-    
-    # Prepare features
-    team_features = df_team.iloc[-1]
-    features = [
-        col for col in team_features.index 
-        if col not in ['team', 'gameday', 'score']
-    ]
-    
-    # Scale features
-    X_test = team_features[features].values.reshape(1, -1)
-    X_scaled = models_data['scaler'].transform(X_test)
-    
-    # Blended prediction
-    predicted_score = models_data['blended_predictor'](X_scaled)[0]
+    data_len = len(df_team)
+    gbr_pred = None
+    arima_pred = None
 
-    # Compute confidence and intervals
+    # Gradient Boosting
+    if team in gbr_models:
+        X_next = np.array([[data_len]])
+        gbr_pred = gbr_models[team].predict(X_next)[0]
+
+    # ARIMA
+    if team in arima_models:
+        forecast = arima_models[team].predict(n_periods=1)
+        arima_pred = forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast.iloc[0]
+
+    # Blend
+    if gbr_pred is not None and arima_pred is not None:
+        ensemble = (gbr_pred + arima_pred) / 2
+    elif gbr_pred is not None:
+        ensemble = gbr_pred
+    elif arima_pred is not None:
+        ensemble = arima_pred
+    else:
+        ensemble = None
+
+    if ensemble is None:
+        return None, (None, None)
+
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
 
-    return round_half(predicted_score), (conf_low, conf_high)
+    return round_half(ensemble), (conf_low, conf_high)
 
 def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
-    """
-    Compute predicted spread, total, and confidence for a single matchup
-    """
+    """Compute predicted spread, total, and confidence for a single matchup."""
     if home_pred is None or away_pred is None:
         return None
 
@@ -281,7 +200,8 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
     winner = home_team if diff > 0 else away_team
 
-    ou_threshold = 145  # Adjustable threshold
+    # Example threshold for NCAAB. Adjust if needed for NBA or NFL.
+    ou_threshold = 145
 
     return {
         'predicted_winner': winner,
@@ -749,14 +669,14 @@ def run_league_pipeline(league_choice):
         return
 
     with st.spinner("Analyzing recent performance data..."):
-        models_data, team_stats = train_team_models(team_data, league=league_choice)
+        gbr_models, arima_models, team_stats = train_team_models(team_data)
         team_stats_global = team_stats
         results.clear()
 
         for _, row in upcoming.iterrows():
             home, away = row['home_team'], row['away_team']
-            home_pred, _ = predict_team_score(home, models_data, team_stats, team_data)
-            away_pred, _ = predict_team_score(away, models_data, team_stats, team_data)
+            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
 
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
@@ -875,8 +795,7 @@ def main():
             st.rerun()
 
         # Run League Pipeline for Selected League (if chosen)
-        if not st.session_state.get('selected_page'):
-            run_league_pipeline(st.session_state['selected_page'])
+        run_league_pipeline(st.session_state['selected_page'])
         else:
             display_homepage()
 
