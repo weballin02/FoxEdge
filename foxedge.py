@@ -550,89 +550,47 @@ def display_bet_card(bet):
 ################################################################################
 # HOME PAGE COMPONENTS
 ################################################################################
-def display_welcome_header():
+def display_homepage():
+    """
+    Display a completely separate homepage with general app information.
+    """
+    # Welcome Header
     st.markdown("""
     # 🦊 Welcome to FoxEdge Sports Betting
     ### Your AI-Powered Sports Betting Analytics Platform
     """)
 
-    st.markdown("""
-    <style>
-    .highlight {
-        padding: 1.5rem;
-        border-radius: 0.5rem;
-        background: linear-gradient(45deg, #1e3799, #0c2461);
-        color: white;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
+    # Quick Metrics Section
     metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
     with metrics_col1:
         st.metric("Active Leagues", "3", "NFL, NBA, NCAAB")
     with metrics_col2:
         st.metric("Analysis Model", "Ensemble AI", "GBR + ARIMA")
     with metrics_col3:
-        st.metric("Prediction Accuracy", "High Confidence", "75%+ threshold")
+        st.metric("Prediction Accuracy", "75%+", "High Confidence")
 
-
-def display_quick_picks():
-    st.markdown("### 🎯 Today's Quick Picks")
-    tabs = st.tabs(["NFL", "NBA", "NCAAB"])
-
-    for idx, tab in enumerate(tabs):
-        with tab:
-            league = ["NFL", "NBA", "NCAAB"][idx]
-            with st.spinner(f"Loading {league} picks..."):
-                if league == "NFL":
-                    schedule = load_nfl_schedule()
-                    team_data = preprocess_nfl_data(schedule)
-                    upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=1)
-                elif league == "NBA":
-                    team_data = load_nba_data()
-                    upcoming = fetch_upcoming_nba_games(days_ahead=1)
-                else:  # NCAAB
-                    team_data = load_ncaab_data_current_season(season=2025)
-                    upcoming = fetch_upcoming_ncaab_games()
-
-                if not team_data.empty and not upcoming.empty:
-                    gbr_models, arima_models, team_stats = train_team_models(team_data)
-                    quick_picks = []
-
-                    for _, row in upcoming.iterrows():
-                        home, away = row['home_team'], row['away_team']
-                        home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
-                        away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
-
-                        outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
-                        if outcome and outcome['confidence'] >= 75:
-                            quick_picks.append({
-                                'date': row['gameday'],
-                                'matchup': f"{away} @ {home}",
-                                'prediction': outcome['spread_suggestion'],
-                                'confidence': outcome['confidence']
-                            })
-
-                    if quick_picks:
-                        for pick in quick_picks[:3]:  # Show top 3 picks
-                            with st.container():
-                                col1, col2 = st.columns([2, 1])
-                                with col1:
-                                    st.markdown(f"**{pick['matchup']}**")
-                                    st.caption(pick['prediction'])
-                                with col2:
-                                    st.metric("Confidence", f"{pick['confidence']:.1f}%")
-                    else:
-                        st.info(f"No high-confidence {league} picks for today.")
-                else:
-                    st.info(f"No {league} games scheduled for today.")
-
-
-def display_features_section():
-    st.markdown("### 🚀 Premium Features")
-
+    # Navigation Buttons
+    st.markdown("---")
+    st.markdown("### 🔍 Explore Our Features")
     col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🏈 NFL Analysis", use_container_width=True):
+            st.session_state['selected_page'] = "NFL"
+            st.rerun()
+    with col2:
+        if st.button("🏀 NBA Analysis", use_container_width=True):
+            st.session_state['selected_page'] = "NBA"
+            st.rerun()
+    with col3:
+        if st.button("🏀 NCAAB Analysis", use_container_width=True):
+            st.session_state['selected_page'] = "NCAAB"
+            st.rerun()
 
+    # Features Section
+    st.markdown("---")
+    st.markdown("### 🚀 Why Choose FoxEdge?")
+    col1, col2, col3 = st.columns(3)
+    
     with col1:
         st.markdown("""
         #### 📊 Advanced Analytics
@@ -640,7 +598,7 @@ def display_features_section():
         - Historical performance data
         - Team-specific insights
         """)
-
+        
     with col2:
         st.markdown("""
         #### 📈 Real-time Updates
@@ -648,7 +606,7 @@ def display_features_section():
         - Injury reports impact
         - Line movement alerts
         """)
-
+        
     with col3:
         st.markdown("""
         #### 📱 Custom Tools
@@ -657,43 +615,14 @@ def display_features_section():
         - ROI calculator
         """)
 
-
-def display_homepage():
-    display_welcome_header()
-
-    st.markdown("---")
-
-    # Quick navigation cards
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("🏈 NFL Analysis", use_container_width=True):
-            st.session_state['selected_league'] = "NFL"
-            st.rerun()
-    with col2:
-        if st.button("🏀 NBA Analysis", use_container_width=True):
-            st.session_state['selected_league'] = "NBA"
-            st.rerun()
-    with col3:
-        if st.button("🏀 NCAAB Analysis", use_container_width=True):
-            st.session_state['selected_league'] = "NCAAB"
-            st.rerun()
-
-    st.markdown("---")
-
-    display_quick_picks()
-
-    st.markdown("---")
-
-    display_features_section()
-
-    # Educational section
+    # Educational Section for Beginners
     with st.expander("📚 New to Sports Betting?"):
         st.markdown("""
         ### Getting Started with FoxEdge
-        1. **Choose your league** - Select NFL, NBA, or NCAAB
-        2. **Review predictions** - Check our AI-powered insights
-        3. **Set confidence threshold** - Adjust based on your risk tolerance
-        4. **Track performance** - Save predictions and monitor results
+        1. **Choose your league**: Select NFL, NBA, or NCAAB.
+        2. **Review predictions**: Check our AI-powered insights.
+        3. **Set confidence threshold**: Adjust based on your risk tolerance.
+        4. **Track performance**: Save predictions and monitor results.
 
         Remember to bet responsibly and never wager more than you can afford to lose.
         """)
@@ -794,22 +723,26 @@ def run_league_pipeline(league_choice):
 # STREAMLIT MAIN (UPDATED)
 ################################################################################
 def main():
+    """
+    Main function to manage app navigation and logic.
+    """
+    # Set page configuration
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
         page_icon="🦊",
         layout="wide"
     )
-    
+
     initialize_csv()
 
     # Initialize session state variables
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
-    if 'selected_league' not in st.session_state:
-        st.session_state['selected_league'] = None
+    if 'selected_page' not in st.session_state:
+        st.session_state['selected_page'] = None
 
-    # Login Page
+    # Login Page Logic
     if not st.session_state['logged_in']:
         st.title("Login to FoxEdge Sports Betting Insights")
 
@@ -817,22 +750,25 @@ def main():
         password = st.text_input("Password", type="password")
 
         col1, col2 = st.columns(2)
+        
         with col1:
             if st.button("Login"):
                 user_data = login_with_rest(email, password)
                 if user_data:
-                    # Set session state for logged-in user and reset navigation
+                    # Set session state for logged-in user and redirect to homepage
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
-                    st.session_state['selected_league'] = None  # Reset navigation to homepage
+                    st.session_state['selected_page'] = None  # Reset navigation to homepage
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.rerun()  # Rerun the app to load the homepage
+                    st.rerun()
+        
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
+        
         return  # Stop execution until login is successful
 
-    # Logged-In State
+    # Logged-In State: Navigation Logic
     else:
         # Sidebar Navigation and Logout Button
         st.sidebar.title("Account")
@@ -842,25 +778,24 @@ def main():
             logout_user()
             st.rerun()
 
-        # Sidebar Navigation Menu
-        if not st.session_state.get('selected_league'):
-            # Automatically display the homepage when no league is selected
-            display_homepage()
+        # Sidebar Navigation Menu for League Selection or Homepage Access
+        if not st.session_state.get('selected_page'):
+            display_homepage()  # Default view is the homepage after login
             return
 
-        # League-Specific Navigation
         selected_league = st.sidebar.radio(
             "Select League",
             ["NFL", "NBA", "NCAAB"],
             help="Choose which league's games you'd like to analyze"
         )
 
-        if selected_league != st.session_state.get('selected_league'):
-            st.session_state['selected_league'] = selected_league
+        if selected_league != st.session_state.get('selected_page'):
+            # Update session state for league selection and rerun app
+            st.session_state['selected_page'] = selected_league
             st.rerun()
 
-        # Run League Pipeline for Selected League
-        run_league_pipeline(st.session_state['selected_league'])
+        # Run League Pipeline for Selected League (if chosen)
+        run_league_pipeline(st.session_state['selected_page'])
         else:
             display_homepage()
 
