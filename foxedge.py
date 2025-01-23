@@ -640,63 +640,247 @@ def run_league_pipeline(league_choice):
             st.info(f"No upcoming {league_choice} games found.")
 
 ################################################################################
-# STREAMLIT MAIN
+# HOME PAGE COMPONENTS
+################################################################################
+def display_welcome_header():
+    st.markdown("""
+    # 🦊 Welcome to FoxEdge Sports Betting
+    ### Your AI-Powered Sports Betting Analytics Platform
+    """)
+    
+    st.markdown("""
+    <style>
+    .highlight {
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        background: linear-gradient(45deg, #1e3799, #0c2461);
+        color: white;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+    with metrics_col1:
+        st.metric("Active Leagues", "3", "NFL, NBA, NCAAB")
+    with metrics_col2:
+        st.metric("Analysis Model", "Ensemble AI", "GBR + ARIMA")
+    with metrics_col3:
+        st.metric("Prediction Accuracy", "High Confidence", "75%+ threshold")
+
+def display_quick_picks():
+    st.markdown("### 🎯 Today's Quick Picks")
+    tabs = st.tabs(["NFL", "NBA", "NCAAB"])
+    
+    for idx, tab in enumerate(tabs):
+        with tab:
+            league = ["NFL", "NBA", "NCAAB"][idx]
+            with st.spinner(f"Loading {league} picks..."):
+                if league == "NFL":
+                    schedule = load_nfl_schedule()
+                    team_data = preprocess_nfl_data(schedule)
+                    upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=1)
+                elif league == "NBA":
+                    team_data = load_nba_data()
+                    upcoming = fetch_upcoming_nba_games(days_ahead=1)
+                else:  # NCAAB
+                    team_data = load_ncaab_data_current_season(season=2025)
+                    upcoming = fetch_upcoming_ncaab_games()
+                
+                if not team_data.empty and not upcoming.empty:
+                    gbr_models, arima_models, team_stats = train_team_models(team_data)
+                    quick_picks = []
+                    
+                    for _, row in upcoming.iterrows():
+                        home, away = row['home_team'], row['away_team']
+                        home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
+                        away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
+                        
+                        outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
+                        if outcome and outcome['confidence'] >= 75:
+                            quick_picks.append({
+                                'date': row['gameday'],
+                                'matchup': f"{away} @ {home}",
+                                'prediction': outcome['spread_suggestion'],
+                                'confidence': outcome['confidence']
+                            })
+                    
+                    if quick_picks:
+                        for pick in quick_picks[:3]:  # Show top 3 picks
+                            with st.container():
+                                col1, col2 = st.columns([2, 1])
+                                with col1:
+                                    st.markdown(f"**{pick['matchup']}**")
+                                    st.caption(pick['prediction'])
+                                with col2:
+                                    st.metric("Confidence", f"{pick['confidence']:.1f}%")
+                    else:
+                        st.info(f"No high-confidence {league} picks for today.")
+                else:
+                    st.info(f"No {league} games scheduled for today.")
+
+def display_features_section():
+    st.markdown("### 🚀 Premium Features")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        #### 📊 Advanced Analytics
+        - AI-powered predictions
+        - Historical performance data
+        - Team-specific insights
+        """)
+        
+    with col2:
+        st.markdown("""
+        #### 📈 Real-time Updates
+        - Live odds tracking
+        - Injury reports impact
+        - Line movement alerts
+        """)
+        
+    with col3:
+        st.markdown("""
+        #### 📱 Custom Tools
+        - Bet tracking
+        - Performance metrics
+        - ROI calculator
+        """)
+
+def display_homepage():
+    display_welcome_header()
+    
+    st.markdown("---")
+    
+    # Quick navigation cards
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🏈 NFL Analysis", use_container_width=True):
+            st.session_state['selected_league'] = "NFL"
+            st.rerun()
+    with col2:
+        if st.button("🏀 NBA Analysis", use_container_width=True):
+            st.session_state['selected_league'] = "NBA"
+            st.rerun()
+    with col3:
+        if st.button("🏀 NCAAB Analysis", use_container_width=True):
+            st.session_state['selected_league'] = "NCAAB"
+            st.rerun()
+    
+    st.markdown("---")
+    
+    display_quick_picks()
+    
+    st.markdown("---")
+    
+    display_features_section()
+    
+    # Educational section
+    with st.expander("📚 New to Sports Betting?"):
+        st.markdown("""
+        ### Getting Started with FoxEdge
+        1. **Choose your league** - Select NFL, NBA, or NCAAB
+        2. **Review predictions**
+        3. **Set confidence threshold** - Adjust based on your risk tolerance
+        4. **Track performance** - Save predictions and monitor results
+        
+        Remember to bet responsibly and never wager more than you can afford to lose.
+        """)
+
+################################################################################
+# STREAMLIT MAIN (UPDATED)
 ################################################################################
 def main():
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
         page_icon="🦊",
-        layout="centered"
+        layout="wide"
     )
     initialize_csv()
 
+    # Initialize session state variables
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
+    
+    if 'selected_league' not in st.session_state:
+        st.session_state['selected_league'] = None
 
+    # Login Screen
     if not st.session_state['logged_in']:
         st.title("Login to FoxEdge Sports Betting Insights")
-
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-
+        
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Login"):
-                user_data = login_with_rest(email, password)
-                if user_data:
-                    st.session_state['logged_in'] = True
-                    st.session_state['email'] = user_data['email']
-                    st.success(f"Welcome, {user_data['email']}!")
-                    st.rerun()
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            
+            login_col1, login_col2 = st.columns(2)
+            with login_col1:
+                if st.button("Login"):
+                    user_data = login_with_rest(email, password)
+                    if user_data:
+                        st.session_state['logged_in'] = True
+                        st.session_state['email'] = user_data['email']
+                        st.success(f"Welcome, {user_data['email']}!")
+                        st.rerun()
+            with login_col2:
+                if st.button("Sign Up"):
+                    signup_user(email, password)
+        
         with col2:
-            if st.button("Sign Up"):
-                signup_user(email, password)
+            st.markdown("""
+            ### Why Choose FoxEdge?
+            - 🎯 AI-Powered Predictions
+            - 📊 Advanced Analytics
+            - 🔄 Real-time Updates
+            - 📱 Custom Tools
+            """)
         return
+    
+    # Logged-in state
     else:
+        # Sidebar navigation and logout option
         st.sidebar.title("Account")
-        st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
+        st.sidebar.write(f"Logged in as: {st.session_state.get('email', 'Unknown')}")
+        
         if st.sidebar.button("Logout"):
             logout_user()
             st.rerun()
 
-    st.title("🦊 FoxEdge Sports Betting Insights")
-    st.sidebar.header("Navigation")
-    league_choice = st.sidebar.radio(
-        "Select League",
-        ["NFL", "NBA", "NCAAB"],
-        help="Choose which league's games you'd like to analyze"
-    )
+        # Sidebar navigation options
+        st.sidebar.markdown("---")
+        st.sidebar.header("Navigation")
+        
+        if st.sidebar.button("🏠 Home"):
+            st.session_state['selected_league'] = None
+            st.rerun()
+            
+        selected_league = st.sidebar.radio(
+            "Select League",
+            ["NFL", "NBA", "NCAAB"],
+            help="Choose which league's games you'd like to analyze"
+        )
+        
+        if selected_league != st.session_state.get('selected_league'):
+            st.session_state['selected_league'] = selected_league
 
-    run_league_pipeline(league_choice)
+        # Sidebar information about the app
+        st.sidebar.markdown("---")
+        st.sidebar.markdown(
+            "### About FoxEdge\n"
+            "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
+        )
+        st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
 
-    st.sidebar.markdown(
-        "### About FoxEdge\n"
-        "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
-    )
-    st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
+        # Main content: Homepage or League-specific analysis
+        if st.session_state['selected_league']:
+            run_league_pipeline(st.session_state['selected_league'])
+        else:
+            display_homepage()
 
-    if st.button("Save Predictions to CSV"):
-        save_predictions_to_csv(results)
+        # Save predictions button at the bottom of the page
+        if results and st.button("Save Predictions to CSV"):
+            save_predictions_to_csv(results)
 
 if __name__ == "__main__":
     main()
