@@ -849,38 +849,34 @@ def main():
         return  # Stop execution until login is successful
 
     # Logged-In State: Navigation Logic
-    else:
-        # Sidebar Navigation and Logout Button
-        st.sidebar.title("Account")
-        st.sidebar.write(f"Logged in as: {st.session_state.get('email', 'Unknown')}")
+    st.sidebar.title("Account")
+    st.sidebar.write(f"Logged in as: {st.session_state.get('email', 'Unknown')}")
 
-        if st.sidebar.button("Logout"):
-            logout_user()
-            st.rerun()
+    if st.sidebar.button("Logout"):
+        logout_user()
+        st.rerun()
 
-        # Sidebar Navigation Menu for League Selection or Homepage Access
-        if not st.session_state.get('selected_page'):
-            display_homepage()  # Default view is the homepage after login
-            return
+    # Sidebar Navigation Menu for League Selection or Homepage Access
+    if not st.session_state.get('selected_page'):
+        display_homepage()  # Default view is the homepage after login
+        return
 
-        selected_league = st.sidebar.radio(
-            "Select League",
-            ["NFL", "NBA", "NCAAB"],
-            help="Choose which league's games you'd like to analyze"
-        )
+    selected_league = st.sidebar.radio(
+        "Select League",
+        ["NFL", "NBA", "NCAAB"],
+        help="Choose which league's games you'd like to analyze"
+    )
 
-        if selected_league != st.session_state.get('selected_page'):
-            # Update session state for league selection and rerun app
-            st.session_state['selected_page'] = selected_league
-            st.rerun()
+    if selected_league != st.session_state.get('selected_page'):
+        # Update session state for league selection and rerun app
+        st.session_state['selected_page'] = selected_league
+        st.rerun()
 
-        # Run League Pipeline for Selected League (if chosen)
-        run_league_pipeline(st.session_state['selected_page'])
-        else:
-            display_homepage()
+    # Run League Pipeline for Selected League (if chosen)
+    run_league_pipeline(st.session_state['selected_page'])
 
-        if st.sidebar.button("Save Predictions to CSV"):
-            save_predictions_to_csv(results)
+    if st.sidebar.button("Save Predictions to CSV"):
+        save_predictions_to_csv(results)
 
 if __name__ == "__main__":
     main()
