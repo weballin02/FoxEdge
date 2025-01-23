@@ -473,21 +473,17 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     df.sort_values('gameday', inplace=True)
     return df
 
-########################################
-# UI COMPONENTS (unchanged)
-########################################
+################################################################################
+# UI COMPONENTS
+################################################################################
 def generate_writeup(bet):
-    # Extract data from the bet dictionary
-    home_team = bet.get('home_team', 'Unknown')
-    away_team = bet.get('away_team', 'Unknown')
-    predicted_winner = bet.get('predicted_winner', 'N/A')
-    confidence = bet.get('confidence', 0)
-    predicted_diff = bet.get('predicted_diff', 'N/A')
-    spread_suggestion = bet.get('spread_suggestion', 'N/A')
-    predicted_total = bet.get('predicted_total', 'N/A')
-    ou_suggestion = bet.get('ou_suggestion', 'N/A')
+    home_team = bet['home_team']
+    away_team = bet['away_team']
+    home_pred = bet['home_pred']
+    away_pred = bet['away_pred']
+    predicted_winner = bet['predicted_winner']
+    confidence = bet['confidence']
 
-    # Fetch team stats globally
     home_stats = team_stats_global.get(home_team, {})
     away_stats = team_stats_global.get(away_team, {})
 
@@ -498,129 +494,116 @@ def generate_writeup(bet):
     away_std = away_stats.get('std', 'N/A')
     away_recent = away_stats.get('recent_form', 'N/A')
 
-    # Construct the writeup
     writeup = f"""
-    ### Detailed Analysis:
+**Detailed Analysis:**
 
-    #### {home_team} Performance:
-    - **Average Score:** {home_mean}
-    - **Score Standard Deviation:** {home_std}
-    - **Recent Form (Last 5 Games):** {home_recent}
+- **{home_team} Performance:**
+  - **Average Score:** {home_mean}
+  - **Score Standard Deviation:** {home_std}
+  - **Recent Form (Last 5 Games):** {home_recent}
 
-    #### {away_team} Performance:
-    - **Average Score:** {away_mean}
-    - **Score Standard Deviation:** {away_std}
-    - **Recent Form (Last 5 Games):** {away_recent}
+- **{away_team} Performance:**
+  - **Average Score:** {away_mean}
+  - **Score Standard Deviation:** {away_std}
+  - **Recent Form (Last 5 Games):** {away_recent}
 
-    #### Prediction Insight:
-    - Predicted Winner: **{predicted_winner}**
-    - Confidence Level: **{confidence}%**
-    - Projected Score Difference: **{predicted_diff} points**
-    - Suggested Spread: **{spread_suggestion}**
-    - Total Predicted Points: **{predicted_total}**
-    - Over/Under Suggestion: **{ou_suggestion}**
+- **Prediction Insight:**
+  Based on the recent performance and statistical analysis, **{predicted_winner}** is predicted to win with a confidence level of **{confidence}%.** 
+  The projected score difference is **{bet['predicted_diff']} points**, leading to a suggested spread of **{bet['spread_suggestion']}**. 
+  Additionally, the total predicted points for the game are **{bet['predicted_total']}**, indicating a suggestion to **{bet['ou_suggestion']}**.
 
-    #### Statistical Edge:
-    The confidence level of **{confidence}%** reflects the statistical edge derived from the combined performance metrics of both teams.
-    """
-    
+- **Statistical Edge:**
+  The confidence level of **{confidence}%** reflects the statistical edge derived from the combined performance metrics of both teams.
+  This ensures that the prediction is data-driven and reliable.
+"""
     return writeup
-
 
 def display_bet_card(bet):
     with st.container():
         st.markdown("---")
         col1, col2, col3 = st.columns([2, 2, 1])
 
-        # Game Info
         with col1:
-            st.markdown(f"### {bet['away_team']} @ {bet['home_team']}")
+            st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
             date_obj = bet['date']
             if isinstance(date_obj, datetime):
                 st.caption(date_obj.strftime("%A, %B %d - %I:%M %p"))
 
-        # Predictions
         with col2:
             if bet['confidence'] >= 80:
                 st.markdown("🔥 **High-Confidence Bet** 🔥")
             st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
             st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
 
-        # Confidence Metric
         with col3:
             st.metric(label="Confidence", value=f"{bet['confidence']:.1f}%")
 
-        # Optional Detailed Insights
-        with st.expander("Detailed Insights", expanded=False):
-            st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
-            st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
-            st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
+    with st.expander("Detailed Insights", expanded=False):
+        st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
+        st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
+        st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
 
-        # Detailed Writeup
-        with st.expander("Game Analysis", expanded=False):
-            writeup = generate_writeup(bet)
-            st.markdown(writeup)
+    with st.expander("Game Analysis", expanded=False):
+        writeup = generate_writeup(bet)
+        st.markdown(writeup)
 
-
-########################################
+################################################################################
 # GLOBALS
-########################################
+################################################################################
 results = []
 team_stats_global = {}
 
-########################################
+################################################################################
 # MAIN PIPELINE
-########################################
+################################################################################
 def run_league_pipeline(league_choice):
-    global results, team_stats_global
+    global results
+    global team_stats_global
 
     st.header(f"Today's {league_choice} Best Bets 🎯")
 
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
         if schedule.empty:
-            st.error("Unable to load NFL schedule. Please try again later.")
+            st.error("Unable to load NFL schedule.")
             return
         team_data = preprocess_nfl_data(schedule)
-        upcoming_games = fetch_upcoming_nfl_games(schedule, days_ahead=7)
+        upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
 
     elif league_choice == "NBA":
         team_data = load_nba_data()
         if team_data.empty:
-            st.error("Unable to load NBA data. Please try again later.")
+            st.error("Unable to load NBA data.")
             return
-        upcoming_games = fetch_upcoming_nba_games(days_ahead=3)
+        upcoming = fetch_upcoming_nba_games(days_ahead=3)
 
     else:  # NCAAB
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
-            st.error("Unable to load NCAAB data. Please try again later.")
+            st.error("Unable to load NCAAB data.")
             return
+        upcoming = fetch_upcoming_ncaab_games()
 
-        with st.spinner("Fetching upcoming NCAAB games..."):
-            upcoming_games = fetch_upcoming_ncaab_games()
-
-    if team_data.empty or upcoming_games.empty:
-        st.warning(f"No {league_choice} data available for analysis.")
+    if team_data.empty or upcoming.empty:
+        st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
 
-    # Train models and analyze games
     with st.spinner("Analyzing recent performance data..."):
-        gbr_models, arima_models, team_stats_global = train_team_models(team_data)
+        gbr_models, arima_models, team_stats = train_team_models(team_data)
+        team_stats_global = team_stats
         results.clear()
 
-        for _, game in upcoming_games.iterrows():
-            home_team, away_team = game['home_team'], game['away_team']
-            
-            home_pred, _ = predict_team_score(home_team, gbr_models, arima_models, team_stats_global, team_data, is_home=1)
-            away_pred, _ = predict_team_score(away_team, gbr_models, arima_models, team_stats_global, team_data, is_home=0)
+        for _, row in upcoming.iterrows():
+            home, away = row['home_team'], row['away_team']
+            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
 
-            outcome = evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats_global)
+            outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
                 results.append({
-                    'date': game['gameday'],
-                    'home_team': home_team,
-                    'away_team': away_team,
+                    'date': row['gameday'],
+                    'home_team': home,
+                    'away_team': away,
                     'home_pred': home_pred,
                     'away_pred': away_pred,
                     'predicted_winner': outcome['predicted_winner'],
@@ -631,9 +614,7 @@ def run_league_pipeline(league_choice):
                     'ou_suggestion': outcome['ou_suggestion']
                 })
 
-    # Display bets based on user preference
     view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
-    
     if view_mode == "🎯 Top Bets Only":
         conf_threshold = st.slider(
             "Minimum Confidence Level",
@@ -643,38 +624,79 @@ def run_league_pipeline(league_choice):
             step=5.0,
             help="Only show bets with confidence level above this threshold"
         )
-        
         top_bets = find_top_bets(results, threshold=conf_threshold)
-        
-        if top_bets:
-            for bet in top_bets:
+        if not top_bets.empty:
+            st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
+            for _, bet in top_bets.iterrows():
                 display_bet_card(bet)
         else:
-            st.info("No high-confidence bets found for today.")
-    
+            st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
         if results:
+            st.markdown("### 📊 All Games Analysis")
             for bet in results:
                 display_bet_card(bet)
         else:
-            st.info(f"No upcoming {league_choice} games found for analysis.")
+            st.info(f"No upcoming {league_choice} games found.")
 
-
+################################################################################
+# STREAMLIT MAIN
+################################################################################
 def main():
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
         page_icon="🦊",
         layout="centered"
     )
-    
     initialize_csv()
 
-    if not st.session_state.get('logged_in', False):
-        login_ui()
-    
+    if 'logged_in' not in st.session_state:
+        st.session_state['logged_in'] = False
+
+    if not st.session_state['logged_in']:
+        st.title("Login to FoxEdge Sports Betting Insights")
+
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Login"):
+                user_data = login_with_rest(email, password)
+                if user_data:
+                    st.session_state['logged_in'] = True
+                    st.session_state['email'] = user_data['email']
+                    st.success(f"Welcome, {user_data['email']}!")
+                    st.rerun()
+        with col2:
+            if st.button("Sign Up"):
+                signup_user(email, password)
+        return
     else:
-        league_choice = navigation_ui()
-        run_league_pipeline(league_choice)
+        st.sidebar.title("Account")
+        st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
+        if st.sidebar.button("Logout"):
+            logout_user()
+            st.rerun()
+
+    st.title("🦊 FoxEdge Sports Betting Insights")
+    st.sidebar.header("Navigation")
+    league_choice = st.sidebar.radio(
+        "Select League",
+        ["NFL", "NBA", "NCAAB"],
+        help="Choose which league's games you'd like to analyze"
+    )
+
+    run_league_pipeline(league_choice)
+
+    st.sidebar.markdown(
+        "### About FoxEdge\n"
+        "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
+    )
+    st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
+
+    if st.button("Save Predictions to CSV"):
+        save_predictions_to_csv(results)
 
 if __name__ == "__main__":
     main()
