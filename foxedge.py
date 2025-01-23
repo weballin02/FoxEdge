@@ -794,7 +794,7 @@ def main():
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
         page_icon="🦊",
-        layout="wide"
+        layout="wide"  # Changed to wide for better homepage layout
     )
     initialize_csv()
 
@@ -845,6 +845,7 @@ def main():
         st.sidebar.markdown("---")
         st.sidebar.header("Navigation")
         
+        # Add home button to sidebar
         if st.sidebar.button("🏠 Home"):
             st.session_state['selected_league'] = None
             st.rerun()
@@ -865,13 +866,11 @@ def main():
         )
         st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
 
+        # This is the key part - checking whether to show homepage or league analysis
         if st.session_state['selected_league']:
             run_league_pipeline(st.session_state['selected_league'])
         else:
-            display_homepage()
+            display_homepage()  # Show homepage when no league is selected
 
         if st.button("Save Predictions to CSV"):
             save_predictions_to_csv(results)
-
-if __name__ == "__main__":
-    main()
