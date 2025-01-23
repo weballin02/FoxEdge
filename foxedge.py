@@ -567,16 +567,16 @@ def display_welcome_header():
     </style>
     """, unsafe_allow_html=True)
 
-    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
-    with metrics_col1:
+    col1, col2, col3 = st.columns(3)
+    with col1:
         st.metric("Active Leagues", "3", "NFL, NBA, NCAAB")
-    with metrics_col2:
+    with col2:
         st.metric("Analysis Model", "Ensemble AI", "GBR + ARIMA")
-    with metrics_col3:
+    with col3:
         st.metric("Prediction Accuracy", "High Confidence", "75%+ threshold")
 
-def display_quick_picks():
-    st.markdown("### 🎯 Today's Quick Picks")
+def display_quick_picks(num_picks=3):
+    st.markdown("### 🎯 Today's Top Picks")
     tabs = st.tabs(["NFL", "NBA", "NCAAB"])
 
     for idx, tab in enumerate(tabs):
@@ -585,13 +585,22 @@ def display_quick_picks():
             with st.spinner(f"Loading {league} picks..."):
                 if league == "NFL":
                     schedule = load_nfl_schedule()
+                    if schedule.empty:
+                        st.info("No NFL data available.")
+                        continue
                     team_data = preprocess_nfl_data(schedule)
                     upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=1)
                 elif league == "NBA":
                     team_data = load_nba_data()
+                    if team_data.empty:
+                        st.info("No NBA data available.")
+                        continue
                     upcoming = fetch_upcoming_nba_games(days_ahead=1)
                 else:  # NCAAB
-                    team_data = load_ncaab_data_current_season(season=2025)
+                    team_data = load_ncaab_data_current_season(season=2025) #Update season if needed
+                    if team_data.empty:
+                        st.info("No NCAAB data available.")
+                        continue
                     upcoming = fetch_upcoming_ncaab_games()
 
                 if not team_data.empty and not upcoming.empty:
@@ -613,13 +622,14 @@ def display_quick_picks():
                             })
 
                     if quick_picks:
-                        for pick in quick_picks[:3]:  # Show top 3 picks
+                        for pick in quick_picks[:num_picks]:
                             with st.container():
-                                col1, col2 = st.columns([2, 1])
+                                col1, col2, col3 = st.columns([3, 2, 1])
                                 with col1:
                                     st.markdown(f"**{pick['matchup']}**")
-                                    st.caption(pick['prediction'])
                                 with col2:
+                                    st.markdown(f"**Prediction:** {pick['prediction']}")
+                                with col3:
                                     st.metric("Confidence", f"{pick['confidence']:.1f}%")
                     else:
                         st.info(f"No high-confidence {league} picks for today.")
@@ -627,40 +637,37 @@ def display_quick_picks():
                     st.info(f"No {league} games scheduled for today.")
 
 def display_features_section():
-    st.markdown("### 🚀 Premium Features")
+    st.markdown("### 🚀 Key Features")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
+        st.markdown("#### 📊 **Advanced Analytics**")
         st.markdown("""
-        #### 📊 Advanced Analytics
-        - AI-powered predictions
-        - Historical performance data
-        - Team-specific insights
+        - 🧠 AI-powered predictions
+        - 📈 Historical performance data
+        - 🔍 Team-specific insights
         """)
 
     with col2:
+        st.markdown("#### ⏱️ **Real-time Updates**")
         st.markdown("""
-        #### 📈 Real-time Updates
-        - Live odds tracking
-        - Injury reports impact
-        - Line movement alerts
+        - ⌚ Live odds tracking (Placeholder)
+        - 🤕 Injury reports impact (Placeholder)
+        - 🚨 Line movement alerts (Placeholder)
         """)
 
     with col3:
+        st.markdown("#### 🧰 **Custom Tools**")
         st.markdown("""
-        #### 📱 Custom Tools
-        - Bet tracking
-        - Performance metrics
-        - ROI calculator
+        - 📊 Bet tracking (Placeholder)
+        - 📈 Performance metrics (Placeholder)
+        - 💰 ROI calculator (Placeholder)
         """)
 
-def display_homepage():
-    display_welcome_header()
-
+def display_call_to_action():
     st.markdown("---")
-
-    # Quick navigation cards
+    st.markdown("### Ready to get started? Analyze the games now!")
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🏈 NFL Analysis", use_container_width=True):
@@ -675,15 +682,14 @@ def display_homepage():
             st.session_state['selected_league'] = "NCAAB"
             st.rerun()
 
+def display_homepage():
+    display_welcome_header()
     st.markdown("---")
-
     display_quick_picks()
-
-    st.markdown("---")
-
+    st.markdown("---") #Added separator
     display_features_section()
+    display_call_to_action()
 
-    # Educational section
     with st.expander("📚 New to Sports Betting?"):
         st.markdown("""
         ### Getting Started with FoxEdge
