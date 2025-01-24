@@ -224,7 +224,7 @@ def find_top_bets(matchups, threshold=70.0):
 @st.cache_data(ttl=14400)
 def load_nfl_schedule():
     current_year = datetime.now().year
-    years = [current_year - 11, current_year - 10, current_year - 9, current_year - 8, current_year - 7, current_year - 6, current_year - 5, current_year - 4, current_year - 3, current_year - 2, current_year - 1, current_year]
+    years = [current_year - i for i in range(11, -1, -1)]  # last 12 seasons
     schedule = nfl.import_schedules(years)
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
@@ -254,20 +254,18 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
     return upcoming[['gameday', 'home_team', 'away_team']]
 
 ################################################################################
-# NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
+# NBA DATA LOADING
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
-    """Load multi-season team logs with pace & efficiency integrated."""
     nba_teams_list = nba_teams.get_teams()
-    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']  # Adjust as needed
+    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']  
     all_rows = []
 
     for season in seasons:
         for team in nba_teams_list:
             team_id = team['id']
-            team_abbrev = team.get('abbreviation', str(team_id))  # Get team abbreviation from teams list
-            
+            team_abbrev = team.get('abbreviation', str(team_id))
             try:
                 gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
                 if gl.empty:
@@ -276,52 +274,42 @@ def load_nba_data():
                 gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
                 gl.sort_values('GAME_DATE', inplace=True)
 
-                # Convert needed columns to numeric
                 needed = ['PTS', 'FGA', 'FTA', 'TOV', 'OREB', 'PTS_OPP']
                 for c in needed:
                     if c not in gl.columns:
                         gl[c] = 0
                     gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
 
-                # Approx possessions
                 gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
                 gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
 
-                # Offensive Rating
                 gl['OFF_RATING'] = np.where(
                     gl['TEAM_POSSESSIONS'] > 0,
                     (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100,
                     np.nan
                 )
 
-                # Defensive Rating
                 gl['DEF_RATING'] = np.where(
                     gl['TEAM_POSSESSIONS'] > 0,
                     (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100,
                     np.nan
                 )
 
-                # Approx Pace = TEAM_POSSESSIONS (assuming opponent possessions ~ same)
                 gl['PACE'] = gl['TEAM_POSSESSIONS']
 
-                # We'll keep a final 'score' for training, which is the team's points
-                # plus advanced columns for potential feature engineering.
-                for idx, row_ in gl.iterrows():
+                for _, row_ in gl.iterrows():
                     try:
                         all_rows.append({
                             'gameday': row_['GAME_DATE'],
-                            'team': team_abbrev,  # Use team abbreviation from teams list
+                            'team': team_abbrev,
                             'score': float(row_['PTS']),
                             'off_rating': row_['OFF_RATING'] if pd.notnull(row_['OFF_RATING']) else np.nan,
                             'def_rating': row_['DEF_RATING'] if pd.notnull(row_['DEF_RATING']) else np.nan,
                             'pace': row_['PACE'] if pd.notnull(row_['PACE']) else np.nan
                         })
-                    except Exception as e:
-                        print(f"Error processing row for team {team_abbrev}: {str(e)}")
+                    except Exception:
                         continue
-
-            except Exception as e:
-                print(f"Error processing team {team_abbrev} for season {season}: {str(e)}")
+            except Exception:
                 continue
 
     if not all_rows:
@@ -331,7 +319,6 @@ def load_nba_data():
     df.dropna(subset=['score'], inplace=True)
     df.sort_values('gameday', inplace=True)
 
-    # Optional: fill missing advanced stats with league means
     for col in ['off_rating', 'def_rating', 'pace']:
         df[col].fillna(df[col].mean(), inplace=True)
 
@@ -365,20 +352,15 @@ def fetch_upcoming_nba_games(days_ahead=3):
     upcoming.sort_values('gameday', inplace=True)
     return upcoming
 
-########################################
-# NCAAB HISTORICAL LOADER
-########################################
+################################################################################
+# NCAAB DATA
+################################################################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
-    """
-    Loads finished or in-progress NCAA MBB games for the given season
-    using cbbpy. Adds is_home=1 for home team, is_home=0 for away.
-    """
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
         return pd.DataFrame()
 
-    # Convert "game_day" to datetime if needed
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
 
@@ -400,7 +382,6 @@ def load_ncaab_data_current_season(season=2025):
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
 
-    # Add rolling features
     data.sort_values(['team', 'gameday'], inplace=True)
     data['game_index'] = data.groupby('team').cumcount()
 
@@ -416,21 +397,15 @@ def load_ncaab_data_current_season(season=2025):
 
     return data
 
-########################################
-# NCAAB UPCOMING: ESPN method (NEW)
-########################################
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
-    """
-    Fetches upcoming NCAAB games for 'today' using ESPN's scoreboard API.
-    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
 
-    date_str = current_time.strftime('%Y%m%d')  # e.g. 20231205
+    date_str = current_time.strftime('%Y%m%d')
     url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
     params = {
         'dates': date_str,
-        'groups': '50',   # D1 men's
+        'groups': '50',
         'limit': '357'
     }
 
@@ -447,7 +422,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 
     rows = []
     for game in games:
-        game_time_str = game['date']  # ISO8601
+        game_time_str = game['date']
         game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
 
         competitors = game['competitions'][0]['competitors']
@@ -640,6 +615,35 @@ def run_league_pipeline(league_choice):
             st.info(f"No upcoming {league_choice} games found.")
 
 ################################################################################
+# HOME PAGE
+################################################################################
+def show_homepage():
+    """
+    Displays a user-friendly homepage with general app info, instructions, etc.
+    """
+    st.title("Welcome to FoxEdge Sports Betting Insights! 🏠")
+    st.subheader("Your Data-Driven Betting Companion")
+    st.write(
+        """
+        **How to Use This App:**
+        
+        1. **Login or Sign Up**: If you haven't created an account yet, you can do so on the login page.
+        2. **Pick Your League**: Use the sidebar to choose NFL, NBA, or NCAAB.
+        3. **Adjust Filters**: Once inside a league's page, you can set a confidence threshold to highlight top bets.
+        4. **Read Detailed Analysis**: Each matchup card includes predicted winners, spreads, totals, and extended breakdowns.
+        5. **Export Your Predictions**: When ready, click "Save Predictions to CSV" to store your results.
+        
+        Feel free to explore the sidebar and see the different leagues available. 
+        Enjoy data-driven insights to help you make better-informed sports wagers!
+        """
+    )
+    st.image(
+        "https://static.streamlit.io/examples/camera.gif", 
+        caption="FoxEdge in Action (example placeholder)",
+        use_column_width=True
+    )
+
+################################################################################
 # STREAMLIT MAIN
 ################################################################################
 def main():
@@ -653,6 +657,7 @@ def main():
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
+    # LOGIN LOGIC
     if not st.session_state['logged_in']:
         st.title("Login to FoxEdge Sports Betting Insights")
 
@@ -667,7 +672,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.rerun()
+                    st.experimental_rerun()
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -677,17 +682,22 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.rerun()
+            st.experimental_rerun()
 
-    st.title("🦊 FoxEdge Sports Betting Insights")
+    # SIDEBAR NAVIGATION
     st.sidebar.header("Navigation")
-    league_choice = st.sidebar.radio(
-        "Select League",
-        ["NFL", "NBA", "NCAAB"],
-        help="Choose which league's games you'd like to analyze"
+    # >>> ADJUSTED: Add 'Home' to your radio
+    page_choice = st.sidebar.radio(
+        "Select Page",
+        ["Home", "NFL", "NBA", "NCAAB"],
+        help="Choose which page to display"
     )
 
-    run_league_pipeline(league_choice)
+    # >>> ADJUSTED: Show homepage or league pipeline
+    if page_choice == "Home":
+        show_homepage()
+    else:
+        run_league_pipeline(page_choice)
 
     st.sidebar.markdown(
         "### About FoxEdge\n"
