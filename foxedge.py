@@ -538,7 +538,7 @@ def run_league_pipeline(league_choice):
 def main():
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
-        page_icon="ð¦",
+        page_icon="Ã°ÂÂ¦Â",
         layout="centered"
     )
     initialize_csv()
@@ -572,7 +572,7 @@ def main():
             logout_user()
             st.rerun()
 
-    st.title("ð¦ FoxEdge Sports Betting Insights")
+    st.title("Ã°ÂÂ¦Â FoxEdge Sports Betting Insights")
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
         "Select League",
