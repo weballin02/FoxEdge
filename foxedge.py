@@ -406,60 +406,54 @@ def load_ncaab_data_current_season(season=2025):
     return data
 
 ########################################
-# NCAAB UPCOMING: ESPN method (UPDATED)
+# NCAAB UPCOMING: ESPN method (NEW)
 ########################################
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     """
-    Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
+    Fetches upcoming NCAAB games for 'today' using ESPN's scoreboard API.
     """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
 
-    # Get current day and next day
-    dates = [
-        current_time.strftime('%Y%m%d'),  # Today
-        (current_time + timedelta(days=1)).strftime('%Y%m%d')  # Tomorrow
-    ]
+    date_str = current_time.strftime('%Y%m%d')  # e.g. 20231205
+    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+    params = {
+        'dates': date_str,
+        'groups': '50',   # D1 men's
+        'limit': '357'
+    }
+
+    response = requests.get(url, params=params)
+    if response.status_code != 200:
+        st.warning(f"ESPN API request failed with status code {response.status_code}")
+        return pd.DataFrame()
+
+    data = response.json()
+    games = data.get('events', [])
+    if not games:
+        st.info(f"No upcoming NCAAB games for {current_time.strftime('%Y-%m-%d')}.")
+        return pd.DataFrame()
 
     rows = []
-    for date_str in dates:
-        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-        params = {
-            'dates': date_str,
-            'groups': '50',   # D1 men's
-            'limit': '357'
-        }
+    for game in games:
+        game_time_str = game['date']  # ISO8601
+        game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
 
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
+        competitors = game['competitions'][0]['competitors']
+        home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
+        away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
+
+        if not home_comp or not away_comp:
             continue
 
-        data = response.json()
-        games = data.get('events', [])
-        if not games:
-            st.info(f"No upcoming NCAAB games for {date_str}.")
-            continue
+        home_team = home_comp['team']['displayName']
+        away_team = away_comp['team']['displayName']
 
-        for game in games:
-            game_time_str = game['date']  # ISO8601
-            game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
-
-            competitors = game['competitions'][0]['competitors']
-            home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
-            away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
-
-            if not home_comp or not away_comp:
-                continue
-
-            home_team = home_comp['team']['displayName']
-            away_team = away_comp['team']['displayName']
-
-            rows.append({
-                'gameday': game_time,
-                'home_team': home_team,
-                'away_team': away_team
-            })
+        rows.append({
+            'gameday': game_time, 
+            'home_team': home_team,
+            'away_team': away_team
+        })
 
     if not rows:
         return pd.DataFrame()
@@ -695,6 +689,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
