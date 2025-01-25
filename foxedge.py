@@ -93,81 +93,56 @@ def round_half(number):
     return round(number * 2) / 2
 
 ################################################################################
-#  TRAINING & PREDICTION
+# MODEL TRAINING & PREDICTION (ARIMA + GBR ENSEMBLE)
 ################################################################################
-def train_model_for_team(team, df_team):
+@st.cache_data(ttl=14400)
+def train_team_models(team_data: pd.DataFrame):
     """
-    Trains GradientBoostingRegressor and ARIMA for a specific team's data.
-    Returns trained models and team statistics.
+    Trains GradientBoostingRegressor + ARIMA for each team's 'score'.
+    Returns: gbr_models, arima_models, team_stats
     """
-    gbr = None
-    arima = None
+    gbr_models = {}
+    arima_models = {}
     team_stats = {}
 
-    # Sort data by game day and prepare scores
-    df_team.sort_values('gameday', inplace=True)
-    scores = df_team['score'].reset_index(drop=True)
-
-    if len(scores) < 3:
-        return team, gbr, arima, team_stats
-
-    # Calculate team statistics
-    team_stats = {
-        'mean': round(scores.mean(), 2),
-        'std': round(scores.std(), 2),
-        'max': round(scores.max(), 2),
-        'recent_form': round(scores.tail(5).mean() if len(scores) >= 5 else scores.mean(), 2)
-    }
-
-    # Gradient Boosting Regressor Training
-    if len(scores) >= 10:
-        X = np.arange(len(scores)).reshape(-1, 1)
-        y = scores.values
-
-        # Train/test split
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        gbr = GradientBoostingRegressor(random_state=42)
-        gbr.fit(X_train, y_train)
-
-        # Evaluate model performance
-        y_pred = gbr.predict(X_test)
-        mse = mean_squared_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-        team_stats['gbr_mse'] = round(mse, 2)
-        team_stats['gbr_r2'] = round(r2, 2)
-
-    # ARIMA Model Training
-    if len(scores) >= 7:
-        arima = auto_arima(
-            scores,
-            seasonal=False,
-            trace=False,
-            error_action='ignore',
-            suppress_warnings=True,
-            max_p=3,
-            max_q=3
-        )
-
-    return team, gbr, arima, team_stats
-
-
-def train_team_models_parallel(team_data: pd.DataFrame):
-    """
-    Trains GradientBoostingRegressor and ARIMA for each team's data in parallel.
-    Returns: dictionaries of GBR models, ARIMA models, and team statistics.
-    """
     all_teams = team_data['team'].unique()
-    results = Parallel(n_jobs=-1)(
-        delayed(train_model_for_team)(team, team_data[team_data['team'] == team].copy())
-        for team in all_teams
-    )
+    for team in all_teams:
+        df_team = team_data[team_data['team'] == team].copy()
+        df_team.sort_values('gameday', inplace=True)
+        scores = df_team['score'].reset_index(drop=True)
 
-    gbr_models = {team: gbr for team, gbr, _, _ in results if gbr is not None}
-    arima_models = {team: arima for team, _, arima, _ in results if arima is not None}
-    team_stats = {team: stats for team, _, _, stats in results}
+        if len(scores) < 3:
+            continue
+
+        team_stats[team] = {
+            'mean': round_half(scores.mean()),
+            'std': round_half(scores.std()),
+            'max': round_half(scores.max()),
+            'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
+        }
+
+        # Train GBR if enough data
+        if len(scores) >= 10:
+            X = np.arange(len(scores)).reshape(-1, 1)
+            y = scores.values
+            gbr = GradientBoostingRegressor(random_state=42)
+            gbr.fit(X, y)
+            gbr_models[team] = gbr
+
+        # Train ARIMA if enough data
+        if len(scores) >= 7:
+            arima = auto_arima(
+                scores,
+                seasonal=False,
+                trace=False,
+                error_action='ignore',
+                suppress_warnings=True,
+                max_p=3,
+                max_q=3
+            )
+            arima_models[team] = arima
 
     return gbr_models, arima_models, team_stats
-
 
 def predict_team_score(team, gbr_models, arima_models, team_stats, team_data):
     """Predict a team's next-game score by blending ARIMA & GBR outputs."""
@@ -206,6 +181,42 @@ def predict_team_score(team, gbr_models, arima_models, team_stats, team_data):
     sigma = team_stats[team]['std']
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
+
+    return round_half(ensemble), (conf_low, conf_high)
+
+def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
+    """Compute predicted spread, total, and confidence for a single matchup."""
+    if home_pred is None or away_pred is None:
+        return None
+
+    diff = home_pred - away_pred
+    total_points = home_pred + away_pred
+
+    home_std = team_stats.get(home_team, {}).get('std', 5)
+    away_std = team_stats.get(away_team, {}).get('std', 5)
+    combined_std = max(1.0, (home_std + away_std) / 2)
+
+    raw_conf = abs(diff) / combined_std
+    confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
+    winner = home_team if diff > 0 else away_team
+
+    # Example threshold for NCAAB. Adjust if needed for NBA or NFL.
+    ou_threshold = 145
+
+    return {
+        'predicted_winner': winner,
+        'diff': round_half(diff),
+        'total_points': round_half(total_points),
+        'confidence': confidence,
+        'spread_suggestion': f"Lean {winner} by {round_half(diff):.1f}",
+        'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
+    }
+
+def find_top_bets(matchups, threshold=70.0):
+    df = pd.DataFrame(matchups)
+    df_top = df[df['confidence'] >= threshold].copy()
+    df_top.sort_values('confidence', ascending=False, inplace=True)
+    return df_top
 
 ################################################################################
 # NFL DATA LOADING
@@ -520,7 +531,7 @@ def display_bet_card(bet):
 
         with col2:
             if bet['confidence'] >= 80:
-                st.markdown("🔥 **High-Confidence Bet** 🔥")
+                st.markdown("ð¥ **High-Confidence Bet** ð¥")
             st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
             st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
 
@@ -549,7 +560,7 @@ def run_league_pipeline(league_choice):
     global results
     global team_stats_global
 
-    st.header(f"Today's {league_choice} Best Bets 🎯")
+    st.header(f"Today's {league_choice} Best Bets ð¯")
 
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
@@ -603,8 +614,8 @@ def run_league_pipeline(league_choice):
                     'ou_suggestion': outcome['ou_suggestion']
                 })
 
-    view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
-    if view_mode == "🎯 Top Bets Only":
+    view_mode = st.radio("View Mode", ["ð¯ Top Bets Only", "ð All Games"], horizontal=True)
+    if view_mode == "ð¯ Top Bets Only":
         conf_threshold = st.slider(
             "Minimum Confidence Level",
             min_value=50.0,
@@ -615,14 +626,14 @@ def run_league_pipeline(league_choice):
         )
         top_bets = find_top_bets(results, threshold=conf_threshold)
         if not top_bets.empty:
-            st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
+            st.markdown(f"### ð¥ Top {len(top_bets)} Bets for Today")
             for _, bet in top_bets.iterrows():
                 display_bet_card(bet)
         else:
             st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
         if results:
-            st.markdown("### 📊 All Games Analysis")
+            st.markdown("### ð All Games Analysis")
             for bet in results:
                 display_bet_card(bet)
         else:
@@ -634,7 +645,7 @@ def run_league_pipeline(league_choice):
 def main():
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
-        page_icon="🦊",
+        page_icon="ð¦",
         layout="centered"
     )
     initialize_csv()
@@ -668,7 +679,7 @@ def main():
             logout_user()
             st.rerun()
 
-    st.title("🦊 FoxEdge Sports Betting Insights")
+    st.title("ð¦ FoxEdge Sports Betting Insights")
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
         "Select League",
