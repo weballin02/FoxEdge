@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -417,54 +418,60 @@ def load_ncaab_data_current_season(season=2025):
     return data
 
 ########################################
-# NCAAB UPCOMING: ESPN method (NEW)
+# NCAAB UPCOMING: ESPN method (UPDATED)
 ########################################
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     """
-    Fetches upcoming NCAAB games for 'today' using ESPN's scoreboard API.
+    Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
     """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
 
-    date_str = current_time.strftime('%Y%m%d')  # e.g. 20231205
-    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-    params = {
-        'dates': date_str,
-        'groups': '50',   # D1 men's
-        'limit': '357'
-    }
-
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
-        st.warning(f"ESPN API request failed with status code {response.status_code}")
-        return pd.DataFrame()
-
-    data = response.json()
-    games = data.get('events', [])
-    if not games:
-        st.info(f"No upcoming NCAAB games for {current_time.strftime('%Y-%m-%d')}.")
-        return pd.DataFrame()
+    # Get current day and next day
+    dates = [
+        current_time.strftime('%Y%m%d'),  # Today
+        (current_time + timedelta(days=1)).strftime('%Y%m%d')  # Tomorrow
+    ]
 
     rows = []
-    for game in games:
-        game_time_str = game['date']  # ISO8601
-        game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
+    for date_str in dates:
+        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+        params = {
+            'dates': date_str,
+            'groups': '50',   # D1 men's
+            'limit': '357'
+        }
 
-        competitors = game['competitions'][0]['competitors']
-        home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
-        away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
-
-        if not home_comp or not away_comp:
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
             continue
 
-        home_team = home_comp['team']['displayName']
-        away_team = away_comp['team']['displayName']
+        data = response.json()
+        games = data.get('events', [])
+        if not games:
+            st.info(f"No upcoming NCAAB games for {date_str}.")
+            continue
 
-        rows.append({
-            'gameday': game_time, 
-            'home_team': home_team,
-            'away_team': away_team
-        })
+        for game in games:
+            game_time_str = game['date']  # ISO8601
+            game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
+
+            competitors = game['competitions'][0]['competitors']
+            home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
+            away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
+
+            if not home_comp or not away_comp:
+                continue
+
+            home_team = home_comp['team']['displayName']
+            away_team = away_comp['team']['displayName']
+
+            rows.append({
+                'gameday': game_time,
+                'home_team': home_team,
+                'away_team': away_team
+            })
 
     if not rows:
         return pd.DataFrame()
@@ -531,7 +538,7 @@ def display_bet_card(bet):
 
         with col2:
             if bet['confidence'] >= 80:
-                st.markdown("ð¥ **High-Confidence Bet** ð¥")
+                st.markdown("🔥 **High-Confidence Bet** 🔥")
             st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
             st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
 
@@ -560,7 +567,7 @@ def run_league_pipeline(league_choice):
     global results
     global team_stats_global
 
-    st.header(f"Today's {league_choice} Best Bets ð¯")
+    st.header(f"Today's {league_choice} Best Bets 🎯")
 
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
@@ -614,8 +621,8 @@ def run_league_pipeline(league_choice):
                     'ou_suggestion': outcome['ou_suggestion']
                 })
 
-    view_mode = st.radio("View Mode", ["ð¯ Top Bets Only", "ð All Games"], horizontal=True)
-    if view_mode == "ð¯ Top Bets Only":
+    view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
+    if view_mode == "🎯 Top Bets Only":
         conf_threshold = st.slider(
             "Minimum Confidence Level",
             min_value=50.0,
@@ -626,14 +633,14 @@ def run_league_pipeline(league_choice):
         )
         top_bets = find_top_bets(results, threshold=conf_threshold)
         if not top_bets.empty:
-            st.markdown(f"### ð¥ Top {len(top_bets)} Bets for Today")
+            st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
             for _, bet in top_bets.iterrows():
                 display_bet_card(bet)
         else:
             st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
         if results:
-            st.markdown("### ð All Games Analysis")
+            st.markdown("### 📊 All Games Analysis")
             for bet in results:
                 display_bet_card(bet)
         else:
@@ -645,7 +652,7 @@ def run_league_pipeline(league_choice):
 def main():
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
-        page_icon="ð¦",
+        page_icon="🦊",
         layout="centered"
     )
     initialize_csv()
@@ -679,7 +686,7 @@ def main():
             logout_user()
             st.rerun()
 
-    st.title("ð¦ FoxEdge Sports Betting Insights")
+    st.title("🦊 FoxEdge Sports Betting Insights")
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
         "Select League",
