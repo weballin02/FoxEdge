@@ -17,6 +17,13 @@ from firebase_admin import credentials, auth
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
 
+# Immediately after imports or at the very top of your script
+results = []
+
+def run_league_pipeline(league_choice):
+    global results
+    global team_stats_global
+
 ################################################################################
 # FIREBASE CONFIGURATION
 ################################################################################
