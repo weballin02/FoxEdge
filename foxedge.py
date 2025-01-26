@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,7 +8,6 @@ import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
 from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import GradientBoostingRegressor
-from xgboost import XGBRegressor
 from pmdarima import auto_arima
 from pathlib import Path
 import requests
@@ -16,13 +16,6 @@ from firebase_admin import credentials, auth
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
-
-# Immediately after imports or at the very top of your script
-results = []
-
-def run_league_pipeline(league_choice):
-    global results
-    global team_stats_global
 
 ################################################################################
 # FIREBASE CONFIGURATION
@@ -227,128 +220,17 @@ def find_top_bets(matchups, threshold=70.0):
     return df_top
 
 ################################################################################
-# NFL DATA LOADING & PLAYER PROPS
+# NFL DATA LOADING
 ################################################################################
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def load_nfl_schedule():
     current_year = datetime.now().year
-    years = [current_year - 1, current_year]
+    years = [current_year - 11, current_year - 10, current_year - 9, current_year - 8, current_year - 7, current_year - 6, current_year - 5, current_year - 4, current_year - 3, current_year - 2, current_year - 1, current_year]
     schedule = nfl.import_schedules(years)
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
         schedule['gameday'] = schedule['gameday'].dt.tz_convert(None)
     return schedule
-
-@st.cache_data(ttl=3600)
-def load_nfl_player_data():
-    try:
-        current_year = datetime.now().year
-        years = [current_year - 1, current_year]
-        st.info(f"Loading NFL player data for years: {years}")
-        
-        # Fetching all required datasets
-        weekly = nfl.import_weekly_data(years)
-        schedules = nfl.import_schedules([current_year])
-        rosters = nfl.import_rosters([current_year])
-        team_stats = nfl.import_team_stats()
-        depth = nfl.import_depth_charts([current_year])
-        injuries = nfl.import_injuries()
-
-        # Merge core datasets
-        df = weekly.merge(
-            rosters[['player_id', 'position', 'team']], 
-            on=['player_id', 'team']
-        ).merge(
-            schedules[['game_id', 'week', 'season', 'home_team', 'away_team', 'temp', 'wind']],
-            on=['week', 'season']
-        ).merge(
-            team_stats.rename(columns={'team': 'opponent'}),
-            on=['opponent', 'week'],
-            suffixes=('', '_defense')
-        )
-
-        return df, {
-            'weekly': weekly,
-            'schedules': schedules,
-            'rosters': rosters,
-            'team_stats': team_stats,
-            'depth': depth,
-            'injuries': injuries
-        }
-    except HTTPError as e:
-        st.error(f"Failed to fetch NFL player data: {e}")
-    except Exception as e:
-        st.error(f"An unexpected error occurred while loading NFL player data: {e}")
-
-@st.cache_resource(ttl=3600)
-def train_position_models(_df):
-    models = {}
-    for pos in ['QB', 'RB', 'WR', 'TE']:
-        pos_df = _df[_df['position'] == pos].dropna()
-        if len(pos_df) < 50:
-            continue
-            
-        # Position-specific features and target
-        features = pos_df[[
-            'temp', 'wind', 'pass_yards_allowed', 'rush_yards_allowed',
-            'defensive_touchdowns', 'third_down_conversions',
-            'targets', 'carries', 'receptions', 'pass_yards'
-        ]]
-        target = 'pass_yards' if pos == 'QB' else 'rush_yards' if pos == 'RB' else 'receptions'
-        
-        model = XGBRegressor(n_estimators=100, max_depth=3)
-        model.fit(pd.get_dummies(features), pos_df[target])
-        models[pos] = model
-    return models
-
-def get_player_props(game_info, position, nfl_data, models):
-    df, raw_data = nfl_data
-    home_team, away_team = game_info['home_team'], game_info['away_team']
-    
-    # Get players from both teams in selected position
-    players = raw_data['depth'][
-        (raw_data['depth']['team'].isin([home_team, away_team])) &
-        (raw_data['depth']['position'] == position) &
-        (raw_data['depth']['depth_order'] <= 2)
-    ].merge(raw_data['rosters'][['player_id', 'full_name']], on='player_id')
-    
-    predictions = []
-    for _, player in players.iterrows():
-        try:
-            # Get latest player stats
-            player_stats = df[
-                (df['player_id'] == player['player_id']) &
-                (df['week'] < game_info['week'])
-            ].iloc[-1]
-
-            # Create features
-            features = pd.DataFrame([{
-                'temp': game_info['temp'],
-                'wind': game_info['wind'],
-                'pass_yards_allowed': player_stats['pass_yards_allowed'],
-                'rush_yards_allowed': player_stats['rush_yards_allowed'],
-                'defensive_touchdowns': player_stats['defensive_touchdowns'],
-                'third_down_conversions': player_stats['third_down_conversions'],
-                'targets': player_stats.get('targets', 0),
-                'carries': player_stats.get('carries', 0),
-                'receptions': player_stats.get('receptions', 0),
-                'pass_yards': player_stats.get('pass_yards', 0)
-            }])
-
-            # Make prediction
-            model = models.get(position)
-            if model:
-                pred = model.predict(pd.get_dummies(features))[0]
-                predictions.append({
-                    'name': player['full_name'],
-                    'position': position,
-                    'team': player['team'],
-                    'prediction': round(pred, 1),
-                    'last_game': player_stats.get('receptions', player_stats.get('rush_yards', 0))
-                })
-        except Exception as e:
-            continue
-    return predictions
 
 def preprocess_nfl_data(schedule):
     home_df = schedule[['gameday', 'home_team', 'home_score']].rename(
@@ -370,22 +252,22 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
     filter_date = now + timedelta(days=days_ahead)
     upcoming = upcoming[upcoming['gameday'] <= filter_date].copy()
     upcoming.sort_values('gameday', inplace=True)
-    return upcoming[['gameday', 'week', 'home_team', 'away_team', 'temp', 'wind']]
+    return upcoming[['gameday', 'home_team', 'away_team']]
 
 ################################################################################
-# NBA DATA LOADING
+# NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
     """Load multi-season team logs with pace & efficiency integrated."""
     nba_teams_list = nba_teams.get_teams()
-    seasons = ['2022-23', '2023-24']
+    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']  # Adjust as needed
     all_rows = []
 
     for season in seasons:
         for team in nba_teams_list:
             team_id = team['id']
-            team_abbrev = team.get('abbreviation', str(team_id))
+            team_abbrev = team.get('abbreviation', str(team_id))  # Get team abbreviation from teams list
             
             try:
                 gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
@@ -395,43 +277,52 @@ def load_nba_data():
                 gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
                 gl.sort_values('GAME_DATE', inplace=True)
 
+                # Convert needed columns to numeric
                 needed = ['PTS', 'FGA', 'FTA', 'TOV', 'OREB', 'PTS_OPP']
                 for c in needed:
                     if c not in gl.columns:
                         gl[c] = 0
                     gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
 
+                # Approx possessions
                 gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
                 gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
 
+                # Offensive Rating
                 gl['OFF_RATING'] = np.where(
                     gl['TEAM_POSSESSIONS'] > 0,
                     (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100,
                     np.nan
                 )
 
+                # Defensive Rating
                 gl['DEF_RATING'] = np.where(
                     gl['TEAM_POSSESSIONS'] > 0,
                     (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100,
                     np.nan
                 )
 
+                # Approx Pace = TEAM_POSSESSIONS (assuming opponent possessions ~ same)
                 gl['PACE'] = gl['TEAM_POSSESSIONS']
 
+                # We'll keep a final 'score' for training, which is the team's points
+                # plus advanced columns for potential feature engineering.
                 for idx, row_ in gl.iterrows():
                     try:
                         all_rows.append({
                             'gameday': row_['GAME_DATE'],
-                            'team': team_abbrev,
+                            'team': team_abbrev,  # Use team abbreviation from teams list
                             'score': float(row_['PTS']),
                             'off_rating': row_['OFF_RATING'] if pd.notnull(row_['OFF_RATING']) else np.nan,
                             'def_rating': row_['DEF_RATING'] if pd.notnull(row_['DEF_RATING']) else np.nan,
                             'pace': row_['PACE'] if pd.notnull(row_['PACE']) else np.nan
                         })
                     except Exception as e:
+                        print(f"Error processing row for team {team_abbrev}: {str(e)}")
                         continue
 
             except Exception as e:
+                print(f"Error processing team {team_abbrev} for season {season}: {str(e)}")
                 continue
 
     if not all_rows:
@@ -441,6 +332,7 @@ def load_nba_data():
     df.dropna(subset=['score'], inplace=True)
     df.sort_values('gameday', inplace=True)
 
+    # Optional: fill missing advanced stats with league means
     for col in ['off_rating', 'def_rating', 'pace']:
         df[col].fillna(df[col].mean(), inplace=True)
 
@@ -474,15 +366,20 @@ def fetch_upcoming_nba_games(days_ahead=3):
     upcoming.sort_values('gameday', inplace=True)
     return upcoming
 
-################################################################################
-# NCAAB DATA LOADING
-################################################################################
+########################################
+# NCAAB HISTORICAL LOADER
+########################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
+    """
+    Loads finished or in-progress NCAA MBB games for the given season
+    using cbbpy. Adds is_home=1 for home team, is_home=0 for away.
+    """
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
         return pd.DataFrame()
 
+    # Convert "game_day" to datetime if needed
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
 
@@ -504,6 +401,7 @@ def load_ncaab_data_current_season(season=2025):
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
 
+    # Add rolling features
     data.sort_values(['team', 'gameday'], inplace=True)
     data['game_index'] = data.groupby('team').cumcount()
 
@@ -519,13 +417,20 @@ def load_ncaab_data_current_season(season=2025):
 
     return data
 
+########################################
+# NCAAB UPCOMING: ESPN method (UPDATED)
+########################################
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
+    """
+    Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
+    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
 
+    # Get current day and next day
     dates = [
-        current_time.strftime('%Y%m%d'),
-        (current_time + timedelta(days=1)).strftime('%Y%m%d')
+        current_time.strftime('%Y%m%d'),  # Today
+        (current_time + timedelta(days=1)).strftime('%Y%m%d')  # Tomorrow
     ]
 
     rows = []
@@ -533,21 +438,23 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         params = {
             'dates': date_str,
-            'groups': '50',
+            'groups': '50',   # D1 men's
             'limit': '357'
         }
 
         response = requests.get(url, params=params)
         if response.status_code != 200:
+            st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
             continue
 
         data = response.json()
         games = data.get('events', [])
         if not games:
+            st.info(f"No upcoming NCAAB games for {date_str}.")
             continue
 
         for game in games:
-            game_time_str = game['date']
+            game_time_str = game['date']  # ISO8601
             game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
 
             competitors = game['competitions'][0]['competitors']
@@ -648,6 +555,12 @@ def display_bet_card(bet):
         st.markdown(writeup)
 
 ################################################################################
+# GLOBALS
+################################################################################
+results = []
+team_stats_global = {}
+
+################################################################################
 # MAIN PIPELINE
 ################################################################################
 def run_league_pipeline(league_choice):
@@ -661,81 +574,8 @@ def run_league_pipeline(league_choice):
         if schedule.empty:
             st.error("Unable to load NFL schedule.")
             return
-
-        # Team predictions
-        with st.spinner("Analyzing team matchups..."):
-            team_data = preprocess_nfl_data(schedule)
-            upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
-            
-            if team_data.empty or upcoming.empty:
-                st.warning("No upcoming NFL games available for analysis.")
-                return
-
-            gbr_models, arima_models, team_stats = train_team_models(team_data)
-            team_stats_global = team_stats
-            results.clear()
-
-            for _, row in upcoming.iterrows():
-                home, away = row['home_team'], row['away_team']
-                home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
-                away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
-
-                outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
-                if outcome:
-                    results.append({
-                        'date': row['gameday'],
-                        'home_team': home,
-                        'away_team': away,
-                        'home_pred': home_pred,
-                        'away_pred': away_pred,
-                        'predicted_winner': outcome['predicted_winner'],
-                        'predicted_diff': outcome['diff'],
-                        'predicted_total': outcome['total_points'],
-                        'confidence': outcome['confidence'],
-                        'spread_suggestion': outcome['spread_suggestion'],
-                        'ou_suggestion': outcome['ou_suggestion']
-                    })
-
-        # Player props section
-        st.divider()
-        st.subheader("NFL Player Prop Predictions")
-        
-        nfl_data = load_nfl_player_data()
-        player_models = train_position_models(nfl_data[0])
-        
-        # Game and position selection
-        col1, col2 = st.columns(2)
-        with col1:
-            selected_game = st.selectbox("Select Game", upcoming.apply(
-                lambda x: f"{x['away_team']} @ {x['home_team']}", axis=1
-            ))
-        with col2:
-            selected_pos = st.selectbox("Select Position", ['QB', 'RB', 'WR', 'TE'])
-        
-        # Get game info
-        game_info = upcoming[upcoming.apply(
-            lambda x: f"{x['away_team']} @ {x['home_team']}", axis=1
-        ) == selected_game].iloc[0].to_dict()
-        
-        # Get predictions
-        if st.button("Generate Player Projections"):
-            with st.spinner("Analyzing player matchups..."):
-                props = get_player_props(game_info, selected_pos, nfl_data, player_models)
-                
-                if props:
-                    st.subheader(f"{selected_pos} Projections for {selected_game}")
-                    cols = st.columns(len(props))
-                    
-                    for idx, prop in enumerate(props):
-                        with cols[idx % len(cols)]:
-                            st.metric(
-                                label=prop['name'],
-                                value=f"{prop['prediction']} {'YDS' if selected_pos in ['QB','RB'] else 'REC'}",
-                                help=f"Last game: {prop['last_game']}"
-                            )
-                            st.progress(min(prop['prediction']/150, 1.0))
-                else:
-                    st.warning(f"No {selected_pos} projections available for this game")
+        team_data = preprocess_nfl_data(schedule)
+        upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
 
     elif league_choice == "NBA":
         team_data = load_nba_data()
@@ -744,36 +584,6 @@ def run_league_pipeline(league_choice):
             return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
 
-        if team_data.empty or upcoming.empty:
-            st.warning("No upcoming NBA games available for analysis.")
-            return
-
-        with st.spinner("Analyzing recent performance data..."):
-            gbr_models, arima_models, team_stats = train_team_models(team_data)
-            team_stats_global = team_stats
-            results.clear()
-
-            for _, row in upcoming.iterrows():
-                home, away = row['home_team'], row['away_team']
-                home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
-                away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
-
-                outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
-                if outcome:
-                    results.append({
-                        'date': row['gameday'],
-                        'home_team': home,
-                        'away_team': away,
-                        'home_pred': home_pred,
-                        'away_pred': away_pred,
-                        'predicted_winner': outcome['predicted_winner'],
-                        'predicted_diff': outcome['diff'],
-                        'predicted_total': outcome['total_points'],
-                        'confidence': outcome['confidence'],
-                        'spread_suggestion': outcome['spread_suggestion'],
-                        'ou_suggestion': outcome['ou_suggestion']
-                    })
-
     else:  # NCAAB
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
@@ -781,35 +591,35 @@ def run_league_pipeline(league_choice):
             return
         upcoming = fetch_upcoming_ncaab_games()
 
-        if team_data.empty or upcoming.empty:
-            st.warning("No upcoming NCAAB games available for analysis.")
-            return
+    if team_data.empty or upcoming.empty:
+        st.warning(f"No upcoming {league_choice} data available for analysis.")
+        return
 
-        with st.spinner("Analyzing recent performance data..."):
-            gbr_models, arima_models, team_stats = train_team_models(team_data)
-            team_stats_global = team_stats
-            results.clear()
+    with st.spinner("Analyzing recent performance data..."):
+        gbr_models, arima_models, team_stats = train_team_models(team_data)
+        team_stats_global = team_stats
+        results.clear()
 
-            for _, row in upcoming.iterrows():
-                home, away = row['home_team'], row['away_team']
-                home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
-                away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
+        for _, row in upcoming.iterrows():
+            home, away = row['home_team'], row['away_team']
+            home_pred, _ = predict_team_score(home, gbr_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, gbr_models, arima_models, team_stats, team_data)
 
-                outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
-                if outcome:
-                    results.append({
-                        'date': row['gameday'],
-                        'home_team': home,
-                        'away_team': away,
-                        'home_pred': home_pred,
-                        'away_pred': away_pred,
-                        'predicted_winner': outcome['predicted_winner'],
-                        'predicted_diff': outcome['diff'],
-                        'predicted_total': outcome['total_points'],
-                        'confidence': outcome['confidence'],
-                        'spread_suggestion': outcome['spread_suggestion'],
-                        'ou_suggestion': outcome['ou_suggestion']
-                    })
+            outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
+            if outcome:
+                results.append({
+                    'date': row['gameday'],
+                    'home_team': home,
+                    'away_team': away,
+                    'home_pred': home_pred,
+                    'away_pred': away_pred,
+                    'predicted_winner': outcome['predicted_winner'],
+                    'predicted_diff': outcome['diff'],
+                    'predicted_total': outcome['total_points'],
+                    'confidence': outcome['confidence'],
+                    'spread_suggestion': outcome['spread_suggestion'],
+                    'ou_suggestion': outcome['ou_suggestion']
+                })
 
     view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
     if view_mode == "🎯 Top Bets Only":
