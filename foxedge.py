@@ -241,30 +241,44 @@ def load_nfl_schedule():
 
 @st.cache_data(ttl=3600)
 def load_nfl_player_data():
-    current_year = datetime.now().year
-    data = {
-        'weekly': nfl.import_weekly_data([current_year-1, current_year]),
-        'schedules': nfl.import_schedules([current_year]),
-        'rosters': nfl.import_rosters([current_year]),
-        'team_stats': nfl.import_team_stats(),
-        'depth': nfl.import_depth_charts([current_year]),
-        'injuries': nfl.import_injuries()
-    }
-    
-    # Merge core datasets
-    df = data['weekly'].merge(
-        data['rosters'][['player_id', 'position', 'team']], 
-        on=['player_id', 'team']
-    ).merge(
-        data['schedules'][['game_id', 'week', 'season', 'home_team', 'away_team', 'temp', 'wind']],
-        on=['week', 'season']
-    ).merge(
-        data['team_stats'].rename(columns={'team': 'opponent'}),
-        on=['opponent', 'week'],
-        suffixes=('', '_defense')
-    )
-    
-    return df, data
+    try:
+        current_year = datetime.now().year
+        years = [current_year - 1, current_year]
+        st.info(f"Loading NFL player data for years: {years}")
+        
+        # Fetching all required datasets
+        weekly = nfl.import_weekly_data(years)
+        schedules = nfl.import_schedules([current_year])
+        rosters = nfl.import_rosters([current_year])
+        team_stats = nfl.import_team_stats()
+        depth = nfl.import_depth_charts([current_year])
+        injuries = nfl.import_injuries()
+
+        # Merge core datasets
+        df = weekly.merge(
+            rosters[['player_id', 'position', 'team']], 
+            on=['player_id', 'team']
+        ).merge(
+            schedules[['game_id', 'week', 'season', 'home_team', 'away_team', 'temp', 'wind']],
+            on=['week', 'season']
+        ).merge(
+            team_stats.rename(columns={'team': 'opponent'}),
+            on=['opponent', 'week'],
+            suffixes=('', '_defense')
+        )
+
+        return df, {
+            'weekly': weekly,
+            'schedules': schedules,
+            'rosters': rosters,
+            'team_stats': team_stats,
+            'depth': depth,
+            'injuries': injuries
+        }
+    except HTTPError as e:
+        st.error(f"Failed to fetch NFL player data: {e}")
+    except Exception as e:
+        st.error(f"An unexpected error occurred while loading NFL player data: {e}")
 
 @st.cache_resource(ttl=3600)
 def train_position_models(_df):
