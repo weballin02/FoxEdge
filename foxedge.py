@@ -9,9 +9,26 @@ from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import StackingRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from xgboost import XGBRegressor
-from lightgbm import LGBMRegressor
-from catboost import CatBoostRegressor
+
+# Attempt to import XGBoost, LightGBM, and CatBoost
+try:
+    from xgboost import XGBRegressor
+except ImportError:
+    st.error("The 'xgboost' package is not installed. Please install it using 'pip install xgboost'.")
+    st.stop()
+
+try:
+    from lightgbm import LGBMRegressor
+except ImportError:
+    st.error("The 'lightgbm' package is not installed. Please install it using 'pip install lightgbm'.")
+    st.stop()
+
+try:
+    from catboost import CatBoostRegressor
+except ImportError:
+    st.error("The 'catboost' package is not installed. Please install it using 'pip install catboost'.")
+    st.stop()
+
 from pmdarima import auto_arima
 from pathlib import Path
 import requests
@@ -314,6 +331,13 @@ def preprocess_nfl_data(schedule):
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=['score'], inplace=True)
     data.sort_values('gameday', inplace=True)
+
+    # Feature Engineering Enhancements
+    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
+    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
+    data['season_avg'] = data.groupby('team')['score'].transform('expanding').mean()
+    data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
+
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
