@@ -79,3 +79,5 @@ html2text
 xgboost
 shap
 ipython
+lightgbm
+catboost
