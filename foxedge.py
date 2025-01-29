@@ -148,6 +148,7 @@ def train_team_models(team_data: pd.DataFrame):
         df_team['season_avg'] = df_team['score'].expanding().mean()
         df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
 
+        # Ensure team_stats contain scalar values
         team_stats[team] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
@@ -241,6 +242,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     if team in stack_models:
         try:
             stack_pred = stack_models[team].predict(X_next)[0]
+            stack_pred = float(stack_pred)
         except Exception as e:
             print(f"Error predicting with Stacking Regressor for team {team}: {e}")
             stack_pred = None
@@ -250,6 +252,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
         try:
             forecast = arima_models[team].predict(n_periods=1)
             arima_pred = forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast
+            arima_pred = float(arima_pred)
         except Exception as e:
             print(f"Error predicting with ARIMA for team {team}: {e}")
             arima_pred = None
@@ -269,6 +272,13 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
 
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
+
+    # Ensure mu and sigma are scalars
+    if isinstance(mu, (pd.Series, pd.DataFrame, np.ndarray)):
+        mu = mu.item()
+    if isinstance(sigma, (pd.Series, pd.DataFrame, np.ndarray)):
+        sigma = sigma.item()
+
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
 
@@ -287,6 +297,11 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     combined_std = max(1.0, (home_std + away_std) / 2)
 
     raw_conf = abs(diff) / combined_std
+
+    # Ensure raw_conf is a scalar
+    if isinstance(raw_conf, (pd.Series, pd.DataFrame, np.ndarray)):
+        raw_conf = raw_conf.item()
+
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
     winner = home_team if diff > 0 else away_team
 
