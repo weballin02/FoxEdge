@@ -335,7 +335,10 @@ def preprocess_nfl_data(schedule):
     # Feature Engineering Enhancements
     data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
     data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-    data['season_avg'] = data.groupby('team')['score'].transform('expanding').mean()
+    
+    # Correctly compute expanding mean using apply
+    data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
+    
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
 
     return data
@@ -509,7 +512,10 @@ def load_ncaab_data_current_season(season=2025):
     # Feature Engineering Enhancements
     data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
     data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-    data['season_avg'] = data.groupby('team')['score'].transform('expanding').mean()
+    
+    # Correctly compute expanding mean using apply
+    data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
+    
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
 
     data.sort_values(['team', 'gameday'], inplace=True)
