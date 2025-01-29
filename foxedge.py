@@ -1,3 +1,15 @@
+################################################################################
+# FEATURE ENGINEERING FUNCTION
+################################################################################
+def feature_engineering(data):
+    """
+    Enhances dataset with engineered features such as weighted averages,
+    rolling statistics, and opponent adjustments.
+    """
+    data['weighted_avg'] = (data['last_3_games'] * 0.6) + (data['season_avg'] * 0.4)
+    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
+    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std())
+    return data
 
 import streamlit as st
 import pandas as pd
@@ -7,7 +19,14 @@ from datetime import datetime, timedelta
 import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
 from nba_api.stats.static import teams as nba_teams
-from sklearn.ensemble import GradientBoostingRegressor
+
+from sklearn.ensemble import StackingRegressor
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
+from sklearn.model_selection import train_test_split, GridSearchCV
+from pmdarima import auto_arima
+    
 from pmdarima import auto_arima
 from pathlib import Path
 import requests
@@ -700,10 +719,21 @@ def main():
         "### About FoxEdge\n"
         "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
     )
-    st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
+    st.sidebar.markdown("#### 🧠 Powered by AI & Statistical Analysis")
 
     if st.button("Save Predictions to CSV"):
         save_predictions_to_csv(results)
 
 if __name__ == "__main__":
     main()
+
+################################################################################
+# PREDICTION FUNCTION
+################################################################################
+def make_predictions(stack_model, arima_model, X):
+    """
+    Uses the trained Stacking Regressor and Auto-ARIMA to predict future scores.
+    """
+    stack_pred = stack_model.predict(X)
+    arima_pred = arima_model.predict(n_periods=len(X))
+    return (stack_pred + arima_pred) / 2  # Hybrid Prediction
