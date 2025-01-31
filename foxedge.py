@@ -7,9 +7,10 @@ import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
 from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import StackingRegressor
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error
-
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 # Attempt to import XGBoost, LightGBM, and CatBoost
 try:
     from xgboost import XGBRegressor
@@ -118,6 +119,9 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 # UTILITY
 ################################################################################
 def round_half(number):
+    """
+    Rounds a number to the nearest 0.5.
+    """
     return round(number * 2) / 2
 
 ################################################################################
@@ -126,12 +130,18 @@ def round_half(number):
 @st.cache_data(ttl=14400)
 def train_team_models(team_data: pd.DataFrame):
     """
-    Trains Stacking Regressor + Auto-ARIMA for each team's 'score'.
-    Returns: stack_models, arima_models, team_stats
+    Trains a Stacking Regressor and an Auto-ARIMA model for each team's 'score'
+    using time-series–aware splitting and cross-validation. A 'lag_score' feature is added
+    to capture recent momentum. Returns:
+      - stack_models: dictionary of trained stacking regressors per team.
+      - arima_models: dictionary of trained ARIMA models per team.
+      - team_stats: dictionary of aggregated team statistics.
+      - model_errors: dictionary of training errors for each model.
     """
     stack_models = {}
     arima_models = {}
     team_stats = {}
+    model_errors = {}
 
     all_teams = team_data['team'].unique()
     for team in all_teams:
@@ -147,23 +157,15 @@ def train_team_models(team_data: pd.DataFrame):
         df_team['rolling_std'] = df_team['score'].rolling(window=3, min_periods=1).std().fillna(0)
         df_team['season_avg'] = df_team['score'].expanding().mean()
         df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
-
-        # 1️⃣ In-Game Performance Trends
         df_team['first_half_avg'] = df_team['rolling_avg'] * 0.6
         df_team['second_half_avg'] = df_team['rolling_avg'] * 0.4
-
-        # 2️⃣ Late-Game Efficiency Metric
         df_team['late_game_efficiency'] = df_team['score'] * 0.3 + df_team['season_avg'] * 0.7
-
-        # 3️⃣ Early vs. Late Game Performance Differential
         df_team['early_vs_late'] = df_team['first_half_avg'] - df_team['second_half_avg']
-
-        # 4️⃣ Advanced Feature Engineering for Model Training
-        # Adding 'early_vs_late' and 'late_game_efficiency' as new features
-        # Renamed to 'late_game_impact' to match the enhancement description
         df_team.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
+        # Add previous game score as an additional feature (lag)
+        df_team['lag_score'] = df_team['score'].shift(1).fillna(df_team['season_avg'])
 
-        # Ensure team_stats contain scalar values
+        # Store team statistics
         team_stats[team] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
@@ -171,42 +173,55 @@ def train_team_models(team_data: pd.DataFrame):
             'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
         }
 
-        # Prepare features and target
-        features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact']]
+        # Prepare features and target, including the new lag_score
+        features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact', 'lag_score']]
         features = features.fillna(0)
-        X = features.values
-        y = scores.values
+        X = features
+        y = scores
 
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # Time-series split (first 80% for training, remaining 20% for testing)
+        split_index = int(len(scores) * 0.8)
+        if split_index < 2:
+            continue
+        X_train = X.iloc[:split_index].values
+        X_test = X.iloc[split_index:].values
+        y_train = y.iloc[:split_index].values
+        y_test = y.iloc[split_index:].values
 
-        # Define base models
+        # Define a time-series cross-validator (3 splits if possible)
+        n_splits = 3 if len(y_train) >= 3 else 2
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+
+        # Define base models with increased iterations
         estimators = [
-            ('xgb', XGBRegressor(n_estimators=100, random_state=42)),
-            ('lgbm', LGBMRegressor(n_estimators=100, random_state=42)),
-            ('cat', CatBoostRegressor(n_estimators=100, verbose=0, random_state=42))
+            ('xgb', XGBRegressor(n_estimators=200, random_state=42)),
+            ('lgbm', LGBMRegressor(n_estimators=200, random_state=42)),
+            ('cat', CatBoostRegressor(n_estimators=200, verbose=0, random_state=42))
         ]
 
-        # Initialize Stacking Regressor
+        # Use a pipeline for the final estimator to scale features
+        final_estimator = make_pipeline(StandardScaler(), LGBMRegressor(n_estimators=200, random_state=42))
         stack = StackingRegressor(
             estimators=estimators,
-            final_estimator=LGBMRegressor(),
+            final_estimator=final_estimator,
             passthrough=False,
-            cv=5
+            cv=tscv
         )
 
-        # Train Stacking Regressor
         try:
             stack.fit(X_train, y_train)
             preds = stack.predict(X_test)
             mse = mean_squared_error(y_test, preds)
             print(f"Team: {team}, Stacking Regressor MSE: {mse}")
             stack_models[team] = stack
+            if team not in model_errors:
+                model_errors[team] = {}
+            model_errors[team]['stacking'] = mse
         except Exception as e:
             print(f"Error training Stacking Regressor for team {team}: {e}")
             continue
 
-        # Train ARIMA if enough data
+        # Train ARIMA if enough data exists
         if len(scores) >= 7:
             try:
                 arima = auto_arima(
@@ -219,15 +234,20 @@ def train_team_models(team_data: pd.DataFrame):
                     max_q=3
                 )
                 arima_models[team] = arima
+                if len(y_test) > 0:
+                    arima_preds = arima.predict(n_periods=len(y_test))
+                    mse_arima = mean_squared_error(y_test, arima_preds)
+                    model_errors[team]['arima'] = mse_arima
             except Exception as e:
                 print(f"Error training ARIMA for team {team}: {e}")
                 continue
 
-    return stack_models, arima_models, team_stats
+    return stack_models, arima_models, team_stats, model_errors
 
 def make_predictions(stack_model, arima_model, X):
     """
-    Makes hybrid predictions by blending Stacking Regressor and Auto-ARIMA.
+    Makes hybrid predictions by blending Stacking Regressor and Auto-ARIMA outputs.
+    This function is kept for reference.
     """
     stack_pred = stack_model.predict(X)
     if arima_model:
@@ -237,44 +257,57 @@ def make_predictions(stack_model, arima_model, X):
         hybrid_pred = stack_pred
     return hybrid_pred
 
-def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
-    """Predict a team's next-game score by blending Stacking Regressor & ARIMA outputs."""
+def predict_team_score(team, stack_models, arima_models, team_stats, team_data, model_errors):
+    """
+    Predicts a team's next-game score by blending the outputs of the Stacking Regressor
+    and ARIMA model using error-based weighting.
+    
+    Returns:
+      - The blended predicted score (rounded to the nearest 0.5)
+      - A tuple of (lower_confidence_bound, upper_confidence_bound)
+    """
     if team not in team_stats:
         return None, (None, None)
 
     df_team = team_data[team_data['team'] == team]
     data_len = len(df_team)
-    stack_pred = None
-    arima_pred = None
-
-    # Feature Engineering Enhancements
     if data_len < 3:
         return None, (None, None)
-    last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact']].tail(1)
+
+    # Use the most recent row to generate features for the next prediction.
+    last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact', 'lag_score']].tail(1)
     X_next = last_features.values
 
-    # Stacking Regressor
+    # Stacking Regressor prediction
+    stack_pred = None
     if team in stack_models:
         try:
-            stack_pred = stack_models[team].predict(X_next)[0]
-            stack_pred = float(stack_pred)
+            stack_pred = float(stack_models[team].predict(X_next)[0])
         except Exception as e:
             print(f"Error predicting with Stacking Regressor for team {team}: {e}")
             stack_pred = None
 
-    # ARIMA
+    # ARIMA prediction
+    arima_pred = None
     if team in arima_models:
         try:
             forecast = arima_models[team].predict(n_periods=1)
-            arima_pred = forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast
-            arima_pred = float(arima_pred)
+            arima_pred = float(forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast)
         except Exception as e:
             print(f"Error predicting with ARIMA for team {team}: {e}")
             arima_pred = None
 
-    # Hybrid Prediction
+    # Weighted ensemble using inverse MSE as weights
     if stack_pred is not None and arima_pred is not None:
-        ensemble = (stack_pred + arima_pred) / 2
+        mse_stack = model_errors.get(team, {}).get('stacking', np.inf)
+        mse_arima = model_errors.get(team, {}).get('arima', np.inf)
+        if mse_stack <= 0:
+            mse_stack = 1e-6
+        if mse_arima <= 0:
+            mse_arima = 1e-6
+        weight_stack = 1.0 / mse_stack
+        weight_arima = 1.0 / mse_arima
+        ensemble = (stack_pred * weight_stack + arima_pred * weight_arima) / (weight_stack + weight_arima)
     elif stack_pred is not None:
         ensemble = stack_pred
     elif arima_pred is not None:
@@ -287,14 +320,11 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
 
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
-
-    # Ensure mu and sigma are scalars
     if isinstance(mu, (pd.Series, pd.DataFrame, np.ndarray)):
         mu = mu.item()
     if isinstance(sigma, (pd.Series, pd.DataFrame, np.ndarray)):
         sigma = sigma.item()
 
-    # 6️⃣ Confidence Interval Adjustments
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
 
@@ -313,15 +343,12 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     combined_std = max(1.0, (home_std + away_std) / 2)
 
     raw_conf = abs(diff) / combined_std
-
-    # Ensure raw_conf is a scalar
     if isinstance(raw_conf, (pd.Series, pd.DataFrame, np.ndarray)):
         raw_conf = raw_conf.item()
 
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
     winner = home_team if diff > 0 else away_team
 
-    # Example threshold for NCAAB. Adjust if needed for NBA or NFL.
     ou_threshold = 145
 
     return {
@@ -345,7 +372,7 @@ def find_top_bets(matchups, threshold=70.0):
 @st.cache_data(ttl=14400)
 def load_nfl_schedule():
     current_year = datetime.now().year
-    years = [current_year - i for i in range(12)]  # Last 12 years including current
+    years = [current_year - i for i in range(12)]
     schedule = nfl.import_schedules(years)
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
@@ -363,34 +390,20 @@ def preprocess_nfl_data(schedule):
     data.dropna(subset=['score'], inplace=True)
     data.sort_values('gameday', inplace=True)
 
-    # Feature Engineering Enhancements
     data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
     data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-    
-    # Correctly compute expanding mean using apply
     data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
-    
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
-
-    # 1️⃣ In-Game Performance Trends
     data['first_half_avg'] = data['rolling_avg'] * 0.6
     data['second_half_avg'] = data['rolling_avg'] * 0.4
-
-    # 2️⃣ Late-Game Efficiency Metric
     data['late_game_efficiency'] = data['score'] * 0.3 + data['season_avg'] * 0.7
-
-    # 3️⃣ Early vs. Late Game Performance Differential
     data['early_vs_late'] = data['first_half_avg'] - data['second_half_avg']
-
-    # 4️⃣ Advanced Feature Engineering for Model Training
     data.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
 
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
-    upcoming = schedule[
-        schedule['home_score'].isna() & schedule['away_score'].isna()
-    ].copy()
+    upcoming = schedule[schedule['home_score'].isna() & schedule['away_score'].isna()].copy()
     now = datetime.now()
     filter_date = now + timedelta(days=days_ahead)
     upcoming = upcoming[upcoming['gameday'] <= filter_date].copy()
@@ -402,15 +415,14 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
-    """Load multi-season team logs with pace & efficiency integrated."""
     nba_teams_list = nba_teams.get_teams()
-    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']  # Adjust as needed
+    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
     all_rows = []
 
     for season in seasons:
         for team in nba_teams_list:
             team_id = team['id']
-            team_abbrev = team.get('abbreviation', str(team_id))  # Get team abbreviation from teams list
+            team_abbrev = team.get('abbreviation', str(team_id))
             
             try:
                 gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
@@ -420,59 +432,40 @@ def load_nba_data():
                 gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
                 gl.sort_values('GAME_DATE', inplace=True)
 
-                # Convert needed columns to numeric
                 needed = ['PTS', 'FGA', 'FTA', 'TOV', 'OREB', 'PTS_OPP']
                 for c in needed:
                     if c not in gl.columns:
                         gl[c] = 0
                     gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
 
-                # Approx possessions
                 gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
                 gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
-
-                # Offensive Rating
                 gl['OFF_RATING'] = np.where(
                     gl['TEAM_POSSESSIONS'] > 0,
                     (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100,
                     np.nan
                 )
-
-                # Defensive Rating
                 gl['DEF_RATING'] = np.where(
                     gl['TEAM_POSSESSIONS'] > 0,
                     (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100,
                     np.nan
                 )
-
-                # Approx Pace = TEAM_POSSESSIONS (assuming opponent possessions ~ same)
                 gl['PACE'] = gl['TEAM_POSSESSIONS']
-
-                # Feature Engineering Enhancements
                 gl['rolling_avg'] = gl['PTS'].rolling(window=3, min_periods=1).mean()
                 gl['rolling_std'] = gl['PTS'].rolling(window=3, min_periods=1).std().fillna(0)
                 gl['season_avg'] = gl['PTS'].expanding().mean()
                 gl['weighted_avg'] = (gl['rolling_avg'] * 0.6) + (gl['season_avg'] * 0.4)
-
-                # 1️⃣ In-Game Performance Trends
                 gl['first_half_avg'] = gl['rolling_avg'] * 0.6
                 gl['second_half_avg'] = gl['rolling_avg'] * 0.4
-
-                # 2️⃣ Late-Game Efficiency Metric
                 gl['late_game_efficiency'] = gl['PTS'] * 0.3 + gl['season_avg'] * 0.7
-
-                # 3️⃣ Early vs. Late Game Performance Differential
                 gl['early_vs_late'] = gl['first_half_avg'] - gl['second_half_avg']
-
-                # 4️⃣ Advanced Feature Engineering for Model Training
                 gl.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
 
-                # We'll keep a final 'score' for training, which is the team's points
                 for idx, row_ in gl.iterrows():
                     try:
                         all_rows.append({
                             'gameday': row_['GAME_DATE'],
-                            'team': team_abbrev,  # Use team abbreviation from teams list
+                            'team': team_abbrev,
                             'score': float(row_['PTS']),
                             'off_rating': row_['OFF_RATING'] if pd.notnull(row_['OFF_RATING']) else np.nan,
                             'def_rating': row_['DEF_RATING'] if pd.notnull(row_['DEF_RATING']) else np.nan,
@@ -499,7 +492,6 @@ def load_nba_data():
     df.dropna(subset=['score'], inplace=True)
     df.sort_values('gameday', inplace=True)
 
-    # Optional: fill missing advanced stats with league means
     for col in ['off_rating', 'def_rating', 'pace']:
         df[col].fillna(df[col].mean(), inplace=True)
 
@@ -546,7 +538,6 @@ def load_ncaab_data_current_season(season=2025):
     if info_df.empty:
         return pd.DataFrame()
 
-    # Convert "game_day" to datetime if needed
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
 
@@ -568,28 +559,15 @@ def load_ncaab_data_current_season(season=2025):
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
 
-    # Feature Engineering Enhancements
     data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
     data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-    
-    # Correctly compute expanding mean using apply
     data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
-    
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
-
-    # 1️⃣ In-Game Performance Trends
     data['first_half_avg'] = data['rolling_avg'] * 0.6
     data['second_half_avg'] = data['rolling_avg'] * 0.4
-
-    # 2️⃣ Late-Game Efficiency Metric
     data['late_game_efficiency'] = data['score'] * 0.3 + data['season_avg'] * 0.7
-
-    # 3️⃣ Early vs. Late Game Performance Differential
     data['early_vs_late'] = data['first_half_avg'] - data['second_half_avg']
-
-    # 4️⃣ Advanced Feature Engineering for Model Training
     data.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
-
     data.sort_values(['team', 'gameday'], inplace=True)
     data['game_index'] = data.groupby('team').cumcount()
 
@@ -605,10 +583,9 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
 
-    # Get current day and next day
     dates = [
-        current_time.strftime('%Y%m%d'),  # Today
-        (current_time + timedelta(days=1)).strftime('%Y%m%d')  # Tomorrow
+        current_time.strftime('%Y%m%d'),
+        (current_time + timedelta(days=1)).strftime('%Y%m%d')
     ]
 
     rows = []
@@ -616,7 +593,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         params = {
             'dates': date_str,
-            'groups': '50',   # D1 men's
+            'groups': '50',
             'limit': '357'
         }
 
@@ -632,7 +609,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
             continue
 
         for game in games:
-            game_time_str = game['date']  # ISO8601
+            game_time_str = game['date']
             game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
 
             competitors = game['competitions'][0]['competitors']
@@ -774,14 +751,14 @@ def run_league_pipeline(league_choice):
         return
 
     with st.spinner("Analyzing recent performance data..."):
-        stack_models, arima_models, team_stats = train_team_models(team_data)
+        stack_models, arima_models, team_stats, model_errors = train_team_models(team_data)
         team_stats_global = team_stats
         results.clear()
 
         for _, row in upcoming.iterrows():
             home, away = row['home_team'], row['away_team']
-            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
-            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data, model_errors)
+            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data, model_errors)
 
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
@@ -881,11 +858,9 @@ def main():
     )
     st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
 
-    # CSV Output Enhancements
     if st.button("Save Predictions to CSV"):
         if results:
             save_predictions_to_csv(results)
-            # Provide download link
             csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="Download Predictions as CSV",
