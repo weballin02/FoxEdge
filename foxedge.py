@@ -159,8 +159,6 @@ def train_team_models(team_data: pd.DataFrame):
         df_team['early_vs_late'] = df_team['first_half_avg'] - df_team['second_half_avg']
 
         # 4️⃣ Advanced Feature Engineering for Model Training
-        # Adding 'early_vs_late' and 'late_game_efficiency' as new features
-        # Renamed to 'late_game_impact' to match the enhancement description
         df_team.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
 
         # Ensure team_stats contain scalar values
@@ -174,33 +172,58 @@ def train_team_models(team_data: pd.DataFrame):
         # Prepare features and target
         features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact']]
         features = features.fillna(0)
+        features = check_missing_values(features)  # From previous step
         X = features.values
         y = scores.values
+
+        # Check target distribution
+        check_target_distribution(y)
+
+        # Check feature variance and remove low variance features
+        features_df = pd.DataFrame(X, columns=features.columns)
+        high_variance_features = check_feature_variance(features_df)
+        if high_variance_features.empty:
+            st.warning(f"All features for team {team} have low variance. Skipping model training.")
+            continue
+        X = high_variance_features.values
 
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Define base models
+        # Define base models with adjusted hyperparameters
         estimators = [
             ('xgb', XGBRegressor(n_estimators=100, random_state=42)),
-            ('lgbm', LGBMRegressor(n_estimators=100, random_state=42)),
+            ('lgbm', LGBMRegressor(
+                n_estimators=100, 
+                random_state=42, 
+                min_child_samples=20, 
+                min_split_gain=0.01, 
+                num_leaves=31
+            )),
             ('cat', CatBoostRegressor(n_estimators=100, verbose=0, random_state=42))
         ]
 
-        # Initialize Stacking Regressor
+        # Initialize Stacking Regressor with adjusted final estimator
         stack = StackingRegressor(
             estimators=estimators,
-            final_estimator=LGBMRegressor(),
+            final_estimator=LinearRegression(),  # Changed to LinearRegression for stability
             passthrough=False,
-            cv=5
+            cv=5,
+            n_jobs=-1  # Utilize all available cores
         )
 
-        # Train Stacking Regressor
+        # Train Stacking Regressor with cross-validation
         try:
             stack.fit(X_train, y_train)
             preds = stack.predict(X_test)
             mse = mean_squared_error(y_test, preds)
             print(f"Team: {team}, Stacking Regressor MSE: {mse}")
+
+            # Cross-validated MSE
+            cv_scores = cross_val_score(stack, X_train, y_train, cv=5, scoring='neg_mean_squared_error')
+            cv_mse = -np.mean(cv_scores)
+            print(f"Team: {team}, Cross-Validated MSE: {cv_mse}")
+
             stack_models[team] = stack
         except Exception as e:
             print(f"Error training Stacking Regressor for team {team}: {e}")
