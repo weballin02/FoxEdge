@@ -144,6 +144,43 @@ def get_with_retry(url: str, params: dict = None, headers: dict = None, retries:
         st.error(f"Request failed for URL {url}: {e}")
         raise
 
+def post_with_retry(url: str, json: dict = None, headers: dict = None, retries: int = 3, backoff_factor: float = 0.3, timeout: int = 30):
+    """
+    Sends a POST request with retry mechanism.
+    
+    Args:
+        url (str): The URL to send the POST request to.
+        json (dict, optional): JSON payload for the POST request.
+        headers (dict, optional): HTTP headers.
+        retries (int): Number of retries.
+        backoff_factor (float): Backoff factor for retries.
+        timeout (int): Timeout for the request in seconds.
+    
+    Returns:
+        requests.Response: The response object.
+    
+    Raises:
+        requests.exceptions.RequestException: If all retries fail.
+    """
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[429, 500, 502, 503, 504],
+        method_whitelist=["HEAD", "GET", "OPTIONS", "POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    
+    try:
+        response = session.post(url, json=json, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        st.error(f"POST request failed for URL {url}: {e}")
+        raise
+
 ################################################################################
 # FIREBASE CONFIGURATION
 ################################################################################
@@ -187,7 +224,7 @@ def login_with_rest(email: str, password: str, api_key: str):
     try:
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
         payload = {"email": email, "password": password, "returnSecureToken": True}
-        response = get_with_retry(url, json=payload, headers={'Content-Type': 'application/json'}, retries=3, backoff_factor=0.3, timeout=30)
+        response = post_with_retry(url, json=payload, headers={'Content-Type': 'application/json'}, retries=3, backoff_factor=0.3, timeout=30)
         if response.status_code == 200:
             return response.json()
         else:
@@ -251,6 +288,21 @@ def save_predictions_to_csv(predictions: list, csv_file=CSV_FILE):
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
+
+# Define global feature lists
+TRAIN_FEATURES = [
+    'rolling_avg',
+    'rolling_std',
+    'weighted_avg',
+    'early_vs_late',
+    'late_game_impact'
+]
+
+NBA_ADDITIONAL_FEATURES = [
+    'off_rating',
+    'def_rating',
+    'pace'
+]
 
 def train_team_models(team_data: pd.DataFrame, league: str):
     """
@@ -589,6 +641,146 @@ def find_top_bets(matchups: list, threshold: float = 70.0) -> pd.DataFrame:
     df_top = df[df['confidence'] >= threshold].copy()
     df_top.sort_values('confidence', ascending=False, inplace=True)
     return df_top
+
+def generate_writeup(bet: dict, team_stats_global: dict) -> str:
+    """
+    Generates a detailed analysis writeup for a bet.
+    
+    Args:
+        bet (dict): Bet information.
+        team_stats_global (dict): Global team statistics.
+    
+    Returns:
+        str: Markdown formatted writeup.
+    """
+    home_team = bet['home_team']
+    away_team = bet['away_team']
+    home_pred = bet['home_pred']
+    away_pred = bet['away_pred']
+    predicted_winner = bet['predicted_winner']
+    confidence = bet['confidence']
+
+    home_stats = team_stats_global.get(home_team, {})
+    away_stats = team_stats_global.get(away_team, {})
+
+    home_mean = home_stats.get('mean', 'N/A')
+    home_std = home_stats.get('std', 'N/A')
+    home_recent = home_stats.get('recent_form', 'N/A')
+    away_mean = away_stats.get('mean', 'N/A')
+    away_std = away_stats.get('std', 'N/A')
+    away_recent = away_stats.get('recent_form', 'N/A')
+
+    # Additional Context from Enhancements
+    home_pace = home_stats.get('pace', 'N/A')
+    away_pace = away_stats.get('pace', 'N/A')
+    home_off_rating = home_stats.get('off_rating', 'N/A')
+    home_def_rating = home_stats.get('def_rating', 'N/A')
+    away_off_rating = away_stats.get('off_rating', 'N/A')
+    away_def_rating = away_stats.get('def_rating', 'N/A')
+
+    writeup = f"""
+**Detailed Analysis:**
+
+- **{home_team} Performance:**
+  - **Average Score:** {home_mean}
+  - **Score Standard Deviation:** {home_std}
+  - **Recent Form (Last 5 Games):** {home_recent}
+  - **Pace of Play:** {home_pace} possessions per game
+  - **Offensive Rating:** {home_off_rating}
+  - **Defensive Rating:** {home_def_rating}
+
+- **{away_team} Performance:**
+  - **Average Score:** {away_mean}
+  - **Score Standard Deviation:** {away_std}
+  - **Recent Form (Last 5 Games):** {away_recent}
+  - **Pace of Play:** {away_pace} possessions per game
+  - **Offensive Rating:** {away_off_rating}
+  - **Defensive Rating:** {away_def_rating}
+
+- **Prediction Insight:**
+  Based on the recent performance and statistical analysis, **{predicted_winner}** is predicted to win with a confidence level of **{confidence}%.** 
+  The projected score difference is **{bet['predicted_diff']} points**, leading to a suggested spread of **{bet['spread_suggestion']}**. 
+  Additionally, the total predicted points for the game are **{bet['predicted_total']}**, indicating a suggestion to **{bet['ou_suggestion']}**.
+
+- **Betting Indicators:**
+  {bet['blowout_prob']}
+  {bet['live_betting']}
+  {bet['clutch_record']}
+
+- **Statistical Edge:**
+  The confidence level of **{confidence}%** reflects the statistical edge derived from the combined performance metrics of both teams.
+  This ensures that the prediction is data-driven and reliable.
+"""
+    return writeup
+
+def display_bet_card(bet: dict, team_stats_global: dict):
+    """
+    Displays a bet card with summarized and detailed insights.
+    
+    Args:
+        bet (dict): Bet information.
+        team_stats_global (dict): Global team statistics.
+    """
+    with st.container():
+        st.markdown("---")
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        with col1:
+            st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
+            date_obj = bet['date']
+            if isinstance(date_obj, datetime):
+                st.caption(date_obj.strftime("%A, %B %d - %I:%M %p"))
+
+        with col2:
+            if bet['confidence'] >= 80:
+                st.markdown("🔥 **High-Confidence Bet** 🔥")
+            st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
+            st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
+            # Additional Betting Indicators
+            if bet.get('blowout_prob'):
+                st.markdown(f"{bet['blowout_prob']}")
+            if bet.get('live_betting'):
+                st.markdown(f"{bet['live_betting']}")
+            if bet.get('clutch_record'):
+                st.markdown(f"{bet['clutch_record']}")
+
+        with col3:
+            st.metric(label="Confidence", value=f"{bet['confidence']:.1f}%")
+
+    with st.expander("Detailed Insights", expanded=False):
+        st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
+        st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
+        st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
+
+    with st.expander("Game Analysis", expanded=False):
+        writeup = generate_writeup(bet, team_stats_global)
+        st.markdown(writeup)
+
+    # Enhancement 2: Interactive Charts (Placeholder - Implement as needed)
+    with st.expander("Performance Charts", expanded=False):
+        # Example: Trend Graphs for Predicted vs. Actual Scores
+        if 'actual_scores' in st.session_state and 'predicted_scores' in st.session_state:
+            fig, ax = plt.subplots()
+            ax.plot(st.session_state['actual_scores'], label='Actual Scores')
+            ax.plot(st.session_state['predicted_scores'], label='Predicted Scores')
+            ax.legend()
+            st.pyplot(fig)
+
+        # Rolling Performance Visualization
+        if 'rolling_avg' in st.session_state:
+            fig, ax = plt.subplots()
+            ax.plot(st.session_state['rolling_avg'], label='3-Game Rolling Avg')
+            ax.plot(st.session_state['rolling_avg_10'], label='10-Game Rolling Avg')
+            ax.legend()
+            st.pyplot(fig)
+
+        # Confidence vs. Model Error Scatter Plot
+        if 'confidences' in st.session_state and 'model_errors' in st.session_state:
+            fig, ax = plt.subplots()
+            ax.scatter(st.session_state['confidences'], st.session_state['model_errors'])
+            ax.set_xlabel('Confidence')
+            ax.set_ylabel('Model Error')
+            st.pyplot(fig)
 
 ################################################################################
 # DATA LOADING FUNCTIONS
