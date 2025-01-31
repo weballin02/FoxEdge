@@ -324,14 +324,32 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     # Example threshold for NCAAB. Adjust if needed for NBA or NFL.
     ou_threshold = 145
 
+    # Additional Betting Indicators
+    blowout_prob = "🔥 Potential Blowout" if abs(diff) >= 10 else ""
+    live_betting = "🔴 Good Live-Betting Opportunity" if combined_std > 10 else ""
+    clutch_record = get_clutch_record(home_team, away_team)
+
     return {
         'predicted_winner': winner,
         'diff': round_half(diff),
         'total_points': round_half(total_points),
         'confidence': confidence,
         'spread_suggestion': f"Lean {winner} by {round_half(diff):.1f}",
-        'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
+        'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}",
+        'blowout_prob': blowout_prob,
+        'live_betting': live_betting,
+        'clutch_record': clutch_record
     }
+
+def get_clutch_record(home_team, away_team):
+    """
+    Placeholder function to calculate clutch performance indicators.
+    This should be implemented based on available data.
+    """
+    # Example implementation: Returning dummy data
+    home_clutch = "3-2"
+    away_clutch = "1-4"
+    return f"Clutch Record - {home_team}: {home_clutch}, {away_team}: {away_clutch}"
 
 def find_top_bets(matchups, threshold=70.0):
     df = pd.DataFrame(matchups)
@@ -679,6 +697,16 @@ def generate_writeup(bet, team_stats_global):
     away_std = away_stats.get('std', 'N/A')
     away_recent = away_stats.get('recent_form', 'N/A')
 
+    # Additional Context from Enhancements
+    home_home_performance = home_stats.get('home_performance', 'N/A')
+    away_home_performance = away_stats.get('home_performance', 'N/A')
+    home_pace = home_stats.get('pace', 'N/A')
+    away_pace = away_stats.get('pace', 'N/A')
+    home_off_rating = home_stats.get('off_rating', 'N/A')
+    home_def_rating = home_stats.get('def_rating', 'N/A')
+    away_off_rating = away_stats.get('off_rating', 'N/A')
+    away_def_rating = away_stats.get('def_rating', 'N/A')
+
     writeup = f"""
 **Detailed Analysis:**
 
@@ -686,16 +714,27 @@ def generate_writeup(bet, team_stats_global):
   - **Average Score:** {home_mean}
   - **Score Standard Deviation:** {home_std}
   - **Recent Form (Last 5 Games):** {home_recent}
+  - **Pace of Play:** {home_pace} possessions per game
+  - **Offensive Rating:** {home_off_rating}
+  - **Defensive Rating:** {home_def_rating}
 
 - **{away_team} Performance:**
   - **Average Score:** {away_mean}
   - **Score Standard Deviation:** {away_std}
   - **Recent Form (Last 5 Games):** {away_recent}
+  - **Pace of Play:** {away_pace} possessions per game
+  - **Offensive Rating:** {away_off_rating}
+  - **Defensive Rating:** {away_def_rating}
 
 - **Prediction Insight:**
   Based on the recent performance and statistical analysis, **{predicted_winner}** is predicted to win with a confidence level of **{confidence}%.** 
   The projected score difference is **{bet['predicted_diff']} points**, leading to a suggested spread of **{bet['spread_suggestion']}**. 
   Additionally, the total predicted points for the game are **{bet['predicted_total']}**, indicating a suggestion to **{bet['ou_suggestion']}**.
+
+- **Betting Indicators:**
+  {bet['blowout_prob']}
+  {bet['live_betting']}
+  {bet['clutch_record']}
 
 - **Statistical Edge:**
   The confidence level of **{confidence}%** reflects the statistical edge derived from the combined performance metrics of both teams.
@@ -719,6 +758,13 @@ def display_bet_card(bet, team_stats_global):
                 st.markdown("🔥 **High-Confidence Bet** 🔥")
             st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
             st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
+            # Additional Betting Indicators
+            if bet.get('blowout_prob'):
+                st.markdown(f"{bet['blowout_prob']}")
+            if bet.get('live_betting'):
+                st.markdown(f"{bet['live_betting']}")
+            if bet.get('clutch_record'):
+                st.markdown(f"{bet['clutch_record']}")
 
         with col3:
             st.metric(label="Confidence", value=f"{bet['confidence']:.1f}%")
@@ -731,6 +777,32 @@ def display_bet_card(bet, team_stats_global):
     with st.expander("Game Analysis", expanded=False):
         writeup = generate_writeup(bet, team_stats_global)
         st.markdown(writeup)
+
+    # Enhancement 2: Interactive Charts
+    with st.expander("Performance Charts", expanded=False):
+        # Example: Trend Graphs for Predicted vs. Actual Scores
+        if 'actual_scores' in st.session_state and 'predicted_scores' in st.session_state:
+            fig, ax = plt.subplots()
+            ax.plot(st.session_state['actual_scores'], label='Actual Scores')
+            ax.plot(st.session_state['predicted_scores'], label='Predicted Scores')
+            ax.legend()
+            st.pyplot(fig)
+
+        # Rolling Performance Visualization
+        if 'rolling_avg' in st.session_state:
+            fig, ax = plt.subplots()
+            ax.plot(st.session_state['rolling_avg'], label='3-Game Rolling Avg')
+            ax.plot(st.session_state['rolling_avg_10'], label='10-Game Rolling Avg')
+            ax.legend()
+            st.pyplot(fig)
+
+        # Confidence vs. Model Error Scatter Plot
+        if 'confidences' in st.session_state and 'model_errors' in st.session_state:
+            fig, ax = plt.subplots()
+            ax.scatter(st.session_state['confidences'], st.session_state['model_errors'])
+            ax.set_xlabel('Confidence')
+            ax.set_ylabel('Model Error')
+            st.pyplot(fig)
 
 ################################################################################
 # GLOBALS
@@ -797,8 +869,47 @@ def run_league_pipeline(league_choice):
                     'predicted_total': outcome['total_points'],
                     'confidence': outcome['confidence'],
                     'spread_suggestion': outcome['spread_suggestion'],
-                    'ou_suggestion': outcome['ou_suggestion']
+                    'ou_suggestion': outcome['ou_suggestion'],
+                    'blowout_prob': outcome.get('blowout_prob', ''),
+                    'live_betting': outcome.get('live_betting', ''),
+                    'clutch_record': outcome.get('clutch_record', '')
                 })
+
+    # Enhancement 5: Better Game Filters in UI
+    st.sidebar.header("Filters")
+    with st.sidebar.form("filters_form"):
+        st.markdown("### Filter Games")
+        total_points_min, total_points_max = st.slider(
+            "Predicted Total Points Range",
+            min_value=int(results['predicted_total'].min()) if results else 0,
+            max_value=int(results['predicted_total'].max()) if results else 300,
+            value=(100, 200),
+            step=5
+        )
+        selected_teams = st.multiselect(
+            "Select Teams",
+            options=list(set(results['home_team'].tolist() + results['away_team'].tolist())) if results else [],
+            default=[]
+        )
+        submitted = st.form_submit_button("Apply Filters")
+    
+    if submitted:
+        filtered_results = pd.DataFrame(results)
+        if not filtered_results.empty:
+            if selected_teams:
+                filtered_results = filtered_results[
+                    filtered_results['home_team'].isin(selected_teams) | 
+                    filtered_results['away_team'].isin(selected_teams)
+                ]
+            filtered_results = filtered_results[
+                (filtered_results['predicted_total'] >= total_points_min) & 
+                (filtered_results['predicted_total'] <= total_points_max)
+            ]
+            results_display = filtered_results.to_dict('records')
+        else:
+            results_display = results
+    else:
+        results_display = results
 
     view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
     if view_mode == "🎯 Top Bets Only":
@@ -810,7 +921,7 @@ def run_league_pipeline(league_choice):
             step=5.0,
             help="Only show bets with confidence level above this threshold"
         )
-        top_bets = find_top_bets(results, threshold=conf_threshold)
+        top_bets = find_top_bets(results_display, threshold=conf_threshold)
         if not top_bets.empty:
             st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
             for _, bet in top_bets.iterrows():
@@ -818,9 +929,9 @@ def run_league_pipeline(league_choice):
         else:
             st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
-        if results:
+        if results_display:
             st.markdown("### 📊 All Games Analysis")
-            for bet in results:
+            for bet in results_display:
                 display_bet_card(bet, team_stats_global)
         else:
             st.info(f"No upcoming {league_choice} games found.")
