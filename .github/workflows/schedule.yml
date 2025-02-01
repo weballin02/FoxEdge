@@ -2,7 +2,7 @@ name: Scheduled Streamlit Run
 
 on:
   schedule:
-    - cron: '0 22 * * *'  # Runs every day at 8 AM UTC (adjust if needed)
+    - cron: '15 22 * * *'  # Runs every day at 8 AM UTC (adjust if needed)
   workflow_dispatch:  # Allows manual triggering if needed
 
 jobs:
