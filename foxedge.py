@@ -19,10 +19,29 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import joblib
 import os
-import time  # for sleep in retries
+import time  # for retry backoff
 
 # cbbpy for NCAAB data
 import cbbpy.mens_scraper as cbb
+
+################################################################################
+# FUNCTION: load_nfl_scoring_lines
+################################################################################
+@st.cache_data(ttl=14400)
+def load_nfl_scoring_lines():
+    """
+    Loads NFL scoring lines using nfl_data_py’s import_sc_lines endpoint.
+    Expected columns: game_id, season, week, home_team, away_team, spread, over_under.
+    """
+    try:
+        sc_lines = nfl.import_sc_lines()
+        if not sc_lines.empty:
+            sc_lines['spread'] = pd.to_numeric(sc_lines['spread'], errors='coerce')
+            sc_lines['over_under'] = pd.to_numeric(sc_lines['over_under'], errors='coerce')
+        return sc_lines
+    except Exception as e:
+        st.warning(f"Error loading NFL scoring lines: {e}")
+        return pd.DataFrame()
 
 ################################################################################
 # FIREBASE CONFIGURATION
@@ -130,7 +149,7 @@ def get_team_game_log(team_id, season, retries=3, timeout=90):
     Retries up to `retries` times with exponential backoff if errors occur.
     Returns a DataFrame (which may be empty if all attempts fail).
     """
-    from nba_api.stats.endpoints import TeamGameLog  # ensure local import
+    from nba_api.stats.endpoints import TeamGameLog  # local import
     for attempt in range(1, retries + 1):
         try:
             gl = TeamGameLog(team_id=team_id, season=season, timeout=timeout).get_data_frames()[0]
@@ -165,7 +184,7 @@ def train_team_models(team_data: pd.DataFrame):
       - model_errors: dict of training errors for each model.
       - imputer_models: dict mapping each team to a tuple (imputer, feature_columns)
     """
-    # Ensure model classes are defined within this function:
+    # Import model classes here to ensure availability in the cached function
     from xgboost import XGBRegressor
     from lightgbm import LGBMRegressor
     from catboost import CatBoostRegressor
@@ -199,7 +218,8 @@ def train_team_models(team_data: pd.DataFrame):
                 df_team['rolling_std'] = 0
 
             try:
-                df_team['season_avg'] = df_team['score'].expanding().mean()
+                # Use group_keys=False to preserve previous behavior and silence the FutureWarning
+                df_team['season_avg'] = df_team.groupby('team', group_keys=False)['score'].expanding().mean().reset_index(level=0, drop=True)
             except Exception as e:
                 st.warning(f"Season avg error for team {team}: {e}")
                 df_team['season_avg'] = df_team['score']
@@ -505,7 +525,7 @@ def preprocess_nfl_data(schedule):
         data.sort_values('gameday', inplace=True)
         data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
         data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-        data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
+        data['season_avg'] = data.groupby('team', group_keys=False)['score'].expanding().mean().reset_index(level=0, drop=True)
         data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
         data['first_half_avg'] = data['rolling_avg'] * 0.6
         data['second_half_avg'] = data['rolling_avg'] * 0.4
@@ -702,7 +722,7 @@ def load_ncaab_data_current_season(season=2025):
         data.sort_values("gameday", inplace=True)
         data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
         data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-        data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
+        data['season_avg'] = data.groupby('team', group_keys=False)['score'].expanding().mean().reset_index(level=0, drop=True)
         data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
         data['first_half_avg'] = data['rolling_avg'] * 0.6
         data['second_half_avg'] = data['rolling_avg'] * 0.4
