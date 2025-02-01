@@ -148,21 +148,6 @@ def train_team_models(team_data: pd.DataFrame):
         df_team['season_avg'] = df_team['score'].expanding().mean()
         df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
 
-        # 1️⃣ In-Game Performance Trends
-        df_team['first_half_avg'] = df_team['rolling_avg'] * 0.6
-        df_team['second_half_avg'] = df_team['rolling_avg'] * 0.4
-
-        # 2️⃣ Late-Game Efficiency Metric
-        df_team['late_game_efficiency'] = df_team['score'] * 0.3 + df_team['season_avg'] * 0.7
-
-        # 3️⃣ Early vs. Late Game Performance Differential
-        df_team['early_vs_late'] = df_team['first_half_avg'] - df_team['second_half_avg']
-
-        # 4️⃣ Advanced Feature Engineering for Model Training
-        # Adding 'early_vs_late' and 'late_game_efficiency' as new features
-        # Renamed to 'late_game_impact' to match the enhancement description
-        df_team.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
-
         # Ensure team_stats contain scalar values
         team_stats[team] = {
             'mean': round_half(scores.mean()),
@@ -172,7 +157,7 @@ def train_team_models(team_data: pd.DataFrame):
         }
 
         # Prepare features and target
-        features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact']]
+        features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']]
         features = features.fillna(0)
         X = features.values
         y = scores.values
@@ -250,7 +235,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     # Feature Engineering Enhancements
     if data_len < 3:
         return None, (None, None)
-    last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact']].tail(1)
+    last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
     X_next = last_features.values
 
     # Stacking Regressor
@@ -294,7 +279,6 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     if isinstance(sigma, (pd.Series, pd.DataFrame, np.ndarray)):
         sigma = sigma.item()
 
-    # 6️⃣ Confidence Interval Adjustments
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
 
@@ -372,19 +356,6 @@ def preprocess_nfl_data(schedule):
     
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
 
-    # 1️⃣ In-Game Performance Trends
-    data['first_half_avg'] = data['rolling_avg'] * 0.6
-    data['second_half_avg'] = data['rolling_avg'] * 0.4
-
-    # 2️⃣ Late-Game Efficiency Metric
-    data['late_game_efficiency'] = data['score'] * 0.3 + data['season_avg'] * 0.7
-
-    # 3️⃣ Early vs. Late Game Performance Differential
-    data['early_vs_late'] = data['first_half_avg'] - data['second_half_avg']
-
-    # 4️⃣ Advanced Feature Engineering for Model Training
-    data.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
-
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
@@ -454,19 +425,6 @@ def load_nba_data():
                 gl['season_avg'] = gl['PTS'].expanding().mean()
                 gl['weighted_avg'] = (gl['rolling_avg'] * 0.6) + (gl['season_avg'] * 0.4)
 
-                # 1️⃣ In-Game Performance Trends
-                gl['first_half_avg'] = gl['rolling_avg'] * 0.6
-                gl['second_half_avg'] = gl['rolling_avg'] * 0.4
-
-                # 2️⃣ Late-Game Efficiency Metric
-                gl['late_game_efficiency'] = gl['PTS'] * 0.3 + gl['season_avg'] * 0.7
-
-                # 3️⃣ Early vs. Late Game Performance Differential
-                gl['early_vs_late'] = gl['first_half_avg'] - gl['second_half_avg']
-
-                # 4️⃣ Advanced Feature Engineering for Model Training
-                gl.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
-
                 # We'll keep a final 'score' for training, which is the team's points
                 for idx, row_ in gl.iterrows():
                     try:
@@ -480,9 +438,7 @@ def load_nba_data():
                             'rolling_avg': row_['rolling_avg'],
                             'rolling_std': row_['rolling_std'],
                             'season_avg': row_['season_avg'],
-                            'weighted_avg': row_['weighted_avg'],
-                            'early_vs_late': row_['early_vs_late'],
-                            'late_game_impact': row_['late_game_impact']
+                            'weighted_avg': row_['weighted_avg']
                         })
                     except Exception as e:
                         print(f"Error processing row for team {team_abbrev}: {str(e)}")
@@ -576,19 +532,6 @@ def load_ncaab_data_current_season(season=2025):
     data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
     
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
-
-    # 1️⃣ In-Game Performance Trends
-    data['first_half_avg'] = data['rolling_avg'] * 0.6
-    data['second_half_avg'] = data['rolling_avg'] * 0.4
-
-    # 2️⃣ Late-Game Efficiency Metric
-    data['late_game_efficiency'] = data['score'] * 0.3 + data['season_avg'] * 0.7
-
-    # 3️⃣ Early vs. Late Game Performance Differential
-    data['early_vs_late'] = data['first_half_avg'] - data['second_half_avg']
-
-    # 4️⃣ Advanced Feature Engineering for Model Training
-    data.rename(columns={'late_game_efficiency': 'late_game_impact'}, inplace=True)
 
     data.sort_values(['team', 'gameday'], inplace=True)
     data['game_index'] = data.groupby('team').cumcount()
