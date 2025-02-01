@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -37,6 +38,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import joblib
 import os
+
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
 
@@ -268,14 +270,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data, 
     if team not in team_stats:
         return None, (None, None)
 
-    # Filter the team's data and work on a copy
-    df_team = team_data[team_data['team'] == team].copy()
-
-    # Ensure the 'lag_score' column exists.
-    # If missing, use the 'season_avg' as a fallback.
-    if 'lag_score' not in df_team.columns:
-        df_team['lag_score'] = df_team['season_avg']
-
+    df_team = team_data[team_data['team'] == team]
     data_len = len(df_team)
     if data_len < 3:
         return None, (None, None)
@@ -644,13 +639,11 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 ################################################################################
 # UI COMPONENTS
 ################################################################################
-def generate_writeup(bet, team_stats_global, book_spread=None, book_total=None):
-    """
-    Generate an expanded detailed analysis for a given bet, including historical head-to-head,
-    risk/volatility commentary and (if provided) a comparison to bookmaker odds.
-    """
+def generate_writeup(bet, team_stats_global):
     home_team = bet['home_team']
     away_team = bet['away_team']
+    home_pred = bet['home_pred']
+    away_pred = bet['away_pred']
     predicted_winner = bet['predicted_winner']
     confidence = bet['confidence']
 
@@ -664,157 +657,58 @@ def generate_writeup(bet, team_stats_global, book_spread=None, book_total=None):
     away_std = away_stats.get('std', 'N/A')
     away_recent = away_stats.get('recent_form', 'N/A')
 
-    # Expanded analysis with placeholders for additional data.
     writeup = f"""
 **Detailed Analysis:**
 
 - **{home_team} Performance:**
-  - **Average Score:** {home_mean}  
-    *(_Reflects the team's overall scoring consistency._)*
-  - **Score Volatility:** {home_std}  
-    *(_A higher number suggests greater variability._)*
+  - **Average Score:** {home_mean}
+  - **Score Standard Deviation:** {home_std}
   - **Recent Form (Last 5 Games):** {home_recent}
 
 - **{away_team} Performance:**
-  - **Average Score:** {away_mean}  
-    *(_Shows overall offensive output._)*
-  - **Score Volatility:** {away_std}  
-    *(_A measure of unpredictability in performance._)*
+  - **Average Score:** {away_mean}
+  - **Score Standard Deviation:** {away_std}
   - **Recent Form (Last 5 Games):** {away_recent}
 
 - **Prediction Insight:**
-  Our analysis suggests that **{predicted_winner}** is likely to win with a confidence level of **{confidence}%**.  
-  The model projects a spread and total points as shown in the bet details.
+  Based on the recent performance and statistical analysis, **{predicted_winner}** is predicted to win with a confidence level of **{confidence}%.** 
+  The projected score difference is **{bet['predicted_diff']} points**, leading to a suggested spread of **{bet['spread_suggestion']}**. 
+  Additionally, the total predicted points for the game are **{bet['predicted_total']}**, indicating a suggestion to **{bet['ou_suggestion']}**.
 
+- **Statistical Edge:**
+  The confidence level of **{confidence}%** reflects the statistical edge derived from the combined performance metrics of both teams.
+  This ensures that the prediction is data-driven and reliable.
 """
-    # If bookmaker odds are provided, add a comparison commentary.
-    if book_spread is not None and book_total is not None:
-        try:
-            # Extract the model spread from the suggestion text
-            model_spread = float(bet.get('spread_suggestion', '0').split("by")[1].strip().split()[0])
-        except Exception:
-            model_spread = None
-
-        model_total = bet.get('predicted_total')
-        if model_spread is not None and model_total is not None:
-            spread_diff = model_spread - book_spread
-            total_diff = model_total - book_total
-            writeup += f"""
-- **Bookmaker Odds Comparison:**
-  - **Model Spread:** {model_spread:.1f} vs. **Bookmaker Spread:** {book_spread:.1f}  
-    Difference: {spread_diff:.1f} points  
-  - **Model Total:** {model_total:.1f} vs. **Bookmaker Total:** {book_total:.1f}  
-    Difference: {total_diff:.1f} points
-
-  **Commentary:**  
-  """
-            if abs(spread_diff) >= 3:
-                writeup += ("The model's spread significantly deviates from the bookmaker's line, "
-                            "indicating potential value if you trust our analysis.")
-            else:
-                writeup += "The spread prediction aligns closely with the bookmaker's line."
-            writeup += "\n"
-            if abs(total_diff) >= 5:
-                writeup += ("There is a notable difference in the total points prediction, which might "
-                            "offer an edge in over/under betting.")
-            else:
-                writeup += "The total points prediction is very similar to the bookmaker's line."
-    else:
-        writeup += "\n*No bookmaker odds were entered for comparison.*\n"
-
     return writeup
 
-def display_bet_card(bet, team_stats_global, unique_key):
-    """
-    Displays a bet card for a given matchup with:
-      - Game details and predictions.
-      - Expanded analysis writeup.
-      - Inline inputs for bookmaker spread and total with immediate comparison.
-    
-    The `unique_key` ensures that input widgets are distinct per game.
-    """
+def display_bet_card(bet, team_stats_global):
     with st.container():
         st.markdown("---")
-        # Game info and basic predictions
-        col_game, col_inputs = st.columns([2, 1])
-        with col_game:
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        with col1:
             st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
             date_obj = bet['date']
             if isinstance(date_obj, datetime):
                 st.caption(date_obj.strftime("%A, %B %d - %I:%M %p"))
+
+        with col2:
             if bet['confidence'] >= 80:
                 st.markdown("🔥 **High-Confidence Bet** 🔥")
-            st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}  " +
-                        f"<span title='The suggestion is based on the predicted score difference.'>ℹ️</span>",
-                        unsafe_allow_html=True)
-            st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}  " +
-                        f"<span title='The total points prediction is the sum of the predicted scores.'>ℹ️</span>",
-                        unsafe_allow_html=True)
-            st.metric(label="Confidence", value=f"{bet['confidence']:.1f}%",
-                      help="The model's confidence is derived from inverse error weighting.")
-        with col_inputs:
-            st.markdown("#### Enter Bookmaker Odds")
-            # Unique keys ensure these inputs are per game.
-            book_spread = st.number_input(
-                "Spread (points)",
-                min_value=-50.0,
-                max_value=50.0,
-                value=0.0,
-                step=0.5,
-                key=f"spread_{unique_key}",
-                help="Enter the bookmaker's point spread."
-            )
-            book_total = st.number_input(
-                "Total (points)",
-                min_value=80.0,
-                max_value=300.0,
-                value=145.0,
-                step=1.0,
-                key=f"total_{unique_key}",
-                help="Enter the bookmaker's total points line."
-            )
-            # Compute comparison differences (extracted similarly as before)
-            try:
-                model_spread = float(bet.get('spread_suggestion', '0').split("by")[1].strip().split()[0])
-            except Exception:
-                model_spread = None
-            model_total = bet.get('predicted_total')
-            if model_spread is not None and model_total is not None:
-                spread_diff = model_spread - book_spread
-                total_diff = model_total - book_total
-                st.markdown("---")
-                st.markdown("**Comparison Results:**")
-                st.write(f"**Model Spread:** {model_spread:.1f} points  |  **Bookmaker Spread:** {book_spread:.1f} points")
-                st.write(f"Difference (Model - Bookmaker): {spread_diff:.1f} points")
-                st.write("---")
-                st.write(f"**Model Total:** {model_total:.1f} points  |  **Bookmaker Total:** {book_total:.1f} points")
-                st.write(f"Difference (Model - Bookmaker): {total_diff:.1f} points")
-                # Provide commentary
-                commentary = ""
-                if abs(spread_diff) >= 3:
-                    commentary += ("The model's spread significantly deviates from the bookmaker's line, "
-                                   "suggesting potential value.")
-                else:
-                    commentary += "The spread is very close to the bookmaker's line."
-                commentary += "\n"
-                if abs(total_diff) >= 5:
-                    commentary += ("There is a notable difference in the total points prediction, "
-                                   "which might offer an edge in over/under betting.")
-                else:
-                    commentary += "The total prediction is similar to the bookmaker's line."
-                st.info(commentary)
-            else:
-                st.warning("Unable to extract model predictions for comparison.")
+            st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
+            st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
 
-        # Detailed insights and analysis expander
-        with st.expander("Detailed Insights", expanded=False):
-            st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
-            st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
-            st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
-        with st.expander("Game Analysis", expanded=False):
-            # Pass the bookmaker odds to the analysis writeup so that comparison commentary appears.
-            writeup = generate_writeup(bet, team_stats_global, book_spread=book_spread, book_total=book_total)
-            st.markdown(writeup)
+        with col3:
+            st.metric(label="Confidence", value=f"{bet['confidence']:.1f}%")
+
+    with st.expander("Detailed Insights", expanded=False):
+        st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
+        st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
+        st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
+
+    with st.expander("Game Analysis", expanded=False):
+        writeup = generate_writeup(bet, team_stats_global)
+        st.markdown(writeup)
 
 ################################################################################
 # GLOBALS
@@ -897,15 +791,15 @@ def run_league_pipeline(league_choice):
         top_bets = find_top_bets(results, threshold=conf_threshold)
         if not top_bets.empty:
             st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
-            for idx, bet in top_bets.iterrows():
-                display_bet_card(bet, team_stats_global, unique_key=f"top_{idx}")
+            for _, bet in top_bets.iterrows():
+                display_bet_card(bet, team_stats_global)
         else:
             st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
         if results:
             st.markdown("### 📊 All Games Analysis")
-            for idx, bet in enumerate(results):
-                display_bet_card(bet, team_stats_global, unique_key=f"all_{idx}")
+            for bet in results:
+                display_bet_card(bet, team_stats_global)
         else:
             st.info(f"No upcoming {league_choice} games found.")
 
