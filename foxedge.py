@@ -769,22 +769,44 @@ def run_league_pipeline(league_choice):
             st.info(f"No upcoming {league_choice} games found.")
 
 ################################################################################
-# STREAMLIT MAIN
+# STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
 ################################################################################
+
+import streamlit as st
+
+# Function that should run when scheduled
+def scheduled_task():
+    """
+    Function to execute scheduled tasks such as fetching new data, 
+    updating predictions, or refreshing stored models.
+    """
+    st.write("Scheduled task running!")
+    
+    # Example: Add your scheduled task logic here
+    # fetch_new_data()
+    # update_predictions()
+    # refresh_cache()
+
+    st.success("Scheduled task completed successfully.")
+
+# Streamlit UI and main logic
 def main():
+    """
+    Main Streamlit function for interactive user interface.
+    """
     st.set_page_config(
         page_title="FoxEdge Sports Betting Edge",
         page_icon="🦊",
         layout="centered"
     )
-    initialize_csv()
 
+    st.title("🦊 FoxEdge Sports Betting Insights")
+    
+    # User login logic
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
     if not st.session_state['logged_in']:
-        st.title("Login to FoxEdge Sports Betting Insights")
-
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
 
@@ -808,7 +830,7 @@ def main():
             logout_user()
             st.experimental_rerun()
 
-    st.title("🦊 FoxEdge Sports Betting Insights")
+    # Sidebar Navigation
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
         "Select League",
@@ -816,19 +838,18 @@ def main():
         help="Choose which league's games you'd like to analyze"
     )
 
+    # Run the selected league's pipeline
     run_league_pipeline(league_choice)
 
     st.sidebar.markdown(
         "### About FoxEdge\n"
         "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
     )
-    st.sidebar.markdown("#### Powered by AI & Statistical Analysis")
 
     # CSV Output Enhancements
     if st.button("Save Predictions to CSV"):
         if results:
             save_predictions_to_csv(results)
-            # Provide download link
             csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="Download Predictions as CSV",
@@ -839,5 +860,14 @@ def main():
         else:
             st.warning("No predictions to save.")
 
+# Check if this is a scheduled run triggered by GitHub Actions
 if __name__ == "__main__":
-    main()
+    query_params = st.experimental_get_query_params()
+
+    if "trigger" in query_params:
+        # Run scheduled task if triggered by GitHub Actions
+        scheduled_task()
+        st.write("Task triggered successfully.")
+    else:
+        # Run the app normally for users
+        main()
