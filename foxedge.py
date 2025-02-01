@@ -207,7 +207,7 @@ def train_team_models(team_data: pd.DataFrame):
             df_team['late_game_impact'] = df_team['score'] * 0.3 + df_team.get('season_avg', df_team['score']) * 0.7
             df_team['early_vs_late'] = df_team['first_half_avg'] - df_team['second_half_avg']
 
-            # Add lag score feature
+            # Add previous game score as a lag feature
             df_team['lag_score'] = df_team['score'].shift(1).fillna(df_team.get('season_avg', df_team['score']))
 
             # Store aggregated team statistics
@@ -240,7 +240,7 @@ def train_team_models(team_data: pd.DataFrame):
             X_imputed = imputer.fit_transform(X_combined)
             # Store the imputer and the column names (so we can later re-create the same feature set)
             imputer_models[team] = (imputer, X_combined.columns)
-
+            
             X_train = X_imputed
             y = df_team['score']
             split_index = int(len(y) * 0.8)
@@ -337,40 +337,42 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data, 
     """
     if team not in team_stats:
         return None, (None, None)
-    df_team = team_data[team_data['team'] == team]
+    df_team = team_data[team_data['team'] == team].copy()
     if len(df_team) < 3:
         return None, (None, None)
-    try:
-        last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact', 'lag_score',
-                                   'is_home', 'rank', 'wins', 'losses', 'off_rating', 'def_rating', 'pace']].tail(1)
-    except Exception as e:
-        st.write(f"Error extracting features for team {team}: {e}")
-        return None, (None, None)
-    # Override is_home if provided
+    # Define the required columns used during training.
+    required_cols = ['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact', 'lag_score',
+                     'is_home', 'rank', 'wins', 'losses', 'off_rating', 'def_rating', 'pace']
+    # Ensure any missing required columns are added with a default value (0)
+    for col in required_cols:
+        if col not in df_team.columns:
+            df_team[col] = 0
+    # Extract the most recent row with all required features.
+    last_features = df_team[required_cols].tail(1)
+    # Override 'is_home' if provided.
     if 'is_home' in last_features.columns:
         last_features = last_features.copy()
         last_features['is_home'] = is_home if is_home is not None else last_features['is_home']
-    # Create missing indicators for the same columns
+    # Create missing indicators for these columns.
     indicators = last_features.isnull().astype(float)
     indicators.columns = [col + '_missing' for col in indicators.columns]
     X_combined = pd.concat([last_features, indicators], axis=1)
-    # Use stored imputer for this team
+    # Use stored imputer for this team to ensure the same feature set is used.
     if team in imputer_models:
         imputer, columns_used = imputer_models[team]
-        # Ensure X_combined has the same columns as used during training
         X_combined = X_combined.reindex(columns=columns_used, fill_value=0)
         X_next = imputer.transform(X_combined)
     else:
         X_next = X_combined.fillna(0).values
 
-    # Predict using stacking model
+    # Predict using stacking model.
     stack_pred = None
     try:
         if team in stack_models:
             stack_pred = float(stack_models[team].predict(X_next)[0])
     except Exception as e:
         st.write(f"Error predicting with stacking model for team {team}: {e}")
-    # Predict using ARIMA
+    # Predict using ARIMA.
     arima_pred = None
     try:
         if team in arima_models:
@@ -379,7 +381,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data, 
     except Exception as e:
         st.write(f"Error predicting with ARIMA for team {team}: {e}")
 
-    # Ensemble using inverse MSE weighting
+    # Ensemble using inverse MSE weighting.
     if stack_pred is not None and arima_pred is not None:
         mse_stack = model_errors.get(team, {}).get('stacking', np.inf)
         mse_arima = model_errors.get(team, {}).get('arima', np.inf)
