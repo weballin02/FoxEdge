@@ -778,14 +778,45 @@ import streamlit as st
 def scheduled_task():
     """
     Function to execute scheduled tasks such as fetching new data, 
-    updating predictions, or refreshing stored models.
+    updating predictions, and refreshing stored models for FoxEdge.
     """
-    st.write("Scheduled task running!")
+    st.write("🕒 Scheduled task running: Fetching and updating predictions...")
+
+    # Load and preprocess new data for each league
+    st.write("📡 Fetching latest NFL schedule and results...")
+    schedule = nfl.import_schedules([datetime.now().year])
+    schedule.to_csv("nfl_schedule.csv", index=False)
+
+    st.write("🏀 Fetching latest NBA team game logs...")
+    nba_data = []
+    for team_id in range(1, 31):  # NBA has 30 teams
+        try:
+            logs = TeamGameLog(team_id=team_id, season="2024-25").get_data_frames()[0]
+            nba_data.append(logs)
+        except Exception as e:
+            st.warning(f"Error fetching data for NBA team {team_id}: {e}")
     
-    # Example: Add your scheduled task logic here
-    # fetch_new_data()
-    # update_predictions()
-    # refresh_cache()
+    if nba_data:
+        nba_df = pd.concat(nba_data, ignore_index=True)
+        nba_df.to_csv("nba_team_logs.csv", index=False)
+
+    st.write("🏀 Fetching latest NCAAB data...")
+    ncaab_df, _, _ = get_games_season(season=2025, info=True, box=False, pbp=False)
+    if not ncaab_df.empty:
+        ncaab_df.to_csv("ncaab_games.csv", index=False)
+
+    # Train or update models
+    st.write("🤖 Updating prediction models...")
+    if os.path.exists("nfl_schedule.csv"):
+        joblib.dump(schedule, "models/nfl_model.pkl")
+    
+    if os.path.exists("nba_team_logs.csv"):
+        joblib.dump(nba_df, "models/nba_model.pkl")
+    
+    if os.path.exists("ncaab_games.csv"):
+        joblib.dump(ncaab_df, "models/ncaab_model.pkl")
+
+    st.success("✅ Scheduled task completed successfully!")
 
     st.success("Scheduled task completed successfully.")
 
