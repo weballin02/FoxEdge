@@ -19,6 +19,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import joblib
 import os
+import time  # for sleep in retries
 
 # cbbpy for NCAAB data
 import cbbpy.mens_scraper as cbb
@@ -121,23 +122,23 @@ def safe_numeric(val, default=0):
         return default
 
 ################################################################################
-# NFL SCORING LINES (MARKET DATA) LOADING
+# NBA API RETRY HELPER
 ################################################################################
-@st.cache_data(ttl=14400)
-def load_nfl_scoring_lines():
+def get_team_game_log(team_id, season, retries=3, timeout=90):
     """
-    Loads NFL scoring lines using nfl_data_py's import_sc_lines endpoint.
-    Expected columns: game_id, season, week, home_team, away_team, spread, over_under.
+    Attempts to fetch the team game log from nba_api with a specified timeout.
+    Retries up to `retries` times with exponential backoff if errors occur.
+    Returns a DataFrame (which may be empty if all attempts fail).
     """
-    try:
-        sc_lines = nfl.import_sc_lines()
-        if not sc_lines.empty:
-            sc_lines['spread'] = pd.to_numeric(sc_lines['spread'], errors='coerce')
-            sc_lines['over_under'] = pd.to_numeric(sc_lines['over_under'], errors='coerce')
-        return sc_lines
-    except Exception as e:
-        st.warning(f"Error loading NFL scoring lines: {e}")
-        return pd.DataFrame()
+    from nba_api.stats.endpoints import TeamGameLog  # ensure local import
+    for attempt in range(1, retries + 1):
+        try:
+            gl = TeamGameLog(team_id=team_id, season=season, timeout=timeout).get_data_frames()[0]
+            return gl
+        except Exception as e:
+            st.write(f"Error processing NBA team {team_id} for season {season} (attempt {attempt}): {e}")
+            time.sleep(2 ** attempt)
+    return pd.DataFrame()
 
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
@@ -164,6 +165,11 @@ def train_team_models(team_data: pd.DataFrame):
       - model_errors: dict of training errors for each model.
       - imputer_models: dict mapping each team to a tuple (imputer, feature_columns)
     """
+    # Ensure model classes are defined within this function:
+    from xgboost import XGBRegressor
+    from lightgbm import LGBMRegressor
+    from catboost import CatBoostRegressor
+
     stack_models = {}
     arima_models = {}
     team_stats = {}
@@ -175,13 +181,11 @@ def train_team_models(team_data: pd.DataFrame):
         try:
             df_team = team_data[team_data['team'] == team].copy()
             df_team.sort_values('gameday', inplace=True)
-            # Ensure score is numeric
             df_team['score'] = pd.to_numeric(df_team['score'], errors='coerce')
             scores = df_team['score'].dropna().reset_index(drop=True)
             if len(scores) < 3:
                 continue
 
-            # Compute rolling and season aggregates (with error handling)
             try:
                 df_team['rolling_avg'] = df_team['score'].rolling(window=3, min_periods=1).mean()
             except Exception as e:
@@ -207,10 +211,8 @@ def train_team_models(team_data: pd.DataFrame):
             df_team['late_game_impact'] = df_team['score'] * 0.3 + df_team.get('season_avg', df_team['score']) * 0.7
             df_team['early_vs_late'] = df_team['first_half_avg'] - df_team['second_half_avg']
 
-            # Add previous game score as a lag feature
             df_team['lag_score'] = df_team['score'].shift(1).fillna(df_team.get('season_avg', df_team['score']))
 
-            # Store aggregated team statistics
             team_stats[team] = {
                 'mean': round_half(scores.mean()),
                 'std': round_half(scores.std()),
@@ -218,27 +220,22 @@ def train_team_models(team_data: pd.DataFrame):
                 'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
             }
 
-            # Ensure extra features exist (if missing, create with default value 0)
             for col in ['is_home', 'rank', 'wins', 'losses', 'off_rating', 'def_rating', 'pace']:
                 if col not in df_team.columns:
                     df_team[col] = 0
 
-            # Define the base set of feature columns
             feature_columns = [
                 'rolling_avg', 'rolling_std', 'weighted_avg',
                 'early_vs_late', 'late_game_impact', 'lag_score',
                 'is_home', 'rank', 'wins', 'losses', 'off_rating', 'def_rating', 'pace'
             ]
-            # Create missing indicators for each predictor
             X_original = df_team[feature_columns]
             indicators = X_original.isnull().astype(float)
             indicators.columns = [col + '_missing' for col in indicators.columns]
             X_combined = pd.concat([X_original, indicators], axis=1)
 
-            # Use KNNImputer for advanced imputation
             imputer = KNNImputer(n_neighbors=3)
             X_imputed = imputer.fit_transform(X_combined)
-            # Store the imputer and the column names (so we can later re-create the same feature set)
             imputer_models[team] = (imputer, X_combined.columns)
             
             X_train = X_imputed
@@ -254,7 +251,6 @@ def train_team_models(team_data: pd.DataFrame):
             n_splits = 3 if len(y_train) >= 3 else 2
             tscv = TimeSeriesSplit(n_splits=n_splits)
 
-            # Define base models
             estimators = [
                 ('xgb', XGBRegressor(n_estimators=200, random_state=42)),
                 ('lgbm', LGBMRegressor(n_estimators=200, random_state=42)),
@@ -278,7 +274,6 @@ def train_team_models(team_data: pd.DataFrame):
                 st.write(f"Error training stacking model for team {team}: {e}")
                 continue
 
-            # Train ARIMA if sufficient data exists
             if len(y) >= 7:
                 try:
                     arima = auto_arima(
@@ -340,24 +335,18 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data, 
     df_team = team_data[team_data['team'] == team].copy()
     if len(df_team) < 3:
         return None, (None, None)
-    # Define the required columns used during training.
     required_cols = ['rolling_avg', 'rolling_std', 'weighted_avg', 'early_vs_late', 'late_game_impact', 'lag_score',
                      'is_home', 'rank', 'wins', 'losses', 'off_rating', 'def_rating', 'pace']
-    # Ensure any missing required columns are added with a default value (0)
     for col in required_cols:
         if col not in df_team.columns:
             df_team[col] = 0
-    # Extract the most recent row with all required features.
     last_features = df_team[required_cols].tail(1)
-    # Override 'is_home' if provided.
     if 'is_home' in last_features.columns:
         last_features = last_features.copy()
         last_features['is_home'] = is_home if is_home is not None else last_features['is_home']
-    # Create missing indicators for these columns.
     indicators = last_features.isnull().astype(float)
     indicators.columns = [col + '_missing' for col in indicators.columns]
     X_combined = pd.concat([last_features, indicators], axis=1)
-    # Use stored imputer for this team to ensure the same feature set is used.
     if team in imputer_models:
         imputer, columns_used = imputer_models[team]
         X_combined = X_combined.reindex(columns=columns_used, fill_value=0)
@@ -365,14 +354,12 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data, 
     else:
         X_next = X_combined.fillna(0).values
 
-    # Predict using stacking model.
     stack_pred = None
     try:
         if team in stack_models:
             stack_pred = float(stack_models[team].predict(X_next)[0])
     except Exception as e:
         st.write(f"Error predicting with stacking model for team {team}: {e}")
-    # Predict using ARIMA.
     arima_pred = None
     try:
         if team in arima_models:
@@ -381,7 +368,6 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data, 
     except Exception as e:
         st.write(f"Error predicting with ARIMA for team {team}: {e}")
 
-    # Ensemble using inverse MSE weighting.
     if stack_pred is not None and arima_pred is not None:
         mse_stack = model_errors.get(team, {}).get('stacking', np.inf)
         mse_arima = model_errors.get(team, {}).get('arima', np.inf)
@@ -444,7 +430,7 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats, mar
             extra_info['market_over_under'] = None
     else:
         extra_info['market_over_under'] = None
-    ou_threshold = 145  # default threshold for total points suggestion
+    ou_threshold = 145
     result = {
         'predicted_winner': winner,
         'diff': round_half(diff),
@@ -552,6 +538,7 @@ def load_nba_data():
     """
     Loads NBA team-level data across multiple seasons.
     Computes an 'is_home' flag using the MATCHUP column (if available) and advanced metrics.
+    Uses the get_team_game_log helper to retry API calls.
     """
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
@@ -561,7 +548,7 @@ def load_nba_data():
             team_id = team['id']
             team_abbrev = team.get('abbreviation', str(team_id))
             try:
-                gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
+                gl = get_team_game_log(team_id, season, retries=3, timeout=90)
                 if gl.empty:
                     continue
                 gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'], errors='coerce')
