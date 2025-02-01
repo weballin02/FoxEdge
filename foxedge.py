@@ -268,7 +268,14 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data, 
     if team not in team_stats:
         return None, (None, None)
 
-    df_team = team_data[team_data['team'] == team]
+    # Filter the team's data and work on a copy
+    df_team = team_data[team_data['team'] == team].copy()
+
+    # Ensure the 'lag_score' column exists.
+    # If missing, use the 'season_avg' as a fallback.
+    if 'lag_score' not in df_team.columns:
+        df_team['lag_score'] = df_team['season_avg']
+
     data_len = len(df_team)
     if data_len < 3:
         return None, (None, None)
