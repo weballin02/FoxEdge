@@ -34,7 +34,6 @@ from pathlib import Path
 import requests
 import firebase_admin
 from firebase_admin import credentials, auth
-from datetime import datetime
 import joblib
 import os
 
@@ -393,22 +392,20 @@ def load_nfl_schedule():
     return schedule
 
 def preprocess_nfl_data(schedule):
-    home_df = schedule[['gameday', 'home_team', 'home_score']].rename(
-        columns={'home_team': 'team', 'home_score': 'score'}
+    # Include opponent score from the original schedule
+    home_df = schedule[['gameday', 'home_team', 'home_score', 'away_score']].rename(
+        columns={'home_team': 'team', 'home_score': 'score', 'away_score': 'opp_score'}
     )
-    away_df = schedule[['gameday', 'away_team', 'away_score']].rename(
-        columns={'away_team': 'team', 'away_score': 'score'}
+    away_df = schedule[['gameday', 'away_team', 'away_score', 'home_score']].rename(
+        columns={'away_team': 'team', 'away_score': 'score', 'home_score': 'opp_score'}
     )
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=['score'], inplace=True)
     data.sort_values('gameday', inplace=True)
-
-    # Enhanced Feature Engineering for NFL data
     data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
     data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
     data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
-
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
@@ -554,13 +551,15 @@ def fetch_upcoming_nba_games(days_ahead=3):
     return upcoming
 
 ########################################
-# NCAAB HISTORICAL LOADER
+# NCAAB HISTORICAL LOADER (UPDATED)
 ########################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
     """
     Loads finished or in-progress NCAA MBB games for the given season
     using cbbpy. Adds is_home=1 for home team, is_home=0 for away.
+    
+    Now also includes opponent score (opp_score) for defensive metric calculations.
     """
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
@@ -570,33 +569,31 @@ def load_ncaab_data_current_season(season=2025):
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
 
-    home_df = info_df.rename(columns={
+    home_df = info_df[['game_day', 'home_team', 'home_score', 'away_score']].rename(columns={
+        "game_day": "gameday",
         "home_team": "team",
         "home_score": "score",
-        "game_day": "gameday"
-    })[["gameday", "team", "score"]]
+        "away_score": "opp_score"
+    })
     home_df['is_home'] = 1
 
-    away_df = info_df.rename(columns={
+    away_df = info_df[['game_day', 'away_team', 'away_score', 'home_score']].rename(columns={
+        "game_day": "gameday",
         "away_team": "team",
         "away_score": "score",
-        "game_day": "gameday"
-    })[["gameday", "team", "score"]]
+        "home_score": "opp_score"
+    })
     away_df['is_home'] = 0
 
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
-
-    # Enhanced Feature Engineering for NCAAB data
     data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
     data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
     data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
-
     data.sort_values(['team', 'gameday'], inplace=True)
     data['game_index'] = data.groupby('team').cumcount()
-
     return data
 
 ########################################
@@ -764,14 +761,12 @@ def run_league_pipeline(league_choice):
             return
         team_data = preprocess_nfl_data(schedule)
         upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
-
     elif league_choice == "NBA":
         team_data = load_nba_data()
         if team_data.empty:
             st.error("Unable to load NBA data.")
             return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
-
     else:  # NCAAB
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
@@ -783,12 +778,23 @@ def run_league_pipeline(league_choice):
         st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
 
-    # For NBA, precompute defensive rankings for opponent strength adjustments.
+    # Compute opponent defensive ratings for dynamic adjustments
     if league_choice == "NBA":
+        # NBA data already has a defensive rating column
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
         top_10 = set([t for t, r in sorted_def[:10]])
         bottom_10 = set([t for t, r in sorted(def_ratings.items(), key=lambda x: x[1], reverse=True)[:10]])
+    elif league_choice == "NFL":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
+    elif league_choice == "NCAAB":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
     else:
         top_10, bottom_10 = None, None
 
@@ -802,7 +808,7 @@ def run_league_pipeline(league_choice):
             home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
             away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
 
-            # --- NBA Specific Adjustments ---
+            # --- Dynamic Adjustments for Each League ---
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 # Fatigue Factor: Adjust based on rest days (back-to-back or 3+ days rest)
                 home_games = team_data[team_data['team'] == home]
@@ -813,7 +819,6 @@ def run_league_pipeline(league_choice):
                         home_pred -= 3
                     elif rest_days_home >= 3:
                         home_pred += 2
-
                 away_games = team_data[team_data['team'] == away]
                 if not away_games.empty:
                     last_game_away = away_games['gameday'].max()
@@ -822,23 +827,85 @@ def run_league_pipeline(league_choice):
                         away_pred -= 3
                     elif rest_days_away >= 3:
                         away_pred += 2
-
-                # Home/Away Adjustment: Simple advantage for the home team
+                # Home/Away Adjustment
                 home_pred += 1
                 away_pred -= 1
-
-                # Opponent Strength Scaling: Adjust based on opponent's defensive ranking
+                # Opponent Strength Scaling
                 if top_10 and bottom_10:
                     if away in top_10:
                         home_pred -= 2
                     elif away in bottom_10:
                         home_pred += 2
-
                     if home in top_10:
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
-            # --- End NBA Adjustments ---
+
+            elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
+                # Fatigue Factor for NFL: using slightly smaller adjustments
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = home_games['gameday'].max()
+                    rest_days_home = (row['gameday'] - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 2
+                    elif rest_days_home >= 3:
+                        home_pred += 1
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = away_games['gameday'].max()
+                    rest_days_away = (row['gameday'] - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 2
+                    elif rest_days_away >= 3:
+                        away_pred += 1
+                # Home/Away Adjustment
+                home_pred += 1
+                away_pred -= 1
+                # Opponent Strength Scaling
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+
+            elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
+                # Fatigue Factor for NCAAB: similar to NBA adjustments
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = home_games['gameday'].max()
+                    rest_days_home = (row['gameday'] - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = away_games['gameday'].max()
+                    rest_days_away = (row['gameday'] - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                # Home/Away Adjustment
+                home_pred += 1
+                away_pred -= 1
+                # Opponent Strength Scaling
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+
+            # --- End of Dynamic Adjustments ---
 
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
@@ -885,8 +952,6 @@ def run_league_pipeline(league_choice):
 ################################################################################
 # STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
 ################################################################################
-
-import streamlit as st
 
 def scheduled_task():
     """
