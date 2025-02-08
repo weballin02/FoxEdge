@@ -19,7 +19,6 @@ from firebase_admin import credentials, auth
 import joblib
 import os
 from joblib import Parallel, delayed
-import uuid  # Added to generate unique IDs for bet card containers
 
 # cbbpy for NCAAB historical data
 import cbbpy.mens_scraper as cbb
@@ -694,33 +693,6 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 ################################################################################
 # UI COMPONENTS
 ################################################################################
-def inject_html2canvas_script():
-    """
-    Injects the html2canvas library and the captureScreenshot JS function into the page.
-    This function is called once from main() so that the captureScreenshot function is available.
-    """
-    html_code = """
-    <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
-    <script>
-    function captureScreenshot(elementId) {
-      html2canvas(document.getElementById(elementId)).then(function(canvas) {
-        // Create a new canvas with TikTok-optimized dimensions (1080x1920)
-        var resizedCanvas = document.createElement('canvas');
-        resizedCanvas.width = 1080;
-        resizedCanvas.height = 1920;
-        var ctx = resizedCanvas.getContext('2d');
-        // Scale the captured canvas to fill the new dimensions
-        ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, 1080, 1920);
-        var link = document.createElement('a');
-        link.download = 'betcard_' + elementId + '.png';
-        link.href = resizedCanvas.toDataURL();
-        link.click();
-      });
-    }
-    </script>
-    """
-    st.components.v1.html(html_code, height=0)
-
 def generate_writeup(bet, team_stats_global):
     """Generates a detailed analysis writeup for a given bet."""
     home_team = bet['home_team']
@@ -766,12 +738,6 @@ def generate_writeup(bet, team_stats_global):
 
 def display_bet_card(bet, team_stats_global, team_data=None):
     """Displays a bet card with summary and expandable detailed insights."""
-    # Generate a unique ID for the bet card container so we can capture its screenshot.
-    card_id = "betcard-" + str(uuid.uuid4())
-    
-    # Wrap the bet card content in a div with the unique id.
-    st.markdown(f"<div id='{card_id}'>", unsafe_allow_html=True)
-    
     conf = bet['confidence']
     if conf >= 80:
         confidence_color = "green"
@@ -830,19 +796,6 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
                 away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(away_scores)
-    
-    # Close the wrapping div
-    st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Add a button (using an HTML snippet) that calls our injected JS function to capture the screenshot.
-    screenshot_button_html = f"""
-    <div style="text-align: center; margin-top: 10px;">
-        <button onclick="captureScreenshot('{card_id}')" style="padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">
-            Save Social Media Image
-        </button>
-    </div>
-    """
-    st.components.v1.html(screenshot_button_html, height=70)
 
 ################################################################################
 # GLOBALS
@@ -1157,9 +1110,6 @@ def main():
     )
 
     st.title("🦊 FoxEdge Sports Betting Insights")
-    
-    # Inject the html2canvas script and captureScreenshot function into the page.
-    inject_html2canvas_script()
     
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
