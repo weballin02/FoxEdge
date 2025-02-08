@@ -722,35 +722,69 @@ def generate_writeup(bet, team_stats_global):
 """
     return writeup
 
-def display_bet_card(bet, team_stats_global):
+def display_bet_card(bet, team_stats_global, team_data=None):
     """Displays a bet card with summary and expandable detailed insights."""
+    # Determine color for confidence based on its value
+    conf = bet['confidence']
+    if conf >= 80:
+        confidence_color = "green"
+    elif conf < 60:
+        confidence_color = "red"
+    else:
+        confidence_color = "orange"
+    
     with st.container():
         st.markdown("---")
         col1, col2, col3 = st.columns([2, 2, 1])
-
+    
         with col1:
             st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
             date_obj = bet['date']
             if isinstance(date_obj, datetime):
                 st.caption(date_obj.strftime("%A, %B %d - %I:%M %p"))
-
+    
         with col2:
             if bet['confidence'] >= 80:
                 st.markdown("🔥 **High-Confidence Bet** 🔥")
-            st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
-            st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
-
+            st.markdown(
+                f"**<span title='Spread Suggestion is based on the predicted point difference'>Spread Suggestion:</span>** {bet['spread_suggestion']}",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"**<span title='Total Suggestion indicates the recommended bet on the combined score'>Total Suggestion:</span>** {bet['ou_suggestion']}",
+                unsafe_allow_html=True,
+            )
+    
         with col3:
-            st.metric(label="Confidence", value=f"{bet['confidence']:.1f}%")
-
+            tooltip_text = "Confidence indicates the statistical edge derived from the combined performance metrics of both teams."
+            st.markdown(
+                f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
+                unsafe_allow_html=True,
+            )
+    
     with st.expander("Detailed Insights", expanded=False):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
         st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
-
+    
     with st.expander("Game Analysis", expanded=False):
         writeup = generate_writeup(bet, team_stats_global)
         st.markdown(writeup)
+    
+    if team_data is not None:
+        with st.expander("Recent Performance Trends", expanded=False):
+            # Display line chart for home team
+            home_team_data = team_data[team_data['team'] == bet['home_team']].sort_values('gameday')
+            if not home_team_data.empty:
+                st.markdown(f"**{bet['home_team']} Recent Scores:**")
+                home_scores = home_team_data['score'].tail(5).reset_index(drop=True)
+                st.line_chart(home_scores)
+            # Display line chart for away team
+            away_team_data = team_data[team_data['team'] == bet['away_team']].sort_values('gameday')
+            if not away_team_data.empty:
+                st.markdown(f"**{bet['away_team']} Recent Scores:**")
+                away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
+                st.line_chart(away_scores)
 
 ################################################################################
 # GLOBALS
@@ -960,15 +994,33 @@ def run_league_pipeline(league_choice):
         top_bets = find_top_bets(results, threshold=conf_threshold)
         if not top_bets.empty:
             st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
-            for _, bet in top_bets.iterrows():
-                display_bet_card(bet, team_stats_global)
+            previous_date = None
+            for _, bet_row in top_bets.iterrows():
+                bet = bet_row.to_dict()
+                current_date = bet['date'].date() if isinstance(bet['date'], datetime) else bet['date']
+                if previous_date != current_date:
+                    if isinstance(bet['date'], datetime):
+                        st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                    else:
+                        st.markdown(f"## {bet['date']}")
+                    previous_date = current_date
+                display_bet_card(bet, team_stats_global, team_data=team_data)
         else:
             st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
         if results:
             st.markdown("### 📊 All Games Analysis")
-            for bet in results:
-                display_bet_card(bet, team_stats_global)
+            sorted_results = sorted(results, key=lambda x: x['date'])
+            previous_date = None
+            for bet in sorted_results:
+                current_date = bet['date'].date() if isinstance(bet['date'], datetime) else bet['date']
+                if previous_date != current_date:
+                    if isinstance(bet['date'], datetime):
+                        st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                    else:
+                        st.markdown(f"## {bet['date']}")
+                    previous_date = current_date
+                display_bet_card(bet, team_stats_global, team_data=team_data)
         else:
             st.info(f"No upcoming {league_choice} games found.")
 
