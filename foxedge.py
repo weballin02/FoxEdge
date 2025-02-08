@@ -1128,7 +1128,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.experimental_rerun()
+                    st.rerun()
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1138,7 +1138,7 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.experimental_rerun()
+            st.rerun()
 
     # Sidebar Navigation
     st.sidebar.header("Navigation")
@@ -1172,7 +1172,7 @@ def main():
 
 # Check if this is a scheduled run triggered by GitHub Actions
 if __name__ == "__main__":
-    query_params = st.experimental_get_query_params()
+    query_params = st.get_query_params()
 
     if "trigger" in query_params:
         # Run scheduled task if triggered by GitHub Actions
