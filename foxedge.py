@@ -41,6 +41,23 @@ import os
 import cbbpy.mens_scraper as cbb
 
 ################################################################################
+# HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
+################################################################################
+def to_naive(dt):
+    """
+    Converts a datetime object to tz-naive if it is tz-aware.
+    
+    Args:
+        dt: A datetime object.
+    
+    Returns:
+        A tz-naive datetime object.
+    """
+    if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+################################################################################
 # FIREBASE CONFIGURATION
 ################################################################################
 try:
@@ -809,27 +826,33 @@ def run_league_pipeline(league_choice):
             away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
 
             # --- Dynamic Adjustments for Each League ---
+            # Convert upcoming game datetime to naive
+            row_gameday = to_naive(row['gameday'])
+
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 # Fatigue Factor: Adjust based on rest days (back-to-back or 3+ days rest)
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
-                    last_game_home = home_games['gameday'].max()
-                    rest_days_home = (row['gameday'] - last_game_home).days
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
                     if rest_days_home == 0:
                         home_pred -= 3
                     elif rest_days_home >= 3:
                         home_pred += 2
+
                 away_games = team_data[team_data['team'] == away]
                 if not away_games.empty:
-                    last_game_away = away_games['gameday'].max()
-                    rest_days_away = (row['gameday'] - last_game_away).days
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
                     if rest_days_away == 0:
                         away_pred -= 3
                     elif rest_days_away >= 3:
                         away_pred += 2
-                # Home/Away Adjustment
+
+                # Home/Away Adjustment: Simple advantage for the home team
                 home_pred += 1
                 away_pred -= 1
+
                 # Opponent Strength Scaling
                 if top_10 and bottom_10:
                     if away in top_10:
@@ -845,16 +868,16 @@ def run_league_pipeline(league_choice):
                 # Fatigue Factor for NFL: using slightly smaller adjustments
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
-                    last_game_home = home_games['gameday'].max()
-                    rest_days_home = (row['gameday'] - last_game_home).days
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
                     if rest_days_home == 0:
                         home_pred -= 2
                     elif rest_days_home >= 3:
                         home_pred += 1
                 away_games = team_data[team_data['team'] == away]
                 if not away_games.empty:
-                    last_game_away = away_games['gameday'].max()
-                    rest_days_away = (row['gameday'] - last_game_away).days
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
                     if rest_days_away == 0:
                         away_pred -= 2
                     elif rest_days_away >= 3:
@@ -877,16 +900,16 @@ def run_league_pipeline(league_choice):
                 # Fatigue Factor for NCAAB: similar to NBA adjustments
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
-                    last_game_home = home_games['gameday'].max()
-                    rest_days_home = (row['gameday'] - last_game_home).days
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
                     if rest_days_home == 0:
                         home_pred -= 3
                     elif rest_days_home >= 3:
                         home_pred += 2
                 away_games = team_data[team_data['team'] == away]
                 if not away_games.empty:
-                    last_game_away = away_games['gameday'].max()
-                    rest_days_away = (row['gameday'] - last_game_away).days
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
                     if rest_days_away == 0:
                         away_pred -= 3
                     elif rest_days_away >= 3:
