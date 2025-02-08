@@ -520,23 +520,24 @@ def load_nba_data():
                 gl['season_avg'] = gl['PTS'].expanding().mean()
                 gl['weighted_avg'] = (gl['rolling_avg'] * 0.6) + (gl['season_avg'] * 0.4)
 
-                for _, row_ in gl.iterrows():
+                for idx, row_ in gl.iterrows():
                     try:
                         all_rows.append({
                             'gameday': row_['GAME_DATE'],
                             'team': team_abbrev,
                             'score': float(row_['PTS']),
-                            'off_rating': float(row_['OFF_RATING']) if pd.notnull(row_['OFF_RATING']) else np.nan,
-                            'def_rating': float(row_['DEF_RATING']) if pd.notnull(row_['DEF_RATING']) else np.nan,
-                            'pace': float(row_['PACE']) if pd.notnull(row_['PACE']) else np.nan,
+                            'off_rating': row_['OFF_RATING'] if pd.notnull(row_['OFF_RATING']) else np.nan,
+                            'def_rating': row_['DEF_RATING'] if pd.notnull(row_['DEF_RATING']) else np.nan,
+                            'pace': row_['PACE'] if pd.notnull(row_['PACE']) else np.nan,
                             'rolling_avg': row_['rolling_avg'],
                             'rolling_std': row_['rolling_std'],
                             'season_avg': row_['season_avg'],
                             'weighted_avg': row_['weighted_avg']
                         })
                     except Exception as e:
-                        print(f"Error processing row for team {team_abbrev}: {e}")
+                        print(f"Error processing row for team {team_abbrev}: {str(e)}")
                         continue
+
             except Exception as e:
                 print(f"Error processing team {team_abbrev} for season {season}: {str(e)}")
                 continue
