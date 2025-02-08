@@ -19,11 +19,6 @@ from firebase_admin import credentials, auth
 import joblib
 import os
 from joblib import Parallel, delayed
-import textwrap
-
-# New: Imports for Pillow and io for image generation
-from PIL import Image, ImageDraw, ImageFont
-import io
 
 # cbbpy for NCAAB historical data
 import cbbpy.mens_scraper as cbb
@@ -131,145 +126,6 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 def round_half(number):
     """Rounds a number to the nearest 0.5."""
     return round(number * 2) / 2
-
-################################################################################
-# NEW: SOCIAL MEDIA IMAGE CREATION VIA PILLOW
-################################################################################
-def create_social_media_image(bet, detailed_text=None, recent_trends=None):
-    """
-    Creates an image optimized for TikTok (1080x1920) using the game prediction data.
-    
-    The image features:
-      - A vertical gradient background (from deep purple to a lighter purple),
-      - Centered matchup title and game date,
-      - Key prediction details,
-      - Optionally, extra text blocks (e.g. detailed insights or recent trends).
-    
-    Args:
-        bet (dict): Dictionary containing keys such as:
-            'away_team', 'home_team', 'spread_suggestion', 'ou_suggestion',
-            'confidence', 'predicted_winner', 'predicted_diff', 'predicted_total',
-            'date'
-        detailed_text (str, optional): Extra text (e.g., detailed insights) to include.
-        recent_trends (str, optional): Extra text summarizing recent performance trends.
-        
-    Returns:
-        A BytesIO object containing the generated PNG image.
-    """
-    width, height = 1080, 1920
-
-    # Create a vertical gradient background
-    top_color = (45, 3, 59)       # Deep purple
-    bottom_color = (114, 9, 183)  # Lighter purple
-    gradient = Image.new("RGB", (width, height))
-    draw_gradient = ImageDraw.Draw(gradient)
-    for y in range(height):
-        factor = y / height
-        r = int(top_color[0] * (1 - factor) + bottom_color[0] * factor)
-        g = int(top_color[1] * (1 - factor) + bottom_color[1] * factor)
-        b = int(top_color[2] * (1 - factor) + bottom_color[2] * factor)
-        draw_gradient.line([(0, y), (width, y)], fill=(r, g, b))
-    
-    # Work on a copy of the gradient.
-    image = gradient.copy()
-    draw = ImageDraw.Draw(image)
-
-    # Load fonts; adjust paths if necessary.
-    try:
-        title_font = ImageFont.truetype("arialbd.ttf", 80)
-        subtitle_font = ImageFont.truetype("arialbd.ttf", 60)
-        text_font = ImageFont.truetype("arial.ttf", 50)
-    except IOError:
-        title_font = ImageFont.load_default()
-        subtitle_font = ImageFont.load_default()
-        text_font = ImageFont.load_default()
-
-    text_color = (255, 255, 255)  # White text
-
-    # --- Header Section ---
-    # Draw the matchup title (e.g., "Team B @ Team A") centered near the top.
-    title_text = f"{bet['away_team']} @ {bet['home_team']}"
-    bbox = draw.textbbox((0, 0), title_text, font=title_font)
-    w = bbox[2] - bbox[0]
-    h = bbox[3] - bbox[1]
-    draw.text(((width - w) / 2, 150), title_text, font=title_font, fill=text_color)
-
-    # Draw the game date below the title.
-    if isinstance(bet.get("date"), datetime):
-        date_text = bet["date"].strftime("%A, %B %d, %Y")
-    else:
-        date_text = str(bet.get("date"))
-    bbox = draw.textbbox((0, 0), date_text, font=subtitle_font)
-    w = bbox[2] - bbox[0]
-    h = bbox[3] - bbox[1]
-    draw.text(((width - w) / 2, 250), date_text, font=subtitle_font, fill=text_color)
-
-    # Draw a horizontal separator line.
-    draw.line([(100, 300), (width - 100, 300)], fill=text_color, width=4)
-
-    # --- Main Prediction Details ---
-    details = [
-        f"Spread: {bet['spread_suggestion']}",
-        f"Total: {bet['ou_suggestion']}",
-        f"Confidence: {bet['confidence']}%",
-        f"Predicted Winner: {bet['predicted_winner']}",
-        f"Margin: {bet['predicted_diff']}",
-        f"Total Points: {bet['predicted_total']}"
-    ]
-    current_y = 350
-    spacing = 70
-    for detail in details:
-        bbox = draw.textbbox((0, 0), detail, font=text_font)
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-        draw.text(((width - w) / 2, current_y), detail, font=text_font, fill=text_color)
-        current_y += spacing
-
-    # --- Extra Sections (Optional) ---
-    if detailed_text:
-        wrapped_detailed = textwrap.wrap(detailed_text, width=40)
-        current_y += 40  # extra spacing
-        section_title = "Detailed Analysis:"
-        bbox = draw.textbbox((0, 0), section_title, font=subtitle_font)
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-        draw.text(((width - w) / 2, current_y), section_title, font=subtitle_font, fill=text_color)
-        current_y += 60
-        for line in wrapped_detailed:
-            bbox = draw.textbbox((0, 0), line, font=text_font)
-            w = bbox[2] - bbox[0]
-            h = bbox[3] - bbox[1]
-            draw.text(((width - w) / 2, current_y), line, font=text_font, fill=text_color)
-            current_y += 50
-
-    if recent_trends:
-        wrapped_trends = textwrap.wrap(recent_trends, width=40)
-        current_y += 40
-        section_title = "Recent Trends:"
-        bbox = draw.textbbox((0, 0), section_title, font=subtitle_font)
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-        draw.text(((width - w) / 2, current_y), section_title, font=subtitle_font, fill=text_color)
-        current_y += 60
-        for line in wrapped_trends:
-            bbox = draw.textbbox((0, 0), line, font=text_font)
-            w = bbox[2] - bbox[0]
-            h = bbox[3] - bbox[1]
-            draw.text(((width - w) / 2, current_y), line, font=text_font, fill=text_color)
-            current_y += 50
-
-    # --- Footer Section ---
-    footer_text = "FoxEdge Sports Betting Insights"
-    bbox = draw.textbbox((0, 0), footer_text, font=subtitle_font)
-    w = bbox[2] - bbox[0]
-    h = bbox[3] - bbox[1]
-    draw.text(((width - w) / 2, height - 150), footer_text, font=subtitle_font, fill=text_color)
-
-    # Save the final image to an in-memory bytes buffer.
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    buffer.seek(0)
-    return buffer
 
 ################################################################################
 # MODEL TUNING HELPER
@@ -881,9 +737,15 @@ def generate_writeup(bet, team_stats_global):
     return writeup
 
 def display_bet_card(bet, team_stats_global, team_data=None):
-    """Displays a bet card with summary and expandable detailed insights.
-       Now also adds a 'Generate Social Media Image' button below each prediction.
-    """
+    """Displays a bet card with summary and expandable detailed insights."""
+    conf = bet['confidence']
+    if conf >= 80:
+        confidence_color = "green"
+    elif conf < 60:
+        confidence_color = "red"
+    else:
+        confidence_color = "orange"
+    
     with st.container():
         st.markdown("---")
         col1, col2, col3 = st.columns([2, 2, 1])
@@ -909,7 +771,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
         with col3:
             tooltip_text = "Confidence indicates the statistical edge derived from performance metrics."
             st.markdown(
-                f"<h3 style='color:{'green' if bet['confidence']>=80 else 'red' if bet['confidence']<60 else 'orange'};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
+                f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
                 unsafe_allow_html=True,
             )
     
@@ -934,18 +796,6 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
                 away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(away_scores)
-    
-    # NEW: Add a button beneath each individual game's prediction to generate its social media image.
-    button_key = f"gen_img_{bet['date']}_{bet['home_team']}_{bet['away_team']}"
-    if st.button("Generate Social Media Image", key=button_key):
-        image_buffer = create_social_media_image(bet)
-        st.image(image_buffer, caption="Social Media Image")
-        st.download_button(
-            label="Download Image",
-            data=image_buffer,
-            file_name="bet_prediction.png",
-            mime="image/png",
-        )
 
 ################################################################################
 # GLOBALS
@@ -995,7 +845,7 @@ def run_league_pipeline(league_choice):
         st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
 
-    # Compute top/bottom defenses for NBA, NFL, or NCAAB
+    # If league is NBA, NFL, or NCAAB, compute top/bottom defenses
     if league_choice in ["NBA", "NFL", "NCAAB"]:
         if league_choice == "NBA":
             def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
@@ -1276,7 +1126,9 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
+                    # Re-run using st.rerun
                     st.rerun()
+
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1316,6 +1168,7 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
+    # Use st.query_params instead of st.experimental_get_query_params
     query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
