@@ -7,28 +7,10 @@ import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
 from nba_api.stats.static import teams as nba_teams
 from sklearn.ensemble import StackingRegressor
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-
-# Attempt to import XGBoost, LightGBM, and CatBoost
-try:
-    from xgboost import XGBRegressor
-except ImportError:
-    st.error("The 'xgboost' package is not installed. Please install it using 'pip install xgboost'.")
-    st.stop()
-
-try:
-    from lightgbm import LGBMRegressor
-except ImportError:
-    st.error("The 'lightgbm' package is not installed. Please install it using 'pip install lightgbm'.")
-    st.stop()
-
-try:
-    from catboost import CatBoostRegressor
-except ImportError:
-    st.error("The 'catboost' package is not installed. Please install it using 'pip install catboost'.")
-    st.stop()
-
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
 from pmdarima import auto_arima
 from pathlib import Path
 import requests
@@ -39,6 +21,9 @@ import os
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
+
+# Additional imports for hyperparameter tuning and time-series cross validation
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 ################################################################################
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
@@ -142,17 +127,39 @@ def round_half(number):
     return round(number * 2) / 2
 
 ################################################################################
+# MODEL TUNING HELPER
+################################################################################
+def tune_model(model, param_grid, X_train, y_train):
+    """
+    Tunes a given model using GridSearchCV with TimeSeriesSplit.
+    
+    Args:
+        model: The model to tune.
+        param_grid: Dictionary of hyperparameters.
+        X_train: Training features.
+        y_train: Training target.
+    
+    Returns:
+        The best estimator.
+    """
+    tscv = TimeSeriesSplit(n_splits=3)
+    grid = GridSearchCV(model, param_grid, cv=tscv, scoring='neg_mean_squared_error', n_jobs=-1)
+    grid.fit(X_train, y_train)
+    return grid.best_estimator_
+
+################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
 @st.cache_data(ttl=14400)
 def train_team_models(team_data: pd.DataFrame):
     """
-    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's 'score'.
+    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's 'score' using
+    time-series cross validation and hyperparameter optimization for base models.
     
     Returns:
         stack_models: Dictionary of trained Stacking Regressors keyed by team.
         arima_models: Dictionary of trained ARIMA models keyed by team.
-        team_stats: Dictionary containing statistical summaries (including MSE) for each team.
+        team_stats: Dictionary containing statistical summaries (including MSE and bias) for each team.
     """
     stack_models = {}
     arima_models = {}
@@ -186,33 +193,65 @@ def train_team_models(team_data: pd.DataFrame):
         X = features.values
         y = scores.values
 
-        # Split data for training and testing
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # Time-series split: first 80% for training, rest for testing
+        n = len(X)
+        split_index = int(n * 0.8)
+        if split_index < 2 or n - split_index < 1:
+            continue
+        X_train = X[:split_index]
+        X_test = X[split_index:]
+        y_train = y[:split_index]
+        y_test = y[split_index:]
 
-        # Define base models for stacking
+        # Hyperparameter tuning for base models using time-series cross-validation
+        try:
+            xgb = XGBRegressor(random_state=42)
+            xgb_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5]}
+            xgb_best = tune_model(xgb, xgb_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning XGB for team {team}: {e}")
+            xgb_best = XGBRegressor(n_estimators=100, random_state=42)
+
+        try:
+            lgbm = LGBMRegressor(random_state=42)
+            lgbm_grid = {'n_estimators': [50, 100], 'max_depth': [None, 5]}
+            lgbm_best = tune_model(lgbm, lgbm_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning LGBM for team {team}: {e}")
+            lgbm_best = LGBMRegressor(n_estimators=100, random_state=42)
+
+        try:
+            cat = CatBoostRegressor(verbose=0, random_state=42)
+            cat_grid = {'iterations': [50, 100], 'learning_rate': [0.1, 0.05]}
+            cat_best = tune_model(cat, cat_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning CatBoost for team {team}: {e}")
+            cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+
         estimators = [
-            ('xgb', XGBRegressor(n_estimators=100, random_state=42)),
-            ('lgbm', LGBMRegressor(n_estimators=100, random_state=42)),
-            ('cat', CatBoostRegressor(n_estimators=100, verbose=0, random_state=42))
+            ('xgb', xgb_best),
+            ('lgbm', lgbm_best),
+            ('cat', cat_best)
         ]
 
-        # Initialize Stacking Regressor
+        # Initialize and train Stacking Regressor
         stack = StackingRegressor(
             estimators=estimators,
             final_estimator=LGBMRegressor(),
             passthrough=False,
-            cv=5
+            cv=3
         )
 
-        # Train Stacking Regressor and compute MSE
         try:
             stack.fit(X_train, y_train)
             preds = stack.predict(X_test)
             mse = mean_squared_error(y_test, preds)
             print(f"Team: {team}, Stacking Regressor MSE: {mse}")
             stack_models[team] = stack
-            # Store the MSE with team stats for filtering and confidence adjustments
             team_stats[team]['mse'] = mse
+            # Compute bias from training data for calibration
+            bias = np.mean(y_train - stack.predict(X_train))
+            team_stats[team]['bias'] = bias
         except Exception as e:
             print(f"Error training Stacking Regressor for team {team}: {e}")
             continue
@@ -236,29 +275,10 @@ def train_team_models(team_data: pd.DataFrame):
 
     return stack_models, arima_models, team_stats
 
-def make_predictions(stack_model, arima_model, X):
-    """
-    Makes hybrid predictions by blending Stacking Regressor and Auto-ARIMA outputs.
-    
-    Args:
-        stack_model: Trained stacking regressor.
-        arima_model: Trained ARIMA model (or None).
-        X: Input feature array.
-    
-    Returns:
-        hybrid_pred: The blended prediction.
-    """
-    stack_pred = stack_model.predict(X)
-    if arima_model:
-        arima_pred = arima_model.predict(n_periods=len(X))
-        hybrid_pred = (stack_pred + arima_pred) / 2
-    else:
-        hybrid_pred = stack_pred
-    return hybrid_pred
-
 def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     """
-    Predicts the next-game score for a given team by blending model outputs.
+    Predicts the next-game score for a given team by blending model outputs using weighted ensemble 
+    and bias calibration.
     
     Incorporates MSE filtering: if the team's MSE > 150, no prediction is returned.
     
@@ -266,7 +286,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
         team: Team abbreviation.
         stack_models: Dictionary of stacking regressors.
         arima_models: Dictionary of ARIMA models.
-        team_stats: Dictionary of team statistics (including MSE).
+        team_stats: Dictionary of team statistics (including MSE and bias).
         team_data: DataFrame containing historical game data.
     
     Returns:
@@ -303,9 +323,24 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
             print(f"Error predicting with ARIMA for team {team}: {e}")
             arima_pred = None
 
-    # Create a hybrid prediction
+    # Create weighted ensemble prediction
+    ensemble = None
     if stack_pred is not None and arima_pred is not None:
-        ensemble = (stack_pred + arima_pred) / 2
+        mse_stack = team_stats[team].get('mse', 1)
+        mse_arima = None
+        try:
+            resid = arima_models[team].resid()
+            mse_arima = np.mean(np.square(resid))
+        except Exception as e:
+            mse_arima = None
+        
+        eps = 1e-6
+        if mse_arima is not None and mse_arima > 0:
+            weight_stack = 1 / (mse_stack + eps)
+            weight_arima = 1 / (mse_arima + eps)
+            ensemble = (stack_pred * weight_stack + arima_pred * weight_arima) / (weight_stack + weight_arima)
+        else:
+            ensemble = (stack_pred + arima_pred) / 2
     elif stack_pred is not None:
         ensemble = stack_pred
     elif arima_pred is not None:
@@ -320,6 +355,10 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     if ensemble is None:
         return None, (None, None)
 
+    # Apply residual calibration using bias from training data
+    bias = team_stats[team].get('bias', 0)
+    ensemble_calibrated = ensemble + bias
+
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
 
@@ -332,7 +371,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
 
-    return round_half(ensemble), (conf_low, conf_high)
+    return round_half(ensemble_calibrated), (conf_low, conf_high)
 
 def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     """
@@ -831,7 +870,6 @@ def run_league_pipeline(league_choice):
 
     # Compute opponent defensive ratings for dynamic adjustments
     if league_choice == "NBA":
-        # NBA data already has a defensive rating column
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
         top_10 = set([t for t, r in sorted_def[:10]])
@@ -860,11 +898,9 @@ def run_league_pipeline(league_choice):
             away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
 
             # --- Dynamic Adjustments for Each League ---
-            # Convert upcoming game datetime to naive
             row_gameday = to_naive(row['gameday'])
 
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
-                # Fatigue Factor: Adjust based on rest days (back-to-back or 3+ days rest)
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
                     last_game_home = to_naive(home_games['gameday'].max())
@@ -883,11 +919,9 @@ def run_league_pipeline(league_choice):
                     elif rest_days_away >= 3:
                         away_pred += 2
 
-                # Home/Away Adjustment: Simple advantage for the home team
                 home_pred += 1
                 away_pred -= 1
 
-                # Opponent Strength Scaling
                 if top_10 and bottom_10:
                     if away in top_10:
                         home_pred -= 2
@@ -899,7 +933,6 @@ def run_league_pipeline(league_choice):
                         away_pred += 2
 
             elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
-                # Fatigue Factor for NFL: using slightly smaller adjustments
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
                     last_game_home = to_naive(home_games['gameday'].max())
@@ -916,10 +949,8 @@ def run_league_pipeline(league_choice):
                         away_pred -= 2
                     elif rest_days_away >= 3:
                         away_pred += 1
-                # Home/Away Adjustment
                 home_pred += 1
                 away_pred -= 1
-                # Opponent Strength Scaling
                 if top_10 and bottom_10:
                     if away in top_10:
                         home_pred -= 2
@@ -931,7 +962,6 @@ def run_league_pipeline(league_choice):
                         away_pred += 2
 
             elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
-                # Fatigue Factor for NCAAB: similar to NBA adjustments
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
                     last_game_home = to_naive(home_games['gameday'].max())
@@ -948,10 +978,8 @@ def run_league_pipeline(league_choice):
                         away_pred -= 3
                     elif rest_days_away >= 3:
                         away_pred += 2
-                # Home/Away Adjustment
                 home_pred += 1
                 away_pred -= 1
-                # Opponent Strength Scaling
                 if top_10 and bottom_10:
                     if away in top_10:
                         home_pred -= 2
@@ -961,8 +989,6 @@ def run_league_pipeline(league_choice):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
-
-            # --- End of Dynamic Adjustments ---
 
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
