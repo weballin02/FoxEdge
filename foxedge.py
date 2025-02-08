@@ -581,18 +581,22 @@ def fetch_upcoming_nba_games(days_ahead=3):
     upcoming.sort_values('gameday', inplace=True)
     return upcoming
 
-################################################################################
-# NCAAB HISTORICAL LOADER (cbbpy)
-################################################################################
+########################################
+# NCAAB HISTORICAL LOADER (UPDATED)
+########################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
     """
-    Load historical NCAAB data from cbbpy for model training.
+    Loads finished or in-progress NCAA MBB games for the given season
+    using cbbpy. Adds is_home=1 for home team, is_home=0 for away.
+    
+    Now also includes opponent score (opp_score) for defensive metric calculations.
     """
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
         return pd.DataFrame()
 
+    # Convert "game_day" to datetime if needed
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
 
@@ -623,9 +627,9 @@ def load_ncaab_data_current_season(season=2025):
     data['game_index'] = data.groupby('team').cumcount()
     return data
 
-################################################################################
-# NCAAB UPCOMING GAMES: ESPN METHOD
-################################################################################
+########################################
+# NCAAB UPCOMING: ESPN method (UPDATED)
+########################################
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     """
     Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
@@ -661,8 +665,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 
         for game in games:
             game_time_str = game['date']  # ISO8601
-            # Remove trailing 'Z' if present, then parse
-            game_time = datetime.fromisoformat(game_time_str.replace('Z', '')).astimezone(timezone)
+            game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
 
             competitors = game['competitions'][0]['competitors']
             home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
