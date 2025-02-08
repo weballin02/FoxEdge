@@ -1172,7 +1172,7 @@ def main():
 
 # Check if this is a scheduled run triggered by GitHub Actions
 if __name__ == "__main__":
-    query_params = st.query_params()
+    query_params = st.experimental_query_params()
 
     if "trigger" in query_params:
         # Run scheduled task if triggered by GitHub Actions
