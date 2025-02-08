@@ -140,7 +140,7 @@ def create_social_media_image(bet, detailed_text=None, recent_trends=None):
     Creates an image optimized for TikTok (1080x1920) using the game prediction data.
     
     The image features:
-      - A vertical gradient background (deep to lighter purple),
+      - A vertical gradient background (from deep purple to a lighter purple),
       - Centered matchup title and game date,
       - Key prediction details,
       - Optionally, extra text blocks (e.g. detailed insights or recent trends).
@@ -150,18 +150,15 @@ def create_social_media_image(bet, detailed_text=None, recent_trends=None):
             'away_team', 'home_team', 'spread_suggestion', 'ou_suggestion',
             'confidence', 'predicted_winner', 'predicted_diff', 'predicted_total',
             'date'
-        detailed_text (str, optional): Extra text (e.g. detailed insights) to include.
+        detailed_text (str, optional): Extra text (e.g., detailed insights) to include.
         recent_trends (str, optional): Extra text summarizing recent performance trends.
         
     Returns:
         A BytesIO object containing the generated PNG image.
     """
-    from PIL import Image, ImageDraw, ImageFont  # Ensure these are imported
-    import io
-
     width, height = 1080, 1920
 
-    # Create a vertical gradient background (deep purple to lighter purple)
+    # Create a vertical gradient background
     top_color = (45, 3, 59)       # Deep purple
     bottom_color = (114, 9, 183)  # Lighter purple
     gradient = Image.new("RGB", (width, height))
@@ -173,11 +170,11 @@ def create_social_media_image(bet, detailed_text=None, recent_trends=None):
         b = int(top_color[2] * (1 - factor) + bottom_color[2] * factor)
         draw_gradient.line([(0, y), (width, y)], fill=(r, g, b))
     
-    # Copy the gradient as our working image.
+    # Work on a copy of the gradient.
     image = gradient.copy()
     draw = ImageDraw.Draw(image)
 
-    # Load fonts; adjust paths as needed.
+    # Load fonts; adjust paths if necessary.
     try:
         title_font = ImageFont.truetype("arialbd.ttf", 80)
         subtitle_font = ImageFont.truetype("arialbd.ttf", 60)
@@ -192,7 +189,9 @@ def create_social_media_image(bet, detailed_text=None, recent_trends=None):
     # --- Header Section ---
     # Draw the matchup title (e.g., "Team B @ Team A") centered near the top.
     title_text = f"{bet['away_team']} @ {bet['home_team']}"
-    w, h = draw.textsize(title_text, font=title_font)
+    bbox = draw.textbbox((0, 0), title_text, font=title_font)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
     draw.text(((width - w) / 2, 150), title_text, font=title_font, fill=text_color)
 
     # Draw the game date below the title.
@@ -200,8 +199,10 @@ def create_social_media_image(bet, detailed_text=None, recent_trends=None):
         date_text = bet["date"].strftime("%A, %B %d, %Y")
     else:
         date_text = str(bet.get("date"))
-    w, h = draw.textsize(date_text, font=subtitle_font)
-    draw.text(((width - w) / 2, 150 + 100), date_text, font=subtitle_font, fill=text_color)
+    bbox = draw.textbbox((0, 0), date_text, font=subtitle_font)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
+    draw.text(((width - w) / 2, 250), date_text, font=subtitle_font, fill=text_color)
 
     # Draw a horizontal separator line.
     draw.line([(100, 300), (width - 100, 300)], fill=text_color, width=4)
@@ -218,21 +219,26 @@ def create_social_media_image(bet, detailed_text=None, recent_trends=None):
     current_y = 350
     spacing = 70
     for detail in details:
-        w, h = draw.textsize(detail, font=text_font)
+        bbox = draw.textbbox((0, 0), detail, font=text_font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
         draw.text(((width - w) / 2, current_y), detail, font=text_font, fill=text_color)
         current_y += spacing
 
     # --- Extra Sections (Optional) ---
     if detailed_text:
-        # Wrap the detailed text to a maximum width of about 40 characters per line.
         wrapped_detailed = textwrap.wrap(detailed_text, width=40)
-        current_y += 40  # extra spacing before extra section
+        current_y += 40  # extra spacing
         section_title = "Detailed Analysis:"
-        w, h = draw.textsize(section_title, font=subtitle_font)
+        bbox = draw.textbbox((0, 0), section_title, font=subtitle_font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
         draw.text(((width - w) / 2, current_y), section_title, font=subtitle_font, fill=text_color)
         current_y += 60
         for line in wrapped_detailed:
-            w, h = draw.textsize(line, font=text_font)
+            bbox = draw.textbbox((0, 0), line, font=text_font)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
             draw.text(((width - w) / 2, current_y), line, font=text_font, fill=text_color)
             current_y += 50
 
@@ -240,20 +246,26 @@ def create_social_media_image(bet, detailed_text=None, recent_trends=None):
         wrapped_trends = textwrap.wrap(recent_trends, width=40)
         current_y += 40
         section_title = "Recent Trends:"
-        w, h = draw.textsize(section_title, font=subtitle_font)
+        bbox = draw.textbbox((0, 0), section_title, font=subtitle_font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
         draw.text(((width - w) / 2, current_y), section_title, font=subtitle_font, fill=text_color)
         current_y += 60
         for line in wrapped_trends:
-            w, h = draw.textsize(line, font=text_font)
+            bbox = draw.textbbox((0, 0), line, font=text_font)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
             draw.text(((width - w) / 2, current_y), line, font=text_font, fill=text_color)
             current_y += 50
 
     # --- Footer Section ---
     footer_text = "FoxEdge Sports Betting Insights"
-    w, h = draw.textsize(footer_text, font=subtitle_font)
+    bbox = draw.textbbox((0, 0), footer_text, font=subtitle_font)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
     draw.text(((width - w) / 2, height - 150), footer_text, font=subtitle_font, fill=text_color)
 
-    # Save the image to an in-memory bytes buffer.
+    # Save the final image to an in-memory bytes buffer.
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
