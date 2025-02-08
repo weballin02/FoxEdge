@@ -23,7 +23,7 @@ from joblib import Parallel, delayed
 # cbbpy for NCAAB historical data
 import cbbpy.mens_scraper as cbb
 
-# Additional imports for hyperparameter tuning and time-series cross validation
+# For hyperparameter tuning and time-series cross validation
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 ################################################################################
@@ -1123,7 +1123,9 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.experimental_rerun()
+                    # Re-run using st.rerun
+                    st.rerun()
+
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1133,7 +1135,7 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.experimental_rerun()
+            st.rerun()
 
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
@@ -1163,7 +1165,8 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.experimental_get_query_params()
+    # Use st.query_params instead of st.experimental_get_query_params
+    query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
         st.write("Task triggered successfully.")
