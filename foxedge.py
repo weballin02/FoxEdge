@@ -19,6 +19,7 @@ from firebase_admin import credentials, auth
 import joblib
 import os
 from joblib import Parallel, delayed
+import textwrap
 
 # New: Imports for Pillow and io for image generation
 from PIL import Image, ImageDraw, ImageFont
@@ -134,64 +135,125 @@ def round_half(number):
 ################################################################################
 # NEW: SOCIAL MEDIA IMAGE CREATION VIA PILLOW
 ################################################################################
-def create_social_media_image(bet):
+def create_social_media_image(bet, detailed_text=None, recent_trends=None):
     """
-    Creates an image optimized for social media (1080x1920) using the given bet prediction.
+    Creates an image optimized for TikTok (1080x1920) using the game prediction data.
+    
+    The image features:
+      - A vertical gradient background (deep to lighter purple),
+      - Centered matchup title and game date,
+      - Key prediction details,
+      - Optionally, extra text blocks (e.g. detailed insights or recent trends).
     
     Args:
-        bet (dict): Dictionary containing prediction details.
+        bet (dict): Dictionary containing keys such as:
+            'away_team', 'home_team', 'spread_suggestion', 'ou_suggestion',
+            'confidence', 'predicted_winner', 'predicted_diff', 'predicted_total',
+            'date'
+        detailed_text (str, optional): Extra text (e.g. detailed insights) to include.
+        recent_trends (str, optional): Extra text summarizing recent performance trends.
         
     Returns:
         A BytesIO object containing the generated PNG image.
     """
+    from PIL import Image, ImageDraw, ImageFont  # Ensure these are imported
+    import io
+
     width, height = 1080, 1920
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
+
+    # Create a vertical gradient background (deep purple to lighter purple)
+    top_color = (45, 3, 59)       # Deep purple
+    bottom_color = (114, 9, 183)  # Lighter purple
+    gradient = Image.new("RGB", (width, height))
+    draw_gradient = ImageDraw.Draw(gradient)
+    for y in range(height):
+        factor = y / height
+        r = int(top_color[0] * (1 - factor) + bottom_color[0] * factor)
+        g = int(top_color[1] * (1 - factor) + bottom_color[1] * factor)
+        b = int(top_color[2] * (1 - factor) + bottom_color[2] * factor)
+        draw_gradient.line([(0, y), (width, y)], fill=(r, g, b))
     
-    # Attempt to load a truetype font; fallback to default if not found.
+    # Copy the gradient as our working image.
+    image = gradient.copy()
+    draw = ImageDraw.Draw(image)
+
+    # Load fonts; adjust paths as needed.
     try:
-        title_font = ImageFont.truetype("arial.ttf", 70)
-        subtitle_font = ImageFont.truetype("arial.ttf", 50)
-        text_font = ImageFont.truetype("arial.ttf", 40)
+        title_font = ImageFont.truetype("arialbd.ttf", 80)
+        subtitle_font = ImageFont.truetype("arialbd.ttf", 60)
+        text_font = ImageFont.truetype("arial.ttf", 50)
     except IOError:
         title_font = ImageFont.load_default()
         subtitle_font = ImageFont.load_default()
         text_font = ImageFont.load_default()
-    
-    padding = 80
-    current_y = padding
-    
-    # Title: e.g., "Away @ Home"
+
+    text_color = (255, 255, 255)  # White text
+
+    # --- Header Section ---
+    # Draw the matchup title (e.g., "Team B @ Team A") centered near the top.
     title_text = f"{bet['away_team']} @ {bet['home_team']}"
-    draw.text((padding, current_y), title_text, font=title_font, fill="black")
-    current_y += 100
-    
-    # Date (formatted)
+    w, h = draw.textsize(title_text, font=title_font)
+    draw.text(((width - w) / 2, 150), title_text, font=title_font, fill=text_color)
+
+    # Draw the game date below the title.
     if isinstance(bet.get("date"), datetime):
         date_text = bet["date"].strftime("%A, %B %d, %Y")
     else:
         date_text = str(bet.get("date"))
-    draw.text((padding, current_y), f"Date: {date_text}", font=subtitle_font, fill="gray")
-    current_y += 80
-    
-    # Spread and Over/Under suggestions
-    draw.text((padding, current_y), f"Spread: {bet['spread_suggestion']}", font=text_font, fill="blue")
-    current_y += 60
-    draw.text((padding, current_y), f"Total: {bet['ou_suggestion']}", font=text_font, fill="blue")
-    current_y += 60
-    
-    # Confidence level
-    draw.text((padding, current_y), f"Confidence: {bet['confidence']}%", font=text_font, fill="green")
-    current_y += 60
-    
-    # Additional insights
-    draw.text((padding, current_y), f"Winner: {bet['predicted_winner']}", font=text_font, fill="black")
-    current_y += 50
-    draw.text((padding, current_y), f"Diff: {bet['predicted_diff']}", font=text_font, fill="black")
-    current_y += 50
-    draw.text((padding, current_y), f"Total Points: {bet['predicted_total']}", font=text_font, fill="black")
-    
-    # Save the image to an in-memory bytes buffer
+    w, h = draw.textsize(date_text, font=subtitle_font)
+    draw.text(((width - w) / 2, 150 + 100), date_text, font=subtitle_font, fill=text_color)
+
+    # Draw a horizontal separator line.
+    draw.line([(100, 300), (width - 100, 300)], fill=text_color, width=4)
+
+    # --- Main Prediction Details ---
+    details = [
+        f"Spread: {bet['spread_suggestion']}",
+        f"Total: {bet['ou_suggestion']}",
+        f"Confidence: {bet['confidence']}%",
+        f"Predicted Winner: {bet['predicted_winner']}",
+        f"Margin: {bet['predicted_diff']}",
+        f"Total Points: {bet['predicted_total']}"
+    ]
+    current_y = 350
+    spacing = 70
+    for detail in details:
+        w, h = draw.textsize(detail, font=text_font)
+        draw.text(((width - w) / 2, current_y), detail, font=text_font, fill=text_color)
+        current_y += spacing
+
+    # --- Extra Sections (Optional) ---
+    if detailed_text:
+        # Wrap the detailed text to a maximum width of about 40 characters per line.
+        wrapped_detailed = textwrap.wrap(detailed_text, width=40)
+        current_y += 40  # extra spacing before extra section
+        section_title = "Detailed Analysis:"
+        w, h = draw.textsize(section_title, font=subtitle_font)
+        draw.text(((width - w) / 2, current_y), section_title, font=subtitle_font, fill=text_color)
+        current_y += 60
+        for line in wrapped_detailed:
+            w, h = draw.textsize(line, font=text_font)
+            draw.text(((width - w) / 2, current_y), line, font=text_font, fill=text_color)
+            current_y += 50
+
+    if recent_trends:
+        wrapped_trends = textwrap.wrap(recent_trends, width=40)
+        current_y += 40
+        section_title = "Recent Trends:"
+        w, h = draw.textsize(section_title, font=subtitle_font)
+        draw.text(((width - w) / 2, current_y), section_title, font=subtitle_font, fill=text_color)
+        current_y += 60
+        for line in wrapped_trends:
+            w, h = draw.textsize(line, font=text_font)
+            draw.text(((width - w) / 2, current_y), line, font=text_font, fill=text_color)
+            current_y += 50
+
+    # --- Footer Section ---
+    footer_text = "FoxEdge Sports Betting Insights"
+    w, h = draw.textsize(footer_text, font=subtitle_font)
+    draw.text(((width - w) / 2, height - 150), footer_text, font=subtitle_font, fill=text_color)
+
+    # Save the image to an in-memory bytes buffer.
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
