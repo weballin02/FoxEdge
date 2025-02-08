@@ -18,12 +18,11 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import joblib
 import os
-from joblib import Parallel, delayed
 
-# cbbpy for NCAAB historical data
+# cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
 
-# For hyperparameter tuning and time-series cross validation
+# Additional imports for hyperparameter tuning and time-series cross validation
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 ################################################################################
@@ -151,153 +150,147 @@ def tune_model(model, param_grid, X_train, y_train):
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
-def process_team(team, team_data):
-    """
-    Processes a single team's data to train models and compute statistics.
-    
-    Args:
-        team: Team abbreviation (or name).
-        team_data: DataFrame containing historical game data.
-    
-    Returns:
-        A tuple (team, stacking_regressor, arima_model, team_stats) or None if not enough data.
-    """
-    df_team = team_data[team_data['team'] == team].copy()
-    df_team.sort_values('gameday', inplace=True)
-    scores = df_team['score'].reset_index(drop=True)
-
-    if len(scores) < 3:
-        return None
-
-    # Enhanced Feature Engineering
-    df_team['rolling_avg'] = df_team['score'].rolling(window=3, min_periods=1).mean()
-    df_team['rolling_std'] = df_team['score'].rolling(window=3, min_periods=1).std().fillna(0)
-    df_team['season_avg'] = df_team['score'].expanding().mean()
-    df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
-
-    # Save basic team stats
-    team_stats_entry = {
-        'mean': round_half(scores.mean()),
-        'std': round_half(scores.std()),
-        'max': round_half(scores.max()),
-        'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
-    }
-
-    # Prepare features and target
-    features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].fillna(0)
-    X = features.values
-    y = scores.values
-
-    # Time-series split: first 80% for training, rest for testing
-    n = len(X)
-    split_index = int(n * 0.8)
-    if split_index < 2 or n - split_index < 1:
-        return None
-    X_train = X[:split_index]
-    X_test = X[split_index:]
-    y_train = y[:split_index]
-    y_test = y[split_index:]
-
-    # Hyperparameter tuning for base models
-    try:
-        xgb = XGBRegressor(random_state=42)
-        xgb_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5]}
-        xgb_best = tune_model(xgb, xgb_grid, X_train, y_train)
-    except Exception as e:
-        print(f"Error tuning XGB for team {team}: {e}")
-        xgb_best = XGBRegressor(n_estimators=100, random_state=42)
-
-    try:
-        lgbm = LGBMRegressor(random_state=42)
-        lgbm_grid = {'n_estimators': [50, 100], 'max_depth': [None, 5]}
-        lgbm_best = tune_model(lgbm, lgbm_grid, X_train, y_train)
-    except Exception as e:
-        print(f"Error tuning LGBM for team {team}: {e}")
-        lgbm_best = LGBMRegressor(n_estimators=100, random_state=42)
-
-    try:
-        cat = CatBoostRegressor(verbose=0, random_state=42)
-        cat_grid = {'iterations': [50, 100], 'learning_rate': [0.1, 0.05]}
-        cat_best = tune_model(cat, cat_grid, X_train, y_train)
-    except Exception as e:
-        print(f"Error tuning CatBoost for team {team}: {e}")
-        cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
-
-    estimators = [
-        ('xgb', xgb_best),
-        ('lgbm', lgbm_best),
-        ('cat', cat_best)
-    ]
-
-    # Initialize and train Stacking Regressor
-    stack = StackingRegressor(
-        estimators=estimators,
-        final_estimator=LGBMRegressor(),
-        passthrough=False,
-        cv=3
-    )
-
-    try:
-        stack.fit(X_train, y_train)
-        preds = stack.predict(X_test)
-        mse = mean_squared_error(y_test, preds)
-        print(f"Team: {team}, Stacking Regressor MSE: {mse}")
-        team_stats_entry['mse'] = mse
-        # Compute bias from training data
-        bias = np.mean(y_train - stack.predict(X_train))
-        team_stats_entry['bias'] = bias
-    except Exception as e:
-        print(f"Error training Stacking Regressor for team {team}: {e}")
-        return None
-
-    # Train ARIMA if sufficient data
-    arima_model = None
-    if len(scores) >= 7:
-        try:
-            arima_model = auto_arima(
-                scores,
-                seasonal=False,
-                trace=False,
-                error_action='ignore',
-                suppress_warnings=True,
-                max_p=3,
-                max_q=3
-            )
-        except Exception as e:
-            print(f"Error training ARIMA for team {team}: {e}")
-            arima_model = None
-
-    return (team, stack, arima_model, team_stats_entry)
-
 @st.cache_data(ttl=14400)
 def train_team_models(team_data: pd.DataFrame):
     """
-    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's 'score'
-    using time-series cross validation and hyperparameter optimization.
+    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's 'score' using
+    time-series cross validation and hyperparameter optimization for base models.
     
     Returns:
         stack_models: Dictionary of trained Stacking Regressors keyed by team.
         arima_models: Dictionary of trained ARIMA models keyed by team.
-        team_stats: Dictionary containing statistical summaries for each team.
+        team_stats: Dictionary containing statistical summaries (including MSE and bias) for each team.
     """
-    all_teams = team_data['team'].unique()
-    results = Parallel(n_jobs=-1)(delayed(process_team)(team, team_data) for team in all_teams)
     stack_models = {}
     arima_models = {}
     team_stats = {}
-    for res in results:
-        if res is not None:
-            team, stack_model, arima_model, stats = res
-            stack_models[team] = stack_model
-            if arima_model is not None:
-                arima_models[team] = arima_model
-            team_stats[team] = stats
+
+    all_teams = team_data['team'].unique()
+    for team in all_teams:
+        df_team = team_data[team_data['team'] == team].copy()
+        df_team.sort_values('gameday', inplace=True)
+        scores = df_team['score'].reset_index(drop=True)
+
+        if len(scores) < 3:
+            continue
+
+        # Enhanced Feature Engineering
+        df_team['rolling_avg'] = df_team['score'].rolling(window=3, min_periods=1).mean()
+        df_team['rolling_std'] = df_team['score'].rolling(window=3, min_periods=1).std().fillna(0)
+        df_team['season_avg'] = df_team['score'].expanding().mean()
+        df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
+
+        # Save basic team stats
+        team_stats[team] = {
+            'mean': round_half(scores.mean()),
+            'std': round_half(scores.std()),
+            'max': round_half(scores.max()),
+            'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
+        }
+
+        # Prepare features and target
+        features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].fillna(0)
+        X = features.values
+        y = scores.values
+
+        # Time-series split: first 80% for training, rest for testing
+        n = len(X)
+        split_index = int(n * 0.8)
+        if split_index < 2 or n - split_index < 1:
+            continue
+        X_train = X[:split_index]
+        X_test = X[split_index:]
+        y_train = y[:split_index]
+        y_test = y[split_index:]
+
+        # Hyperparameter tuning for base models using time-series cross-validation
+        try:
+            xgb = XGBRegressor(random_state=42)
+            xgb_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5]}
+            xgb_best = tune_model(xgb, xgb_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning XGB for team {team}: {e}")
+            xgb_best = XGBRegressor(n_estimators=100, random_state=42)
+
+        try:
+            lgbm = LGBMRegressor(random_state=42)
+            lgbm_grid = {'n_estimators': [50, 100], 'max_depth': [None, 5]}
+            lgbm_best = tune_model(lgbm, lgbm_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning LGBM for team {team}: {e}")
+            lgbm_best = LGBMRegressor(n_estimators=100, random_state=42)
+
+        try:
+            cat = CatBoostRegressor(verbose=0, random_state=42)
+            cat_grid = {'iterations': [50, 100], 'learning_rate': [0.1, 0.05]}
+            cat_best = tune_model(cat, cat_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning CatBoost for team {team}: {e}")
+            cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+
+        estimators = [
+            ('xgb', xgb_best),
+            ('lgbm', lgbm_best),
+            ('cat', cat_best)
+        ]
+
+        # Initialize and train Stacking Regressor
+        stack = StackingRegressor(
+            estimators=estimators,
+            final_estimator=LGBMRegressor(),
+            passthrough=False,
+            cv=3
+        )
+
+        try:
+            stack.fit(X_train, y_train)
+            preds = stack.predict(X_test)
+            mse = mean_squared_error(y_test, preds)
+            print(f"Team: {team}, Stacking Regressor MSE: {mse}")
+            stack_models[team] = stack
+            team_stats[team]['mse'] = mse
+            # Compute bias from training data for calibration
+            bias = np.mean(y_train - stack.predict(X_train))
+            team_stats[team]['bias'] = bias
+        except Exception as e:
+            print(f"Error training Stacking Regressor for team {team}: {e}")
+            continue
+
+        # Train ARIMA if sufficient data is available
+        if len(scores) >= 7:
+            try:
+                arima = auto_arima(
+                    scores,
+                    seasonal=False,
+                    trace=False,
+                    error_action='ignore',
+                    suppress_warnings=True,
+                    max_p=3,
+                    max_q=3
+                )
+                arima_models[team] = arima
+            except Exception as e:
+                print(f"Error training ARIMA for team {team}: {e}")
+                continue
+
     return stack_models, arima_models, team_stats
 
 def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     """
-    Predicts the next-game score for a given team by blending model outputs 
-    and applying a bias correction.
+    Predicts the next-game score for a given team by blending model outputs using weighted ensemble 
+    and bias calibration.
+    
+    Incorporates MSE filtering: if the team's MSE > 150, no prediction is returned.
+    
+    Args:
+        team: Team abbreviation.
+        stack_models: Dictionary of stacking regressors.
+        arima_models: Dictionary of ARIMA models.
+        team_stats: Dictionary of team statistics (including MSE and bias).
+        team_data: DataFrame containing historical game data.
+    
+    Returns:
+        (ensemble_prediction, (conf_low, conf_high)) or (None, (None, None)) if prediction is unreliable.
     """
     if team not in team_stats:
         return None, (None, None)
@@ -307,11 +300,13 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     stack_pred = None
     arima_pred = None
 
+    # Require at least 3 games for prediction
     if data_len < 3:
         return None, (None, None)
     last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
     X_next = last_features.values
 
+    # Get prediction from Stacking Regressor
     if team in stack_models:
         try:
             stack_pred = float(stack_models[team].predict(X_next)[0])
@@ -319,6 +314,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
             print(f"Error predicting with Stacking Regressor for team {team}: {e}")
             stack_pred = None
 
+    # Get prediction from ARIMA
     if team in arima_models:
         try:
             forecast = arima_models[team].predict(n_periods=1)
@@ -327,16 +323,17 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
             print(f"Error predicting with ARIMA for team {team}: {e}")
             arima_pred = None
 
+    # Create weighted ensemble prediction
     ensemble = None
     if stack_pred is not None and arima_pred is not None:
         mse_stack = team_stats[team].get('mse', 1)
-        # Attempt ARIMA MSE
+        mse_arima = None
         try:
             resid = arima_models[team].resid()
             mse_arima = np.mean(np.square(resid))
-        except:
+        except Exception as e:
             mse_arima = None
-
+        
         eps = 1e-6
         if mse_arima is not None and mse_arima > 0:
             weight_stack = 1 / (mse_stack + eps)
@@ -351,20 +348,21 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     else:
         ensemble = None
 
-    # Large MSE filter
+    # MSE-based filtering: if MSE > 150, ignore prediction
     if team_stats[team].get('mse', 0) > 150:
         return None, (None, None)
 
     if ensemble is None:
         return None, (None, None)
 
-    # Apply bias correction
+    # Apply residual calibration using bias from training data
     bias = team_stats[team].get('bias', 0)
     ensemble_calibrated = ensemble + bias
 
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
 
+    # Ensure scalar values for mu and sigma
     if isinstance(mu, (pd.Series, pd.DataFrame, np.ndarray)):
         mu = mu.item()
     if isinstance(sigma, (pd.Series, pd.DataFrame, np.ndarray)):
@@ -378,6 +376,19 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
 def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     """
     Evaluates a matchup by computing the predicted spread, total, and confidence.
+    
+    Confidence is adjusted if either team has a high MSE (penalizing teams with MSE > 120).
+    
+    Args:
+        home_team: Home team abbreviation.
+        away_team: Away team abbreviation.
+        home_pred: Predicted score for home team.
+        away_pred: Predicted score for away team.
+        team_stats: Dictionary containing team statistics (including MSE).
+    
+    Returns:
+        A dictionary with predicted winner, spread, total points, confidence, and betting suggestions;
+        returns None if predictions are unavailable.
     """
     if home_pred is None or away_pred is None:
         return None
@@ -390,8 +401,11 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     combined_std = max(1.0, (home_std + away_std) / 2)
 
     raw_conf = abs(diff) / combined_std
+
+    # Base confidence calculation
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
 
+    # Adjust confidence based on MSE: subtract 10 for each team with MSE > 120
     penalty = 0
     if team_stats.get(home_team, {}).get('mse', 0) > 120:
         penalty += 10
@@ -400,6 +414,8 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     confidence = max(1, min(99, confidence - penalty))
 
     winner = home_team if diff > 0 else away_team
+
+    # Example threshold for over/under (adjust if needed)
     ou_threshold = 145
 
     return {
@@ -411,22 +427,9 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
         'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
     }
 
-################################################################################
-# UPDATED: Guard Clause in find_top_bets
-################################################################################
 def find_top_bets(matchups, threshold=70.0):
-    """
-    Filters and returns the matchups with confidence >= threshold.
-
-    If 'matchups' is empty or has no 'confidence' column, return an empty DataFrame.
-    """
-    if not matchups:
-        return pd.DataFrame()
-
+    """Filters and returns the matchups with confidence above the threshold."""
     df = pd.DataFrame(matchups)
-    if "confidence" not in df.columns:
-        return pd.DataFrame(columns=df.columns)
-
     df_top = df[df['confidence'] >= threshold].copy()
     df_top.sort_values('confidence', ascending=False, inplace=True)
     return df_top
@@ -437,7 +440,7 @@ def find_top_bets(matchups, threshold=70.0):
 @st.cache_data(ttl=14400)
 def load_nfl_schedule():
     current_year = datetime.now().year
-    years = [current_year - i for i in range(12)]
+    years = [current_year - i for i in range(12)]  # Last 12 years including current
     schedule = nfl.import_schedules(years)
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
@@ -445,6 +448,7 @@ def load_nfl_schedule():
     return schedule
 
 def preprocess_nfl_data(schedule):
+    # Include opponent score from the original schedule
     home_df = schedule[['gameday', 'home_team', 'home_score', 'away_score']].rename(
         columns={'home_team': 'team', 'home_score': 'score', 'away_score': 'opp_score'}
     )
@@ -759,6 +763,7 @@ def generate_writeup(bet, team_stats_global):
 
 def display_bet_card(bet, team_stats_global, team_data=None):
     """Displays a bet card with summary and expandable detailed insights."""
+    # Determine color for confidence based on its value
     conf = bet['confidence']
     if conf >= 80:
         confidence_color = "green"
@@ -790,7 +795,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
             )
     
         with col3:
-            tooltip_text = "Confidence indicates the statistical edge derived from performance metrics."
+            tooltip_text = "Confidence indicates the statistical edge derived from the combined performance metrics of both teams."
             st.markdown(
                 f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
                 unsafe_allow_html=True,
@@ -807,11 +812,13 @@ def display_bet_card(bet, team_stats_global, team_data=None):
     
     if team_data is not None:
         with st.expander("Recent Performance Trends", expanded=False):
+            # Display line chart for home team
             home_team_data = team_data[team_data['team'] == bet['home_team']].sort_values('gameday')
             if not home_team_data.empty:
                 st.markdown(f"**{bet['home_team']} Recent Scores:**")
                 home_scores = home_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(home_scores)
+            # Display line chart for away team
             away_team_data = team_data[team_data['team'] == bet['away_team']].sort_values('gameday')
             if not away_team_data.empty:
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
@@ -844,63 +851,44 @@ def run_league_pipeline(league_choice):
             return
         team_data = preprocess_nfl_data(schedule)
         upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
-
     elif league_choice == "NBA":
         team_data = load_nba_data()
         if team_data.empty:
             st.error("Unable to load NBA data.")
             return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
-
     else:  # NCAAB
-        # Load historical data from cbbpy for model training
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
-            st.error("Unable to load historical NCAAB data from cbbpy.")
+            st.error("Unable to load NCAAB data.")
             return
-
-        # Fetch upcoming NCAAB games from ESPN scoreboard
         upcoming = fetch_upcoming_ncaab_games()
 
     if team_data.empty or upcoming.empty:
         st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
 
-    # If league is NBA, NFL, or NCAAB, compute top/bottom defenses
-    if league_choice in ["NBA", "NFL", "NCAAB"]:
-        if league_choice == "NBA":
-            def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
-            sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
-            top_10 = set([t for t, r in sorted_def[:10]])
-            bottom_10 = set([t for t, r in sorted_def[-10:]])
-        elif league_choice == "NFL":
-            def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
-            sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
-            top_10 = set([t for t, r in sorted_def[:10]])
-            bottom_10 = set([t for t, r in sorted_def[-10:]])
-        elif league_choice == "NCAAB":
-            def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
-            sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
-            top_10 = set([t for t, r in sorted_def[:10]])
-            bottom_10 = set([t for t, r in sorted_def[-10:]])
+    # Compute opponent defensive ratings for dynamic adjustments
+    if league_choice == "NBA":
+        def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted(def_ratings.items(), key=lambda x: x[1], reverse=True)[:10]])
+    elif league_choice == "NFL":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
+    elif league_choice == "NCAAB":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
     else:
         top_10, bottom_10 = None, None
 
     with st.spinner("Analyzing recent performance data..."):
-        models_path = "models/trained_models.pkl"
-        if os.path.exists(models_path):
-            try:
-                stack_models, arima_models, team_stats = joblib.load(models_path)
-            except Exception as e:
-                print(f"Error loading cached models: {e}")
-                stack_models, arima_models, team_stats = train_team_models(team_data)
-                os.makedirs("models", exist_ok=True)
-                joblib.dump((stack_models, arima_models, team_stats), models_path)
-        else:
-            stack_models, arima_models, team_stats = train_team_models(team_data)
-            os.makedirs("models", exist_ok=True)
-            joblib.dump((stack_models, arima_models, team_stats), models_path)
-
+        stack_models, arima_models, team_stats = train_team_models(team_data)
         team_stats_global = team_stats
         results.clear()
 
@@ -909,9 +897,9 @@ def run_league_pipeline(league_choice):
             home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
             away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
 
+            # --- Dynamic Adjustments for Each League ---
             row_gameday = to_naive(row['gameday'])
 
-            # League-specific adjustments
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
@@ -931,11 +919,9 @@ def run_league_pipeline(league_choice):
                     elif rest_days_away >= 3:
                         away_pred += 2
 
-                # Additional NBA tweaks
                 home_pred += 1
                 away_pred -= 1
 
-                # Defensive rank adjustments
                 if top_10 and bottom_10:
                     if away in top_10:
                         home_pred -= 2
@@ -963,8 +949,6 @@ def run_league_pipeline(league_choice):
                         away_pred -= 2
                     elif rest_days_away >= 3:
                         away_pred += 1
-
-                # Additional NFL tweaks
                 home_pred += 1
                 away_pred -= 1
                 if top_10 and bottom_10:
@@ -986,7 +970,6 @@ def run_league_pipeline(league_choice):
                         home_pred -= 3
                     elif rest_days_home >= 3:
                         home_pred += 2
-
                 away_games = team_data[team_data['team'] == away]
                 if not away_games.empty:
                     last_game_away = to_naive(away_games['gameday'].max())
@@ -995,8 +978,6 @@ def run_league_pipeline(league_choice):
                         away_pred -= 3
                     elif rest_days_away >= 3:
                         away_pred += 2
-
-                # Additional NCAAB tweaks
                 home_pred += 1
                 away_pred -= 1
                 if top_10 and bottom_10:
@@ -1036,11 +1017,6 @@ def run_league_pipeline(league_choice):
             step=5.0,
             help="Only show bets with confidence level above this threshold"
         )
-
-        if not results or not any("confidence" in x for x in results):
-            st.info("No predictions available or 'confidence' missing.")
-            return
-
         top_bets = find_top_bets(results, threshold=conf_threshold)
         if not top_bets.empty:
             st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
@@ -1085,13 +1061,15 @@ def scheduled_task():
     """
     st.write("🕒 Scheduled task running: Fetching and updating predictions...")
 
+    # NFL data update
     st.write("📡 Fetching latest NFL schedule and results...")
     schedule = nfl.import_schedules([datetime.now().year])
     schedule.to_csv("nfl_schedule.csv", index=False)
 
+    # NBA data update
     st.write("🏀 Fetching latest NBA team game logs...")
     nba_data = []
-    for team_id in range(1, 31):
+    for team_id in range(1, 31):  # NBA has 30 teams
         try:
             logs = TeamGameLog(team_id=team_id, season="2024-25").get_data_frames()[0]
             nba_data.append(logs)
@@ -1102,11 +1080,13 @@ def scheduled_task():
         nba_df = pd.concat(nba_data, ignore_index=True)
         nba_df.to_csv("nba_team_logs.csv", index=False)
 
-    st.write("🏀 Fetching latest NCAAB data (historical)...")
+    # NCAAB data update
+    st.write("🏀 Fetching latest NCAAB data...")
     ncaab_df, _, _ = cbb.get_games_season(season=2025, info=True, box=False, pbp=False)
     if not ncaab_df.empty:
         ncaab_df.to_csv("ncaab_games.csv", index=False)
 
+    # Update models
     st.write("🤖 Updating prediction models...")
     if os.path.exists("nfl_schedule.csv"):
         joblib.dump(schedule, "models/nfl_model.pkl")
@@ -1132,6 +1112,7 @@ def main():
 
     st.title("🦊 FoxEdge Sports Betting Insights")
     
+    # User login logic
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
@@ -1147,9 +1128,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    # Re-run using st.rerun
                     st.rerun()
-
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1161,6 +1140,7 @@ def main():
             logout_user()
             st.rerun()
 
+    # Sidebar Navigation
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
         "Select League",
@@ -1168,6 +1148,7 @@ def main():
         help="Choose which league's games you'd like to analyze"
     )
 
+    # Run the selected league's pipeline
     run_league_pipeline(league_choice)
 
     st.sidebar.markdown(
@@ -1175,24 +1156,28 @@ def main():
         "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
     )
 
+    # CSV Output Enhancements
     if st.button("Save Predictions to CSV"):
         if results:
             save_predictions_to_csv(results)
-            csv_data = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
+            csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="Download Predictions as CSV",
-                data=csv_data,
+                data=csv,
                 file_name='predictions.csv',
                 mime='text/csv',
             )
         else:
             st.warning("No predictions to save.")
 
+# Check if this is a scheduled run triggered by GitHub Actions
 if __name__ == "__main__":
-    # Use st.query_params instead of st.experimental_get_query_params
-    query_params = st.query_params
+    query_params = st.experimental_get_query_params()
+
     if "trigger" in query_params:
+        # Run scheduled task if triggered by GitHub Actions
         scheduled_task()
         st.write("Task triggered successfully.")
     else:
+        # Run the app normally for users
         main()
