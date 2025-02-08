@@ -20,6 +20,10 @@ import joblib
 import os
 from joblib import Parallel, delayed
 
+# New: Imports for Pillow and io for image generation
+from PIL import Image, ImageDraw, ImageFont
+import io
+
 # cbbpy for NCAAB historical data
 import cbbpy.mens_scraper as cbb
 
@@ -126,6 +130,72 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 def round_half(number):
     """Rounds a number to the nearest 0.5."""
     return round(number * 2) / 2
+
+################################################################################
+# NEW: SOCIAL MEDIA IMAGE CREATION VIA PILLOW
+################################################################################
+def create_social_media_image(bet):
+    """
+    Creates an image optimized for social media (1080x1920) using the given bet prediction.
+    
+    Args:
+        bet (dict): Dictionary containing prediction details.
+        
+    Returns:
+        A BytesIO object containing the generated PNG image.
+    """
+    width, height = 1080, 1920
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    
+    # Attempt to load a truetype font; fallback to default if not found.
+    try:
+        title_font = ImageFont.truetype("arial.ttf", 70)
+        subtitle_font = ImageFont.truetype("arial.ttf", 50)
+        text_font = ImageFont.truetype("arial.ttf", 40)
+    except IOError:
+        title_font = ImageFont.load_default()
+        subtitle_font = ImageFont.load_default()
+        text_font = ImageFont.load_default()
+    
+    padding = 80
+    current_y = padding
+    
+    # Title: e.g., "Away @ Home"
+    title_text = f"{bet['away_team']} @ {bet['home_team']}"
+    draw.text((padding, current_y), title_text, font=title_font, fill="black")
+    current_y += 100
+    
+    # Date (formatted)
+    if isinstance(bet.get("date"), datetime):
+        date_text = bet["date"].strftime("%A, %B %d, %Y")
+    else:
+        date_text = str(bet.get("date"))
+    draw.text((padding, current_y), f"Date: {date_text}", font=subtitle_font, fill="gray")
+    current_y += 80
+    
+    # Spread and Over/Under suggestions
+    draw.text((padding, current_y), f"Spread: {bet['spread_suggestion']}", font=text_font, fill="blue")
+    current_y += 60
+    draw.text((padding, current_y), f"Total: {bet['ou_suggestion']}", font=text_font, fill="blue")
+    current_y += 60
+    
+    # Confidence level
+    draw.text((padding, current_y), f"Confidence: {bet['confidence']}%", font=text_font, fill="green")
+    current_y += 60
+    
+    # Additional insights
+    draw.text((padding, current_y), f"Winner: {bet['predicted_winner']}", font=text_font, fill="black")
+    current_y += 50
+    draw.text((padding, current_y), f"Diff: {bet['predicted_diff']}", font=text_font, fill="black")
+    current_y += 50
+    draw.text((padding, current_y), f"Total Points: {bet['predicted_total']}", font=text_font, fill="black")
+    
+    # Save the image to an in-memory bytes buffer
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
 
 ################################################################################
 # MODEL TUNING HELPER
@@ -737,15 +807,9 @@ def generate_writeup(bet, team_stats_global):
     return writeup
 
 def display_bet_card(bet, team_stats_global, team_data=None):
-    """Displays a bet card with summary and expandable detailed insights."""
-    conf = bet['confidence']
-    if conf >= 80:
-        confidence_color = "green"
-    elif conf < 60:
-        confidence_color = "red"
-    else:
-        confidence_color = "orange"
-    
+    """Displays a bet card with summary and expandable detailed insights.
+       Now also adds a 'Generate Social Media Image' button below each prediction.
+    """
     with st.container():
         st.markdown("---")
         col1, col2, col3 = st.columns([2, 2, 1])
@@ -771,7 +835,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
         with col3:
             tooltip_text = "Confidence indicates the statistical edge derived from performance metrics."
             st.markdown(
-                f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
+                f"<h3 style='color:{'green' if bet['confidence']>=80 else 'red' if bet['confidence']<60 else 'orange'};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
                 unsafe_allow_html=True,
             )
     
@@ -796,6 +860,18 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
                 away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(away_scores)
+    
+    # NEW: Add a button beneath each individual game's prediction to generate its social media image.
+    button_key = f"gen_img_{bet['date']}_{bet['home_team']}_{bet['away_team']}"
+    if st.button("Generate Social Media Image", key=button_key):
+        image_buffer = create_social_media_image(bet)
+        st.image(image_buffer, caption="Social Media Image")
+        st.download_button(
+            label="Download Image",
+            data=image_buffer,
+            file_name="bet_prediction.png",
+            mime="image/png",
+        )
 
 ################################################################################
 # GLOBALS
@@ -845,7 +921,7 @@ def run_league_pipeline(league_choice):
         st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
 
-    # If league is NBA, NFL, or NCAAB, compute top/bottom defenses
+    # Compute top/bottom defenses for NBA, NFL, or NCAAB
     if league_choice in ["NBA", "NFL", "NCAAB"]:
         if league_choice == "NBA":
             def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
@@ -1126,9 +1202,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    # Re-run using st.rerun
                     st.rerun()
-
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1168,7 +1242,6 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    # Use st.query_params instead of st.experimental_get_query_params
     query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
