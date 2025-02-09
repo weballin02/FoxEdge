@@ -2,8 +2,9 @@ name: "Daily Model Training"
 
 on:
   schedule:
-    # Runs every day at 11:00 UTC (which is 3:00 AM PST in winter, 4:00 AM PDT in summer)
+    # Runs every day at 11:00 UTC (which is 3:00 AM PT in winter, 4:00 AM in summer)
     - cron: "0 11 * * *"
+  workflow_dispatch: {}  # Enables manual triggering of the workflow
 
 jobs:
   daily_train:
