@@ -2,9 +2,9 @@ name: "Daily Model Training"
 
 on:
   schedule:
-    # Runs every day at 11:00 UTC (which is 3:00 AM PT in winter, 4:00 AM in summer)
+    # Runs every day at 11:00 UTC (which is 3:00 AM PT in standard time)
     - cron: "0 11 * * *"
-  workflow_dispatch: {}  # Enables manual triggering of the workflow
+  workflow_dispatch: {}  # Allows manual triggering
 
 jobs:
   daily_train:
@@ -13,16 +13,31 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v2
+        with:
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
           python-version: "3.9"
 
-      - name: Install dependencies
+      - name: Upgrade pip and install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run training script
         run: python train.py
+
+      - name: Commit and push updated models
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git add models/
+          # Only commit if there are changes.
+          if ! git diff --quiet --exit-code; then
+            git commit -m "Update models from daily training $(date)"
+            git push
+          else
+            echo "No changes to commit."
+          fi
