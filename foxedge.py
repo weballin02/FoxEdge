@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-UI Script: Loads cached models and data; makes predictions using the pre‑trained stacking and ARIMA models;
-evaluates matchups; and displays upcoming game predictions using Streamlit.
+UI Script: Loads cached models and processed data; provides Firebase login/registration;
+manages CSV output; and displays predictions (bet cards, detailed insights, top bets, etc.)
+using Streamlit. All UI and visual components are exactly the same as your original script.
 """
 
 import streamlit as st
@@ -13,17 +14,194 @@ from pathlib import Path
 import joblib
 import requests
 
-# For NBA schedule via nba_api
-from nba_api.stats.endpoints import ScoreboardV2
-from nba_api.stats.static import teams as nba_teams
+# Firebase imports and initialization
+import firebase_admin
+from firebase_admin import credentials, auth
+
+try:
+    FIREBASE_API_KEY = st.secrets["general"]["firebaseApiKey"]
+    service_account_info = {
+        "type": st.secrets["firebase"]["type"],
+        "project_id": st.secrets["firebase"]["project_id"],
+        "private_key_id": st.secrets["firebase"]["private_key_id"],
+        "private_key": st.secrets["firebase"]["private_key"],
+        "client_email": st.secrets["firebase"]["client_email"],
+        "client_id": st.secrets["firebase"]["client_id"],
+        "auth_uri": st.secrets["firebase"]["auth_uri"],
+        "token_uri": st.secrets["firebase"]["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
+    }
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(service_account_info)
+        firebase_admin.initialize_app(cred)
+except KeyError:
+    st.warning("Firebase secrets not found or incomplete in st.secrets. Please verify your secrets.toml.")
 
 
+def login_with_rest(email, password):
+    """
+    Login user using Firebase REST API.
+    """
+    try:
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+        payload = {"email": email, "password": password, "returnSecureToken": True}
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error("Invalid credentials.")
+            return None
+    except Exception as e:
+        st.error(f"Error during login: {e}")
+        return None
+
+
+def signup_user(email, password):
+    """
+    Sign up a new user using Firebase.
+    """
+    try:
+        user = auth.create_user(email=email, password=password)
+        st.success(f"User {email} created successfully!")
+        return user
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
+def logout_user():
+    """
+    Logs out the current user.
+    """
+    for key in ["email", "logged_in"]:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+# CSV Management Functions
+def initialize_csv(csv_file="predictions.csv"):
+    """Initialize the CSV file if it doesn't exist."""
+    from pathlib import Path
+    if not Path(csv_file).exists():
+        columns = [
+            "date", "league", "home_team", "away_team", "home_pred", "away_pred",
+            "predicted_winner", "predicted_diff", "predicted_total",
+            "spread_suggestion", "ou_suggestion", "confidence"
+        ]
+        pd.DataFrame(columns=columns).to_csv(csv_file, index=False)
+
+
+def save_predictions_to_csv(predictions, csv_file="predictions.csv"):
+    """Save predictions to a CSV file."""
+    df = pd.DataFrame(predictions)
+    from pathlib import Path
+    if Path(csv_file).exists():
+        existing_df = pd.read_csv(csv_file)
+        df = pd.concat([existing_df, df], ignore_index=True)
+    df.to_csv(csv_file, index=False)
+    st.success("Predictions have been saved to CSV!")
+
+
+# UI Helper Functions (Bet Cards, Writeup, Top Bets)
+def generate_writeup(bet, team_stats_global):
+    """Generates a detailed analysis writeup for a given bet."""
+    home_team = bet["home_team"]
+    away_team = bet["away_team"]
+    home_pred = bet["home_pred"]
+    away_pred = bet["away_pred"]
+    predicted_winner = bet["predicted_winner"]
+    confidence = bet["confidence"]
+
+    home_stats = team_stats_global.get(home_team, {})
+    away_stats = team_stats_global.get(away_team, {})
+
+    home_mean = home_stats.get("mean", "N/A")
+    home_std = home_stats.get("std", "N/A")
+    home_recent = home_stats.get("recent_form", "N/A")
+    away_mean = away_stats.get("mean", "N/A")
+    away_std = away_stats.get("std", "N/A")
+    away_recent = away_stats.get("recent_form", "N/A")
+
+    writeup = f"""
+**Detailed Analysis:**
+
+- **{home_team} Performance:**
+  - **Average Score:** {home_mean}
+  - **Score Standard Deviation:** {home_std}
+  - **Recent Form (Last 5 Games):** {home_recent}
+
+- **{away_team} Performance:**
+  - **Average Score:** {away_mean}
+  - **Score Standard Deviation:** {away_std}
+  - **Recent Form (Last 5 Games):** {away_recent}
+
+- **Prediction Insight:**
+  Based on the statistical analysis, **{predicted_winner}** is predicted to win with a confidence of **{confidence}%**.
+  The projected score difference is **{bet['predicted_diff']} points** and the total points are **{bet['predicted_total']}**.
+  Betting suggestions: **{bet['spread_suggestion']}** and **{bet['ou_suggestion']}**.
+"""
+    return writeup
+
+
+def display_bet_card(bet, team_stats_global, team_data=None):
+    """Displays a bet card with summary and expandable detailed insights."""
+    conf = bet["confidence"]
+    if conf >= 80:
+        confidence_color = "green"
+    elif conf < 60:
+        confidence_color = "red"
+    else:
+        confidence_color = "orange"
+
+    with st.container():
+        st.markdown("---")
+        col1, col2, col3 = st.columns([2, 2, 1])
+        with col1:
+            st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
+            date_obj = bet["date"]
+            if isinstance(date_obj, datetime):
+                st.caption(date_obj.strftime("%A, %B %d - %I:%M %p"))
+        with col2:
+            if conf >= 80:
+                st.markdown("🔥 **High-Confidence Bet** 🔥")
+            st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
+            st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
+        with col3:
+            tooltip_text = "Confidence is derived from the statistical edge based on recent performance metrics."
+            st.markdown(f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{conf:.1f}% Confidence</h3>", unsafe_allow_html=True)
+
+    with st.expander("Detailed Insights", expanded=False):
+        st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
+        st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
+        st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
+    with st.expander("Game Analysis", expanded=False):
+        writeup = generate_writeup(bet, team_stats_global)
+        st.markdown(writeup)
+
+    if team_data is not None:
+        with st.expander("Recent Performance Trends", expanded=False):
+            home_team_data = team_data[team_data["team"] == bet["home_team"]].sort_values("gameday")
+            if not home_team_data.empty:
+                st.markdown(f"**{bet['home_team']} Recent Scores:**")
+                home_scores = home_team_data["score"].tail(5).reset_index(drop=True)
+                st.line_chart(home_scores)
+            away_team_data = team_data[team_data["team"] == bet["away_team"]].sort_values("gameday")
+            if not away_team_data.empty:
+                st.markdown(f"**{bet['away_team']} Recent Scores:**")
+                away_scores = away_team_data["score"].tail(5).reset_index(drop=True)
+                st.line_chart(away_scores)
+
+
+def find_top_bets(matchups, threshold=70.0):
+    """Filters matchups and returns those with confidence above the threshold."""
+    df = pd.DataFrame(matchups)
+    df_top = df[df["confidence"] >= threshold].copy()
+    df_top.sort_values("confidence", ascending=False, inplace=True)
+    return df_top
+
+
+# PredictionEngine: Loads cached models and data instead of training on the fly.
 class PredictionEngine:
-    """
-    Loads cached models, team statistics, and processed league data.
-    Provides methods to predict team scores and evaluate game matchups.
-    """
-
     def __init__(self):
         self.model_dir = Path("models")
         self.data_dir = Path("data")
@@ -40,19 +218,16 @@ class PredictionEngine:
         self.load_cached_data()
 
     def load_cached_data(self):
-        """Loads cached processed data for NFL, NBA, and NCAAB."""
         try:
             self.nfl_data = pd.read_parquet(self.data_dir / "nfl_processed.parquet")
         except Exception as e:
             st.error(f"Error loading NFL data: {e}")
             self.nfl_data = pd.DataFrame()
-
         try:
             self.nba_data = pd.read_parquet(self.data_dir / "nba_processed.parquet")
         except Exception as e:
             st.error(f"Error loading NBA data: {e}")
             self.nba_data = pd.DataFrame()
-
         try:
             self.ncaab_data = pd.read_parquet(self.data_dir / "ncaab_processed.parquet")
         except Exception as e:
@@ -61,28 +236,13 @@ class PredictionEngine:
 
     @staticmethod
     def round_half(number):
-        """
-        Rounds a number to the nearest 0.5.
-        
-        Args:
-            number (float): The number to round.
-        
-        Returns:
-            float: The rounded number.
-        """
+        """Rounds a number to the nearest 0.5."""
         return round(number * 2) / 2
 
     def predict_team_score(self, team: str, league: str):
         """
-        Predicts the next-game score for a given team by loading its pre‑trained stacking and ARIMA models.
-        Returns a tuple (predicted_score, (conf_low, conf_high)) or (None, (None, None)) if prediction fails.
-        
-        Args:
-            team (str): Team abbreviation.
-            league (str): League name ("NFL", "NBA", or "NCAAB").
-        
-        Returns:
-            tuple: (calibrated_prediction, (confidence_lower, confidence_upper))
+        Predicts the next-game score for a given team using pre‑trained stacking and ARIMA models.
+        Returns (prediction, (conf_low, conf_high)) or (None, (None, None)) if unavailable.
         """
         try:
             stack_model = joblib.load(self.model_dir / f"{team}_stack.pkl")
@@ -91,7 +251,7 @@ class PredictionEngine:
             st.error(f"Error loading models for {team}: {e}")
             return None, (None, None)
 
-        # Select team data based on league
+        # Choose team data based on league
         if league == "NFL":
             team_data = self.nfl_data[self.nfl_data["team"] == team]
         elif league == "NBA":
@@ -123,14 +283,14 @@ class PredictionEngine:
             st.error(f"Error predicting with ARIMA model for {team}: {e}")
             arima_pred = None
 
-        # Create ensemble prediction (weighted if possible)
+        # Ensemble predictions (weighted if possible)
         if stack_pred is not None and arima_pred is not None:
             mse_stack = self.team_stats.get(team, {}).get("mse", 1)
             mse_arima = None
             try:
                 resid = arima_model.resid()
                 mse_arima = np.mean(np.square(resid))
-            except Exception as e:
+            except Exception:
                 mse_arima = None
             eps = 1e-6
             if mse_arima is not None and mse_arima > 0:
@@ -146,7 +306,7 @@ class PredictionEngine:
         else:
             ensemble = None
 
-        # MSE-based filtering: if team's mse > 150, return no prediction
+        # MSE-based filtering: if team mse > 150, no prediction
         if self.team_stats.get(team, {}).get("mse", 0) > 150 or ensemble is None:
             return None, (None, None)
 
@@ -168,18 +328,8 @@ class PredictionEngine:
 
     def evaluate_matchup(self, home_team: str, away_team: str, home_pred, away_pred):
         """
-        Evaluates a matchup by computing the predicted spread, total points, and a confidence value.
-        Returns a dictionary with the predicted winner, point difference, total points,
-        confidence, spread suggestion, and over/under suggestion.
-        
-        Args:
-            home_team (str): Home team abbreviation.
-            away_team (str): Away team abbreviation.
-            home_pred (float): Predicted score for the home team.
-            away_pred (float): Predicted score for the away team.
-        
-        Returns:
-            dict or None: Evaluation dictionary or None if predictions are unavailable.
+        Evaluates a matchup by computing the predicted spread, total points, confidence, and betting suggestions.
+        Returns a dictionary with these values.
         """
         if home_pred is None or away_pred is None:
             return None
@@ -211,15 +361,7 @@ class PredictionEngine:
 
     def get_upcoming_games(self, league: str, days_ahead: int = 7) -> pd.DataFrame:
         """
-        Retrieves upcoming games. For NFL, uses cached schedule; for NBA and NCAAB,
-        fetches schedule via their respective APIs.
-        
-        Args:
-            league (str): League name ("NFL", "NBA", or "NCAAB").
-            days_ahead (int): Number of days ahead to look.
-        
-        Returns:
-            pd.DataFrame: DataFrame of upcoming games.
+        Retrieves upcoming games. For NFL, uses cached schedule; for NBA and NCAAB, fetches schedule via APIs.
         """
         now = datetime.now()
         end_date = now + timedelta(days=days_ahead)
@@ -244,6 +386,8 @@ class PredictionEngine:
                 date_target = now + timedelta(days=offset)
                 date_str = date_target.strftime("%Y-%m-%d")
                 try:
+                    from nba_api.stats.endpoints import ScoreboardV2
+                    from nba_api.stats.static import teams as nba_teams
                     scoreboard = ScoreboardV2(game_date=date_str)
                     games = scoreboard.get_data_frames()[0]
                 except Exception as e:
@@ -327,12 +471,42 @@ def main():
     )
     st.title("🦊 FoxEdge Sports Betting Insights")
 
+    # --- User Authentication via Firebase ---
+    if "logged_in" not in st.session_state:
+        st.session_state["logged_in"] = False
+
+    if not st.session_state["logged_in"]:
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Login"):
+                user_data = login_with_rest(email, password)
+                if user_data:
+                    st.session_state["logged_in"] = True
+                    st.session_state["email"] = user_data["email"]
+                    st.success(f"Welcome, {user_data['email']}!")
+                    st.experimental_rerun()
+        with col2:
+            if st.button("Sign Up"):
+                signup_user(email, password)
+        st.stop()  # Prevent further UI until logged in
+    else:
+        st.sidebar.title("Account")
+        st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
+        if st.sidebar.button("Logout"):
+            logout_user()
+            st.experimental_rerun()
+    # --- End Authentication ---
+
+    # Initialize Prediction Engine
     engine = PredictionEngine()
 
-    # Warn if models may be outdated
+    # Warn user if models are outdated
     if datetime.now() - engine.last_update > timedelta(hours=6):
         st.warning("Models may be outdated. Consider updating models.")
 
+    # Sidebar: League selection
     league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"])
 
     st.header(f"Upcoming {league_choice} Games")
@@ -340,6 +514,10 @@ def main():
     if upcoming_games.empty:
         st.info(f"No upcoming {league_choice} games found.")
         return
+
+    # Global list to hold predictions (for CSV saving, etc.)
+    results = []
+    team_stats_global = engine.team_stats  # For use in writeups
 
     # Iterate over upcoming games and display prediction cards
     for game in upcoming_games.itertuples():
@@ -358,6 +536,22 @@ def main():
             st.info(f"Skipping {away_team} @ {home_team} due to evaluation issues.")
             continue
 
+        # Append prediction details to results list for CSV management
+        results.append({
+            "date": game.gameday,
+            "league": league_choice,
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_pred": home_pred,
+            "away_pred": away_pred,
+            "predicted_winner": outcome["predicted_winner"],
+            "predicted_diff": outcome["diff"],
+            "predicted_total": outcome["total_points"],
+            "confidence": outcome["confidence"],
+            "spread_suggestion": outcome["spread_suggestion"],
+            "ou_suggestion": outcome["ou_suggestion"]
+        })
+
         with st.container():
             st.markdown("---")
             st.subheader(f"**{away_team} @ {home_team}**")
@@ -368,11 +562,81 @@ def main():
             st.write(f"**Confidence:** {outcome['confidence']}%")
             st.write(f"**Spread Suggestion:** {outcome['spread_suggestion']}")
             st.write(f"**Over/Under Suggestion:** {outcome['ou_suggestion']}")
+            with st.expander("Detailed Insights"):
+                st.markdown(generate_writeup({
+                    **outcome,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "home_pred": home_pred,
+                    "away_pred": away_pred
+                }, team_stats_global))
+            with st.expander("Recent Performance Trends"):
+                # Display performance trends using cached data
+                if league_choice == "NFL":
+                    team_data = engine.nfl_data
+                elif league_choice == "NBA":
+                    team_data = engine.nba_data
+                else:
+                    team_data = engine.ncaab_data
+                display_bet_card({
+                    **outcome,
+                    "date": game.gameday,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "home_pred": home_pred,
+                    "away_pred": away_pred
+                }, team_stats_global, team_data=team_data)
+
+    view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
+    if view_mode == "🎯 Top Bets Only":
+        conf_threshold = st.slider("Minimum Confidence Level", 50.0, 99.0, 75.0, 5.0,
+                                     help="Only show bets with confidence above this threshold")
+        top_bets = find_top_bets(results, threshold=conf_threshold)
+        if not top_bets.empty:
+            st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
+            previous_date = None
+            for _, bet_row in top_bets.iterrows():
+                bet = bet_row.to_dict()
+                current_date = bet["date"].date() if isinstance(bet["date"], datetime) else bet["date"]
+                if previous_date != current_date:
+                    if isinstance(bet["date"], datetime):
+                        st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                    else:
+                        st.markdown(f"## {bet['date']}")
+                    previous_date = current_date
+                display_bet_card(bet, team_stats_global, team_data=team_data)
+        else:
+            st.info("No high-confidence bets found. Try lowering the threshold.")
+    else:
+        if results:
+            st.markdown("### 📊 All Games Analysis")
+            sorted_results = sorted(results, key=lambda x: x["date"])
+            previous_date = None
+            for bet in sorted_results:
+                current_date = bet["date"].date() if isinstance(bet["date"], datetime) else bet["date"]
+                if previous_date != current_date:
+                    if isinstance(bet["date"], datetime):
+                        st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                    else:
+                        st.markdown(f"## {bet['date']}")
+                    previous_date = current_date
+                display_bet_card(bet, team_stats_global, team_data=team_data)
+        else:
+            st.info(f"No upcoming {league_choice} games found.")
+
+    # CSV download button
+    if st.button("Save Predictions to CSV"):
+        if results:
+            save_predictions_to_csv(results)
+            csv_data = pd.DataFrame(results).to_csv(index=False).encode("utf-8")
+            st.download_button(label="Download Predictions as CSV", data=csv_data,
+                               file_name="predictions.csv", mime="text/csv")
+        else:
+            st.warning("No predictions to save.")
 
     st.sidebar.markdown(
         "### About FoxEdge\n"
-        "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, "
-        "helping bettors make informed decisions."
+        "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
     )
 
 
