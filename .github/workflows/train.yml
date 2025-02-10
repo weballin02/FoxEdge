@@ -2,7 +2,7 @@ name: "Daily Model Training"
 
 on:
   schedule:
-    # Runs daily at 11:00 UTC (≈3:00 AM PT in winter)
+    # Runs daily at 11:00 UTC (≈3:00 AM PT during standard time)
     - cron: "0 11 * * *"
   workflow_dispatch: {}
 
@@ -14,7 +14,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v2
         with:
-          persist-credentials: false  # We'll use our own token
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v2
