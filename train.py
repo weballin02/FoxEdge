@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Train Script: Updates NFL, NBA, and NCAAB data; trains per‑team models (Stacking Regressor + ARIMA);
-and saves team-specific models and statistics to disk.
+and saves team‑specific models and team statistics to disk.
 """
 
 import os
@@ -50,44 +50,22 @@ class ModelTrainer:
 
     @staticmethod
     def _round_half(number):
-        """
-        Rounds a number to the nearest 0.5.
-        
-        Args:
-            number (float): The number to round.
-        
-        Returns:
-            float: The rounded number.
-        """
+        """Rounds a number to the nearest 0.5."""
         return round(number * 2) / 2
 
     def _tune_model(self, model, param_grid, X_train, y_train):
         """
-        Tunes a given model using GridSearchCV with a TimeSeriesSplit.
-        
-        Args:
-            model: A scikit-learn regressor.
-            param_grid (dict): Hyperparameter grid.
-            X_train (np.ndarray): Training features.
-            y_train (np.ndarray): Training targets.
-        
-        Returns:
-            The best estimator from the grid search.
+        Tunes a model using GridSearchCV with a TimeSeriesSplit.
         """
         tscv = TimeSeriesSplit(n_splits=3)
-        grid = GridSearchCV(model, param_grid, cv=tscv, scoring="neg_mean_squared_error", n_jobs=-1)
+        grid = GridSearchCV(model, param_grid, cv=tscv,
+                            scoring="neg_mean_squared_error", n_jobs=-1)
         grid.fit(X_train, y_train)
         return grid.best_estimator_
 
     def _preprocess_nfl_data(self, schedule: pd.DataFrame) -> pd.DataFrame:
         """
-        Preprocesses NFL schedule data to create a team-level dataset with rolling features.
-        
-        Args:
-            schedule (pd.DataFrame): Raw NFL schedule data.
-        
-        Returns:
-            pd.DataFrame: Processed NFL data.
+        Preprocess NFL schedule data to create a team-level dataset with rolling features.
         """
         home_df = schedule[["gameday", "home_team", "home_score", "away_score"]].rename(
             columns={"home_team": "team", "home_score": "score", "away_score": "opp_score"}
@@ -104,21 +82,15 @@ class ModelTrainer:
         data["rolling_std"] = data.groupby("team")["score"].transform(
             lambda x: x.rolling(3, min_periods=1).std().fillna(0)
         )
-        data["season_avg"] = data.groupby("team")["score"].apply(
+        data["season_avg"] = data.groupby("team", group_keys=False)["score"].apply(
             lambda x: x.expanding().mean()
-        ).reset_index(level=0, drop=True)
+        )
         data["weighted_avg"] = (data["rolling_avg"] * 0.6) + (data["season_avg"] * 0.4)
         return data
 
     def _preprocess_ncaab_data(self, info_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Preprocesses NCAAB game data to generate features.
-        
-        Args:
-            info_df (pd.DataFrame): Raw NCAAB game info.
-        
-        Returns:
-            pd.DataFrame: Processed NCAAB data.
+        Preprocess NCAAB game data to generate features.
         """
         if info_df.empty:
             return pd.DataFrame()
@@ -151,9 +123,9 @@ class ModelTrainer:
         data["rolling_std"] = data.groupby("team")["score"].transform(
             lambda x: x.rolling(3, min_periods=1).std().fillna(0)
         )
-        data["season_avg"] = data.groupby("team")["score"].apply(
+        data["season_avg"] = data.groupby("team", group_keys=False)["score"].apply(
             lambda x: x.expanding().mean()
-        ).reset_index(level=0, drop=True)
+        )
         data["weighted_avg"] = (data["rolling_avg"] * 0.6) + (data["season_avg"] * 0.4)
         data.sort_values(["team", "gameday"], inplace=True)
         data["game_index"] = data.groupby("team").cumcount()
@@ -161,14 +133,8 @@ class ModelTrainer:
 
     def train_team_models(self, team_data: pd.DataFrame):
         """
-        Trains a stacking regressor and an ARIMA model for each team using the provided data.
+        Trains a stacking regressor and an ARIMA model for each team.
         Saves the team‑specific models and aggregates team statistics to disk.
-        
-        Args:
-            team_data (pd.DataFrame): Processed data with engineered features.
-        
-        Returns:
-            tuple: Dictionaries of stacking models, ARIMA models, and team statistics.
         """
         stack_models = {}
         arima_models = {}
@@ -244,7 +210,7 @@ class ModelTrainer:
                 ("cat", cat_best)
             ]
 
-            # Initialize and train Stacking Regressor
+            # Train stacking regressor
             stack = StackingRegressor(
                 estimators=estimators,
                 final_estimator=LGBMRegressor(),
@@ -282,22 +248,21 @@ class ModelTrainer:
                     logging.error(f"Error training ARIMA for team {team}: {e}")
                     continue
 
-            # Save team‑specific models
+            # Save team‑specific models to disk
             joblib.dump(stack, self.model_dir / f"{team}_stack.pkl")
             if team in arima_models:
                 joblib.dump(arima_models[team], self.model_dir / f"{team}_arima.pkl")
 
-        # Save team statistics
+        # Save team statistics and update timestamp
         joblib.dump(team_stats, self.model_dir / "team_stats.pkl")
+        timestamp = datetime.now()
+        joblib.dump(timestamp, self.model_dir / "last_update.pkl")
         logging.info("Team models and statistics saved successfully.")
         return stack_models, arima_models, team_stats
 
     def update_nfl_data(self) -> pd.DataFrame:
         """
-        Fetches NFL schedules, preprocesses the data, and saves both raw and processed data.
-        
-        Returns:
-            pd.DataFrame: Processed NFL data.
+        Updates NFL data by fetching schedules, processing them, and saving both raw and processed data.
         """
         logging.info("Updating NFL data...")
         current_year = datetime.now().year
@@ -311,10 +276,7 @@ class ModelTrainer:
 
     def update_nba_data(self) -> pd.DataFrame:
         """
-        Fetches NBA team game logs, processes them, and saves the result.
-        
-        Returns:
-            pd.DataFrame or None: Processed NBA data.
+        Updates NBA data by fetching team game logs, processing them, and saving the result.
         """
         logging.info("Updating NBA data...")
         all_data = []
@@ -338,10 +300,7 @@ class ModelTrainer:
 
     def update_ncaab_data(self) -> pd.DataFrame:
         """
-        Fetches NCAAB game data, processes it, and saves the result.
-        
-        Returns:
-            pd.DataFrame or None: Processed NCAAB data.
+        Updates NCAAB data by fetching season games, processing them, and saving the result.
         """
         logging.info("Updating NCAAB data...")
         current_season = datetime.now().year
@@ -372,9 +331,7 @@ class ModelTrainer:
         if ncaab_data is not None:
             self.train_team_models(ncaab_data)
 
-        # Save last update timestamp
-        timestamp = datetime.now()
-        joblib.dump(timestamp, self.model_dir / "last_update.pkl")
+        # Save last update timestamp is handled in train_team_models.
         logging.info("Full update process completed successfully.")
 
 
