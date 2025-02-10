@@ -423,7 +423,8 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
         'diff': round_half(diff),
         'total_points': round_half(total_points),
         'confidence': confidence,
-        'spread_suggestion': f"Lean {winner} by {round_half(diff):.1f}",
+        # Ensure the lean is always reported as a negative number
+        'spread_suggestion': f"Lean {winner} by -{abs(round_half(diff)):.1f}",
         'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
     }
 
