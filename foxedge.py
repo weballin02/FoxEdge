@@ -20,9 +20,6 @@ import joblib
 import os
 import random  # For rotating templates and dynamic content
 import optuna  # For Bayesian optimization
-import asyncio
-import threading
-import time
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
@@ -30,13 +27,13 @@ import cbbpy.mens_scraper as cbb
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, TimeSeriesSplit, cross_val_score
 
 ###############################
-# Global Options and Tuning Method
+# Global Tuning Method Options
 ###############################
 TUNING_METHOD = "bayesian"  # "grid" or "bayesian"
-PERFORM_NESTED_CV = True    # Use nested CV for diagnostics
+PERFORM_NESTED_CV = True    # Option to perform nested cross-validation for diagnostics
 
 ################################################################################
-# HELPER FUNCTION: Ensure tz-naive datetimes
+# HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
 ################################################################################
 def to_naive(dt):
     if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
@@ -121,11 +118,13 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 def round_half(number):
     return round(number * 2) / 2
 
-# Helper to retrieve the recent form from team_stats (used by detailed insights and social media)
+# Helper function to robustly retrieve the recent form value
 def get_recent_form(team_name, team_stats):
     key = team_name.strip().lower()
+    # Return the stored recent form if available
     if key in team_stats and team_stats[key].get('recent_form') is not None:
         return team_stats[key]['recent_form']
+    # As a fallback, check for a fuzzy match (optional)
     for k, v in team_stats.items():
         if team_name.lower() in k or k in team_name.lower():
             return v.get('recent_form', 0.0)
@@ -231,8 +230,7 @@ def train_team_models(team_data: pd.DataFrame):
             print(f"Nested CV RMSE for team {team}: {nested_rmse}")
         if TUNING_METHOD == "grid":
             xgb_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5], 'learning_rate': [0.05, 0.1]}
-            lgbm_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5], 'num_leaves': [31, 50],
-                         'learning_rate': [0.05, 0.1], 'min_data_in_leaf': [20, 40]}
+            lgbm_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5], 'num_leaves': [31, 50], 'learning_rate': [0.05, 0.1], 'min_data_in_leaf': [20, 40]}
             cat_grid = {'iterations': [50, 100], 'learning_rate': [0.05, 0.1], 'depth': [3, 5]}
             try:
                 xgb_best = tune_model_grid(XGBRegressor(random_state=42), xgb_grid, X_train, y_train)
@@ -394,7 +392,7 @@ def find_top_bets(matchups, threshold=70.0):
     return df_top
 
 ################################################################################
-# NFL DATA LOADING FUNCTIONS
+# NFL DATA LOADING
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nfl_schedule():
@@ -431,7 +429,7 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
     return upcoming[['gameday', 'home_team', 'away_team']]
 
 ################################################################################
-# NBA DATA LOADING FUNCTIONS
+# NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
@@ -526,7 +524,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
     return upcoming
 
 ################################################################################
-# NCAAB DATA LOADING FUNCTIONS
+# NCAAB DATA LOADING & UPCOMING GAMES
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
@@ -647,7 +645,9 @@ def generate_social_media_post(bet):
     global team_stats_global
     home_team = bet['home_team']
     away_team = bet['away_team']
-    # Use helper function to retrieve recent form consistently
+    home_key = home_team.strip().lower()
+    away_key = away_team.strip().lower()
+    # Retrieve recent form using the helper function so we use the same data as in detailed insights.
     recent_form_home = get_recent_form(home_team, team_stats_global)
     recent_form_away = get_recent_form(away_team, team_stats_global)
     recent_form_home_str = f"{recent_form_home:.1f}"
@@ -817,27 +817,32 @@ results = []
 team_stats_global = {}
 
 ################################################################################
-# BACKGROUND PREDICTION UPDATE FUNCTIONS
+# MAIN PIPELINE
 ################################################################################
-def compute_predictions(league_choice):
+def run_league_pipeline(league_choice):
+    st.header(f"Today's {league_choice} Best Bets 🎯")
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
         if schedule.empty:
-            return [], {}, pd.DataFrame()
+            st.error("Unable to load NFL schedule.")
+            return
         team_data = preprocess_nfl_data(schedule)
         upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
     elif league_choice == "NBA":
         team_data = load_nba_data()
         if team_data.empty:
-            return [], {}, pd.DataFrame()
+            st.error("Unable to load NBA data.")
+            return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
     else:
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
-            return [], {}, pd.DataFrame()
+            st.error("Unable to load NCAAB data.")
+            return
         upcoming = fetch_upcoming_ncaab_games()
     if team_data.empty or upcoming.empty:
-        return [], {}, team_data
+        st.warning(f"No upcoming {league_choice} data available for analysis.")
+        return
     if league_choice == "NBA":
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
@@ -855,134 +860,129 @@ def compute_predictions(league_choice):
         bottom_10 = set([t for t, r in sorted_def[-10:]])
     else:
         top_10, bottom_10 = None, None
-
-    stack_models, arima_models, team_stats = train_team_models(team_data)
-    results = []
-    for _, row in upcoming.iterrows():
-        home, away = row['home_team'], row['away_team']
-        home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
-        away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
-        row_gameday = to_naive(row['gameday'])
-        if league_choice == "NBA" and home_pred is not None and away_pred is not None:
-            home_games = team_data[team_data['team'] == home]
-            if not home_games.empty:
-                last_game_home = to_naive(home_games['gameday'].max())
-                rest_days_home = (row_gameday - last_game_home).days
-                if rest_days_home == 0:
-                    home_pred -= 3
-                elif rest_days_home >= 3:
-                    home_pred += 2
-            away_games = team_data[team_data['team'] == away]
-            if not away_games.empty:
-                last_game_away = to_naive(away_games['gameday'].max())
-                rest_days_away = (row_gameday - last_game_away).days
-                if rest_days_away == 0:
-                    away_pred -= 3
-                elif rest_days_away >= 3:
-                    away_pred += 2
-            home_pred += 1
-            away_pred -= 1
-            if top_10 and bottom_10:
-                if away in top_10:
-                    home_pred -= 2
-                elif away in bottom_10:
-                    home_pred += 2
-                if home in top_10:
-                    away_pred -= 2
-                elif home in bottom_10:
-                    away_pred += 2
-        elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
-            home_games = team_data[team_data['team'] == home]
-            if not home_games.empty:
-                last_game_home = to_naive(home_games['gameday'].max())
-                rest_days_home = (row_gameday - last_game_home).days
-                if rest_days_home == 0:
-                    home_pred -= 2
-                elif rest_days_home >= 3:
-                    home_pred += 1
-            away_games = team_data[team_data['team'] == away]
-            if not away_games.empty:
-                last_game_away = to_naive(away_games['gameday'].max())
-                rest_days_away = (row_gameday - last_game_away).days
-                if rest_days_away == 0:
-                    away_pred -= 2
-                elif rest_days_away >= 3:
-                    away_pred += 1
-            home_pred += 1
-            away_pred -= 1
-            if top_10 and bottom_10:
-                if away in top_10:
-                    home_pred -= 2
-                elif away in bottom_10:
-                    home_pred += 2
-                if home in top_10:
-                    away_pred -= 2
-                elif home in bottom_10:
-                    away_pred += 2
-        elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
-            home_games = team_data[team_data['team'] == home]
-            if not home_games.empty:
-                last_game_home = to_naive(home_games['gameday'].max())
-                rest_days_home = (row_gameday - last_game_home).days
-                if rest_days_home == 0:
-                    home_pred -= 3
-                elif rest_days_home >= 3:
-                    home_pred += 2
-            away_games = team_data[team_data['team'] == away]
-            if not away_games.empty:
-                last_game_away = to_naive(away_games['gameday'].max())
-                rest_days_away = (row_gameday - last_game_away).days
-                if rest_days_away == 0:
-                    away_pred -= 3
-                elif rest_days_away >= 3:
-                    away_pred += 2
-            home_pred += 1
-            away_pred -= 1
-            if top_10 and bottom_10:
-                if away in top_10:
-                    home_pred -= 2
-                elif away in bottom_10:
-                    home_pred += 2
-                if home in top_10:
-                    away_pred -= 2
-                elif home in bottom_10:
-                    away_pred += 2
-        outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
-        if outcome:
-            home_games = team_data[team_data['team'] == home]
-            if not home_games.empty:
-                last_game_home = to_naive(home_games['gameday'].max())
-                rest_days_home = (row_gameday - last_game_home).days
-            else:
-                rest_days_home = None
-            away_games = team_data[team_data['team'] == away]
-            if not away_games.empty:
-                last_game_away = to_naive(away_games['gameday'].max())
-                rest_days_away = (row_gameday - last_game_away).days
-            else:
-                rest_days_away = None
-            results.append({
-                'date': row['gameday'],
-                'league': league_choice,
-                'home_team': home,
-                'away_team': away,
-                'home_pred': home_pred,
-                'away_pred': away_pred,
-                'predicted_winner': outcome['predicted_winner'],
-                'predicted_diff': outcome['diff'],
-                'predicted_total': outcome['total_points'],
-                'confidence': outcome['confidence'],
-                'spread_suggestion': outcome['spread_suggestion'],
-                'ou_suggestion': outcome['ou_suggestion'],
-                'home_rest': rest_days_home,
-                'away_rest': rest_days_away
-            })
-    return results, team_stats, team_data
-
-################################################################################
-# DISPLAY UI FOR PREDICTIONS
-################################################################################
-def display_all_predictions(results, team_stats, team_data):
+    with st.spinner("Analyzing recent performance data..."):
+        stack_models, arima_models, team_stats = train_team_models(team_data)
+        team_stats_global = team_stats
+        results.clear()
+        for _, row in upcoming.iterrows():
+            home, away = row['home_team'], row['away_team']
+            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+            row_gameday = to_naive(row['gameday'])
+            if league_choice == "NBA" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 2
+                    elif rest_days_home >= 3:
+                        home_pred += 1
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 2
+                    elif rest_days_away >= 3:
+                        away_pred += 1
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
+            if outcome:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                else:
+                    rest_days_home = None
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                else:
+                    rest_days_away = None
+                results.append({
+                    'date': row['gameday'],
+                    'league': league_choice,
+                    'home_team': home,
+                    'away_team': away,
+                    'home_pred': home_pred,
+                    'away_pred': away_pred,
+                    'predicted_winner': outcome['predicted_winner'],
+                    'predicted_diff': outcome['diff'],
+                    'predicted_total': outcome['total_points'],
+                    'confidence': outcome['confidence'],
+                    'spread_suggestion': outcome['spread_suggestion'],
+                    'ou_suggestion': outcome['ou_suggestion'],
+                    'home_rest': rest_days_home,
+                    'away_rest': rest_days_away
+                })
     view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
     if view_mode == "🎯 Top Bets Only":
         conf_threshold = st.slider(
@@ -1006,7 +1006,7 @@ def display_all_predictions(results, team_stats, team_data):
                     else:
                         st.markdown(f"## {bet['date']}")
                     previous_date = current_date
-                display_bet_card(bet, team_stats, team_data=team_data)
+                display_bet_card(bet, team_stats_global, team_data=team_data)
         else:
             st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
@@ -1022,49 +1022,49 @@ def display_all_predictions(results, team_stats, team_data):
                     else:
                         st.markdown(f"## {bet['date']}")
                     previous_date = current_date
-                display_bet_card(bet, team_stats, team_data=team_data)
+                display_bet_card(bet, team_stats_global, team_data=team_data)
         else:
-            st.info("No upcoming games found.")
+            st.info(f"No upcoming {league_choice} games found.")
 
 ################################################################################
-# BACKGROUND UPDATE: Asynchronous prediction update
+# STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
 ################################################################################
-async def async_update_predictions(league_choice):
-    loop = asyncio.get_running_loop()
-    results, team_stats, team_data = await loop.run_in_executor(None, compute_predictions, league_choice)
-    st.session_state["predictions"] = results
-    st.session_state["team_stats_global"] = team_stats
-    st.session_state["team_data"] = team_data
-    st.session_state["update_complete"] = True
+def scheduled_task():
+    st.write("🕒 Scheduled task running: Fetching and updating predictions...")
+    st.write("📡 Fetching latest NFL schedule and results...")
+    schedule = nfl.import_schedules([datetime.now().year])
+    schedule.to_csv("nfl_schedule.csv", index=False)
+    st.write("🏀 Fetching latest NBA team game logs...")
+    nba_data = []
+    for team_id in range(1, 31):
+        try:
+            logs = TeamGameLog(team_id=team_id, season="2024-25").get_data_frames()[0]
+            nba_data.append(logs)
+        except Exception as e:
+            st.warning(f"Error fetching data for NBA team {team_id}: {e}")
+    if nba_data:
+        nba_df = pd.concat(nba_data, ignore_index=True)
+        nba_df.to_csv("nba_team_logs.csv", index=False)
+    st.write("🏀 Fetching latest NCAAB data...")
+    ncaab_df, _, _ = cbb.get_games_season(season=2025, info=True, box=False, pbp=False)
+    if not ncaab_df.empty:
+        ncaab_df.to_csv("ncaab_games.csv", index=False)
+    st.write("🤖 Updating prediction models...")
+    if os.path.exists("nfl_schedule.csv"):
+        joblib.dump(schedule, "models/nfl_model.pkl")
+    if os.path.exists("nba_team_logs.csv"):
+        joblib.dump(nba_df, "models/nba_model.pkl")
+    if os.path.exists("ncaab_games.csv"):
+        joblib.dump(ncaab_df, "models/ncaab_model.pkl")
+    st.success("✅ Scheduled task completed successfully!")
+    st.success("Scheduled task completed successfully.")
 
-################################################################################
-# BACKGROUND UPDATE AND AUTO-REFRESH
-################################################################################
-def start_background_update(league_choice):
-    st.session_state["update_complete"] = False
-    def run_bg_update():
-        asyncio.run(async_update_predictions(league_choice))
-    threading.Thread(target=run_bg_update, daemon=True).start()
-    # No st.stop() here; instead, the main UI will auto-refresh.
-    
-################################################################################
-# OPTIONAL: Periodic Updates Scheduler (uncomment to enable)
-################################################################################
-def schedule_periodic_updates(interval_minutes=10, league_choice="NBA"):
-    def updater():
-        while True:
-            start_background_update(league_choice)
-            time.sleep(interval_minutes * 60)
-    threading.Thread(target=updater, daemon=True).start()
-
-# Uncomment the following line to enable periodic updates (e.g., every 10 minutes)
-# schedule_periodic_updates(10, league_choice="NBA")
-
-################################################################################
-# MAIN PIPELINE & UI
-################################################################################
 def main():
-    st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
+    st.set_page_config(
+        page_title="FoxEdge Sports Betting Edge",
+        page_icon="🦊",
+        layout="centered"
+    )
     st.title("🦊 FoxEdge Sports Betting Insights")
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
@@ -1079,7 +1079,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.experimental_rerun()
+                    st.rerun()
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1089,43 +1089,35 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.experimental_rerun()
+            st.rerun()
     st.sidebar.header("Navigation")
-    league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
-                                     help="Choose which league's games you'd like to analyze")
-    if st.sidebar.button("Refresh Predictions"):
-        start_background_update(league_choice)
-        time.sleep(1)  # Give a moment for background update to start
-        st.experimental_rerun()
-    # If predictions are not yet available, start background update and auto-refresh every 3 seconds.
-    if "update_complete" not in st.session_state or not st.session_state.get("update_complete", False):
-        start_background_update(league_choice)
-        st.info("Predictions are being updated in the background. Please wait...")
-        time.sleep(3)
-        st.experimental_rerun()
-    else:
-        display_all_predictions(st.session_state["predictions"],
-                                  st.session_state["team_stats_global"],
-                                  st.session_state["team_data"])
+    league_choice = st.sidebar.radio(
+        "Select League",
+        ["NFL", "NBA", "NCAAB"],
+        help="Choose which league's games you'd like to analyze"
+    )
+    run_league_pipeline(league_choice)
     st.sidebar.markdown(
         "### About FoxEdge\n"
         "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
     )
     if st.button("Save Predictions to CSV"):
-        if st.session_state.get("predictions"):
-            save_predictions_to_csv(st.session_state["predictions"])
-            csv = pd.DataFrame(st.session_state["predictions"]).to_csv(index=False).encode('utf-8')
-            st.download_button(label="Download Predictions as CSV",
-                               data=csv,
-                               file_name='predictions.csv',
-                               mime='text/csv')
+        if results:
+            save_predictions_to_csv(results)
+            csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Predictions as CSV",
+                data=csv,
+                file_name='predictions.csv',
+                mime='text/csv',
+            )
         else:
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
     query_params = st.experimental_get_query_params()
     if "trigger" in query_params:
-        start_background_update("NBA")
+        scheduled_task()
         st.write("Task triggered successfully.")
     else:
         main()
