@@ -2,12 +2,14 @@
 """
 train.py
 --------
-Balanced version that optimizes performance while maintaining prediction accuracy
+Headless script that fetches sports data, trains hybrid models 
+(StackingRegressor + Auto-ARIMA) for NFL, NBA, and NCAAB,
+and saves them into the "models/" folder so that the UI can load them.
+No UI or user login code is included.
 """
 
 import os
 import time
-import logging
 import numpy as np
 import pandas as pd
 import joblib
@@ -19,251 +21,379 @@ from nba_api.stats.static import teams as nba_teams
 import cbbpy.mens_scraper as cbb
 
 from pmdarima import auto_arima
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error
 from sklearn.ensemble import StackingRegressor
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 #########################
-# Balanced Model Configuration
+# Helper Function for Retries
 #########################
-def configure_model_params(is_small_dataset: bool):
+def retry_call(func, retries=3, delay=5, *args, **kwargs):
     """
-    Configure parameters based on dataset size to balance accuracy and performance
+    Calls func with the given args and kwargs.
+    Retries up to 'retries' times if an exception occurs, waiting 'delay' seconds between attempts.
     """
-    if is_small_dataset:  # For teams with limited data (< 30 games)
-        return {
-            'xgb': XGBRegressor(
-                n_estimators=50,
-                max_depth=3,
-                learning_rate=0.1,
-                random_state=42,
-                n_jobs=2
-            ),
-            'lgbm': LGBMRegressor(
-                n_estimators=50,
-                max_depth=5,
-                random_state=42,
-                n_jobs=2
-            ),
-            'cat': CatBoostRegressor(
-                iterations=50,
-                depth=3,
-                learning_rate=0.1,
-                verbose=0,
-                thread_count=2,
-                random_state=42
-            ),
-            'grid_search': False
-        }
-    else:  # For teams with sufficient data
-        return {
-            'xgb': {
-                'model': XGBRegressor(random_state=42, n_jobs=2),
-                'param_grid': {
-                    'n_estimators': [100, 200],
-                    'max_depth': [3, 5, 7],
-                    'learning_rate': [0.01, 0.1]
-                }
-            },
-            'lgbm': {
-                'model': LGBMRegressor(random_state=42, n_jobs=2),
-                'param_grid': {
-                    'n_estimators': [100, 200],
-                    'max_depth': [5, 7],
-                    'learning_rate': [0.01, 0.1]
-                }
-            },
-            'cat': {
-                'model': CatBoostRegressor(verbose=0, random_state=42, thread_count=2),
-                'param_grid': {
-                    'iterations': [100, 200],
-                    'depth': [3, 5, 7],
-                    'learning_rate': [0.01, 0.1]
-                }
-            },
-            'grid_search': True
-        }
-
-#########################
-# Enhanced Retry Function
-#########################
-def retry_call(func, retries=3, initial_delay=1, *args, **kwargs):
-    """Retry with exponential backoff and logging"""
     for attempt in range(retries):
         try:
             return func(*args, **kwargs)
         except Exception as e:
             if attempt < retries - 1:
-                delay = initial_delay * (2 ** attempt)
-                logger.warning(f"Attempt {attempt + 1} failed: {str(e)}. Retrying in {delay}s...")
                 time.sleep(delay)
             else:
-                logger.error(f"All retries failed for {func.__name__}: {str(e)}")
                 raise e
 
 #########################
-# Balanced Training Function
+# HELPER FUNCTIONS
 #########################
-def train_team_models(team_data: pd.DataFrame, sport_name: str):
+def round_half(number):
+    """Rounds a number to the nearest 0.5."""
+    return round(number * 2) / 2
+
+def tune_model(model, param_grid, X_train, y_train):
+    """Tunes a given model using GridSearchCV with TimeSeriesSplit."""
+    tscv = TimeSeriesSplit(n_splits=3)
+    grid = GridSearchCV(model, param_grid, cv=tscv, scoring='neg_mean_squared_error', n_jobs=-1)
+    grid.fit(X_train, y_train)
+    return grid.best_estimator_
+
+#########################
+# DATA LOADING FUNCTIONS
+#########################
+def load_nfl_data():
+    current_year = datetime.now().year
+    years = [current_year - i for i in range(12)]
+    schedule = nfl_data_py.import_schedules(years)
+    schedule["gameday"] = pd.to_datetime(schedule["gameday"], errors="coerce")
+    schedule.sort_values("gameday", inplace=True)
+    home_df = schedule[["gameday", "home_team", "home_score", "away_score"]].rename(
+        columns={"home_team": "team", "home_score": "score", "away_score": "opp_score"}
+    )
+    away_df = schedule[["gameday", "away_team", "away_score", "home_score"]].rename(
+        columns={"away_team": "team", "away_score": "score", "home_score": "opp_score"}
+    )
+    data = pd.concat([home_df, away_df], ignore_index=True)
+    data.dropna(subset=["score"], inplace=True)
+    data.sort_values("gameday", inplace=True)
+    data["rolling_avg"] = data.groupby("team")["score"].transform(lambda x: x.rolling(3, min_periods=1).mean())
+    data["rolling_std"] = data.groupby("team")["score"].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
+    data["season_avg"] = data.groupby("team")["score"].transform(lambda x: x.expanding().mean())
+    data["weighted_avg"] = data["rolling_avg"] * 0.6 + data["season_avg"] * 0.4
+    return data
+
+def load_nba_data():
+    nba_teams_list = nba_teams.get_teams()
+    seasons = ['2017-18','2018-19','2019-20','2020-21','2021-22','2022-23','2023-24','2024-25']
+    all_rows = []
+    for season in seasons:
+        for team in nba_teams_list:
+            team_id = team['id']
+            team_abbrev = team.get('abbreviation', str(team_id))
+            try:
+                gl = retry_call(lambda: TeamGameLog(team_id=team_id, season=season).get_data_frames()[0],
+                                retries=3, delay=5)
+                if gl.empty:
+                    continue
+                gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
+                gl.sort_values('GAME_DATE', inplace=True)
+                needed = ['PTS','FGA','FTA','TOV','OREB','PTS_OPP']
+                for c in needed:
+                    if c not in gl.columns:
+                        gl[c] = 0
+                    gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
+                gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
+                gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
+                gl['OFF_RATING'] = np.where(gl['TEAM_POSSESSIONS'] > 0,
+                                            (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100,
+                                            np.nan)
+                gl['DEF_RATING'] = np.where(gl['TEAM_POSSESSIONS'] > 0,
+                                            (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100,
+                                            np.nan)
+                gl['PACE'] = gl['TEAM_POSSESSIONS']
+                gl['rolling_avg'] = gl['PTS'].rolling(window=3, min_periods=1).mean()
+                gl['rolling_std'] = gl['PTS'].rolling(window=3, min_periods=1).std().fillna(0)
+                gl['season_avg'] = gl['PTS'].expanding().mean()
+                gl['weighted_avg'] = gl['rolling_avg'] * 0.6 + gl['season_avg'] * 0.4
+                for idx, row_ in gl.iterrows():
+                    try:
+                        all_rows.append({
+                            'gameday': row_['GAME_DATE'],
+                            'team': team_abbrev,
+                            'score': float(row_['PTS']),
+                            'off_rating': row_['OFF_RATING'] if pd.notnull(row_['OFF_RATING']) else np.nan,
+                            'def_rating': row_['DEF_RATING'] if pd.notnull(row_['DEF_RATING']) else np.nan,
+                            'pace': row_['PACE'] if pd.notnull(row_['PACE']) else np.nan,
+                            'rolling_avg': row_['rolling_avg'],
+                            'rolling_std': row_['rolling_std'],
+                            'season_avg': row_['season_avg'],
+                            'weighted_avg': row_['weighted_avg']
+                        })
+                    except Exception as e:
+                        print(f"Error processing row for team {team_abbrev}: {e}")
+                        continue
+            except Exception as e:
+                print(f"Error processing team {team_abbrev} for season {season}: {e}")
+                continue
+    expected_columns = ["gameday", "team", "score", "off_rating", "def_rating", "pace", "rolling_avg", "rolling_std", "season_avg", "weighted_avg"]
+    df = pd.DataFrame(all_rows, columns=expected_columns)
+    df.dropna(subset=['score'], inplace=True)
+    df.sort_values('gameday', inplace=True)
+    for col in ['off_rating','def_rating','pace']:
+        df[col].fillna(df[col].mean(), inplace=True)
+    return df
+
+def load_ncaab_data_current_season(season=2025):
+    info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
+    if info_df.empty:
+        return pd.DataFrame()
+    if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
+        info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
+    home_df = info_df[['game_day','home_team','home_score','away_score']].rename(columns={
+        "game_day": "gameday",
+        "home_team": "team",
+        "home_score": "score",
+        "away_score": "opp_score"
+    })
+    home_df['is_home'] = 1
+    away_df = info_df[['game_day','away_team','away_score','home_score']].rename(columns={
+        "game_day": "gameday",
+        "away_team": "team",
+        "away_score": "score",
+        "home_score": "opp_score"
+    })
+    away_df['is_home'] = 0
+    data = pd.concat([home_df, away_df], ignore_index=True)
+    data.dropna(subset=["score"], inplace=True)
+    data.sort_values("gameday", inplace=True)
+    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
+    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
+    data['season_avg'] = data.groupby('team')['score'].transform(lambda x: x.expanding().mean())
+    data['weighted_avg'] = data['rolling_avg'] * 0.6 + data['season_avg'] * 0.4
+    data.sort_values(['team','gameday'], inplace=True)
+    data['game_index'] = data.groupby('team').cumcount()
+    return data
+
+def fetch_upcoming_nfl_games(schedule, days_ahead=7):
+    upcoming = schedule[schedule['home_score'].isna() & schedule['away_score'].isna()].copy()
+    now = datetime.now()
+    filter_date = now + timedelta(days=days_ahead)
+    upcoming = upcoming[upcoming['gameday'] <= filter_date].copy()
+    upcoming.sort_values('gameday', inplace=True)
+    return upcoming[['gameday','home_team','away_team']]
+
+def fetch_upcoming_nba_games(days_ahead=3):
+    now = datetime.now()
+    upcoming_rows = []
+    for offset in range(days_ahead + 1):
+        date_target = now + timedelta(days=offset)
+        date_str = date_target.strftime('%Y-%m-%d')
+        try:
+            scoreboard = retry_call(lambda: ScoreboardV2(game_date=date_str), retries=3, delay=5)
+        except Exception as e:
+            print(f"Error fetching scoreboard for {date_str}: {e}")
+            continue
+        games = scoreboard.get_data_frames()[0]
+        if games.empty:
+            continue
+        nba_team_dict = {tm['id']: tm['abbreviation'] for tm in nba_teams.get_teams()}
+        games['HOME_TEAM_ABBREV'] = games['HOME_TEAM_ID'].map(nba_team_dict)
+        games['AWAY_TEAM_ABBREV'] = games['VISITOR_TEAM_ID'].map(nba_team_dict)
+        upcoming_df = games[~games['GAME_STATUS_TEXT'].str.contains("Final", case=False, na=False)]
+        for _, g in upcoming_df.iterrows():
+            upcoming_rows.append({
+                'gameday': pd.to_datetime(date_str),
+                'home_team': g['HOME_TEAM_ABBREV'],
+                'away_team': g['AWAY_TEAM_ABBREV']
+            })
+    if not upcoming_rows:
+        return pd.DataFrame()
+    upcoming = pd.DataFrame(upcoming_rows)
+    upcoming.sort_values('gameday', inplace=True)
+    return upcoming
+
+def fetch_upcoming_ncaab_games():
+    timezone = pytz.timezone('America/Los_Angeles')
+    current_time = datetime.now(timezone)
+    dates = [
+        current_time.strftime('%Y%m%d'),
+        (current_time + timedelta(days=1)).strftime('%Y%m%d')
+    ]
+    rows = []
+    for date_str in dates:
+        try:
+            response = retry_call(lambda: requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard",
+                params={'dates': date_str, 'groups': '50', 'limit': '357'}
+            ), retries=3, delay=5)
+        except Exception as e:
+            st.warning(f"ESPN API request failed for date {date_str}: {e}")
+            continue
+        if response.status_code != 200:
+            st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
+            continue
+        data = response.json()
+        games = data.get('events', [])
+        if not games:
+            st.info(f"No upcoming NCAAB games for {date_str}.")
+            continue
+        for game in games:
+            game_time_str = game['date']
+            game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
+            competitors = game['competitions'][0]['competitors']
+            home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
+            away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
+            if not home_comp or not away_comp:
+                continue
+            home_team = home_comp['team']['displayName']
+            away_team = away_comp['team']['displayName']
+            rows.append({
+                'gameday': game_time,
+                'home_team': home_team,
+                'away_team': away_team
+            })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df.sort_values('gameday', inplace=True)
+    return df
+
+#########################
+# TRAINING FUNCTION
+#########################
+def train_team_models(team_data: pd.DataFrame):
     """
-    Balanced training function that adapts to dataset size and available resources
+    Trains a hybrid model (StackingRegressor + Auto-ARIMA) for each team's 'score' using
+    time-series cross validation and hyperparameter optimization.
+    Returns three dictionaries: stack_models, arima_models, and team_stats.
     """
     if team_data.empty or "team" not in team_data.columns:
-        logger.error(f"[{sport_name}] team_data is empty or missing 'team' column.")
+        print("[train.py] team_data is empty or missing 'team' column.")
         return {}, {}, {}
     
     stack_models = {}
     arima_models = {}
     team_stats = {}
-    
-    # Process teams in manageable batches while maintaining model quality
-    batch_size = 10  # Increased from 5 to reduce overhead
     all_teams = team_data["team"].unique()
-    total_teams = len(all_teams)
-    
-    for batch_start in range(0, total_teams, batch_size):
-        batch_teams = all_teams[batch_start:batch_start + batch_size]
-        logger.info(f"[{sport_name}] Processing batch {batch_start//batch_size + 1} of {(total_teams + batch_size - 1)//batch_size}")
-        
-        for team in batch_teams:
+    for team in all_teams:
+        df_team = team_data[team_data["team"] == team].copy()
+        df_team.sort_values("gameday", inplace=True)
+        scores = df_team["score"].reset_index(drop=True)
+        if len(scores) < 3:
+            continue
+        df_team["rolling_avg"] = df_team["score"].rolling(3, min_periods=1).mean()
+        df_team["rolling_std"] = df_team["score"].rolling(3, min_periods=1).std().fillna(0)
+        df_team["season_avg"] = df_team["score"].expanding().mean()
+        df_team["weighted_avg"] = df_team["rolling_avg"] * 0.6 + df_team["season_avg"] * 0.4
+        mean_val = round_half(scores.mean())
+        std_val = round_half(scores.std())
+        team_stats[team] = {
+            "mean": mean_val,
+            "std": std_val,
+            "max": round_half(scores.max()),
+            "recent_form": round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
+        }
+        features = df_team[["rolling_avg", "rolling_std", "weighted_avg"]].fillna(0)
+        X = features.values
+        y = scores.values
+        n = len(X)
+        split_index = int(n * 0.8)
+        if split_index < 2 or (n - split_index) < 1:
+            continue
+        X_train, X_test = X[:split_index], X[split_index:]
+        y_train, y_test = y[:split_index], y[split_index:]
+        try:
+            xgb = XGBRegressor(random_state=42)
+            xgb_grid = {"n_estimators": [50, 100], "max_depth": [3, 5]}
+            xgb_best = tune_model(xgb, xgb_grid, X_train, y_train)
+        except Exception as e:
+            print(f"[train.py] Error tuning XGB for team {team}: {e}")
+            xgb_best = XGBRegressor(n_estimators=100, random_state=42)
+        try:
+            lgbm = LGBMRegressor(random_state=42)
+            lgbm_grid = {"n_estimators": [50, 100], "max_depth": [None, 5]}
+            lgbm_best = tune_model(lgbm, lgbm_grid, X_train, y_train)
+        except Exception as e:
+            print(f"[train.py] Error tuning LGBM for team {team}: {e}")
+            lgbm_best = LGBMRegressor(n_estimators=100, random_state=42)
+        try:
+            cat = CatBoostRegressor(verbose=0, random_state=42)
+            cat_grid = {"iterations": [50, 100], "learning_rate": [0.1, 0.05]}
+            cat_best = tune_model(cat, cat_grid, X_train, y_train)
+        except Exception as e:
+            print(f"[train.py] Error tuning CatBoost for team {team}: {e}")
+            cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+        estimators = [("xgb", xgb_best), ("lgbm", lgbm_best), ("cat", cat_best)]
+        stack = StackingRegressor(
+            estimators=estimators,
+            final_estimator=LGBMRegressor(),
+            passthrough=False,
+            cv=3,
+        )
+        try:
+            stack.fit(X_train, y_train)
+            preds = stack.predict(X_test)
+            mse = mean_squared_error(y_test, preds)
+            print(f"[train.py] {team} - Stacking MSE: {mse}")
+            stack_models[team] = stack
+            team_stats[team]["mse"] = mse
+            bias = np.mean(y_train - stack.predict(X_train))
+            team_stats[team]["bias"] = bias
+        except Exception as e:
+            print(f"[train.py] Error training Stacking Regressor for team {team}: {e}")
+            continue
+        if len(scores) >= 7:
             try:
-                df_team = team_data[team_data["team"] == team].copy()
-                if len(df_team) < 10:  # Skip teams with insufficient data
-                    logger.warning(f"Skipping {team} due to insufficient data (less than 10 games)")
-                    continue
-                
-                # Determine if this is a small dataset
-                is_small_dataset = len(df_team) < 30
-                model_configs = configure_model_params(is_small_dataset)
-                
-                # Calculate features with proper handling of time series nature
-                df_team.sort_values("gameday", inplace=True)
-                scores = df_team["score"].values
-                
-                # Enhanced feature engineering
-                features = pd.DataFrame({
-                    'rolling_avg_3': df_team["score"].rolling(3, min_periods=1).mean(),
-                    'rolling_avg_5': df_team["score"].rolling(5, min_periods=1).mean(),
-                    'rolling_std': df_team["score"].rolling(3, min_periods=1).std(),
-                    'ewm_alpha_03': df_team["score"].ewm(alpha=0.3).mean(),
-                    'ewm_alpha_07': df_team["score"].ewm(alpha=0.7).mean()
-                }).fillna(method='bfill').fillna(0)
-                
-                # Use time series cross-validation for more reliable evaluation
-                tscv = TimeSeriesSplit(n_splits=3 if is_small_dataset else 5)
-                
-                # Train stacking model
-                if model_configs.get('grid_search', False):
-                    estimators = []
-                    for name, config in model_configs.items():
-                        if name != 'grid_search':
-                            from sklearn.model_selection import GridSearchCV
-                            grid = GridSearchCV(
-                                config['model'],
-                                config['param_grid'],
-                                cv=tscv,
-                                n_jobs=2,
-                                scoring='neg_mean_squared_error'
-                            )
-                            grid.fit(features, scores)
-                            estimators.append((name, grid.best_estimator_))
-                else:
-                    estimators = [
-                        (name, model) 
-                        for name, model in model_configs.items()
-                        if name != 'grid_search'
-                    ]
-                
-                # Create and train stacking model
-                stack = StackingRegressor(
-                    estimators=estimators,
-                    final_estimator=LGBMRegressor(n_estimators=100),
-                    cv=tscv
+                arima = auto_arima(
+                    scores,
+                    seasonal=False,
+                    trace=False,
+                    error_action='ignore',
+                    suppress_warnings=True,
+                    max_p=3,
+                    max_q=3,
                 )
-                
-                stack.fit(features, scores)
-                stack_models[team] = stack
-                
-                # Calculate comprehensive team stats
-                recent_scores = scores[-10:] if len(scores) >= 10 else scores
-                team_stats[team] = {
-                    "mean": np.mean(scores),
-                    "std": np.std(scores),
-                    "recent_mean": np.mean(recent_scores),
-                    "recent_std": np.std(recent_scores),
-                    "trend": np.polyfit(range(len(recent_scores)), recent_scores, 1)[0]
-                }
-                
-                # Train ARIMA model with appropriate complexity
-                if len(scores) >= 20:  # Only use ARIMA with sufficient data
-                    arima = auto_arima(
-                        scores,
-                        start_p=1, start_q=1,
-                        max_p=3, max_q=3,
-                        m=1,  # Non-seasonal model
-                        seasonal=False,
-                        stepwise=True,
-                        suppress_warnings=True,
-                        error_action='ignore',
-                        max_order=5
-                    )
-                    arima_models[team] = arima
-                
+                arima_models[team] = arima
             except Exception as e:
-                logger.error(f"Error processing team {team}: {str(e)}")
+                print(f"[train.py] Error training ARIMA for team {team}: {e}")
                 continue
-        
-        # Memory management
-        import gc
-        gc.collect()
-    
     return stack_models, arima_models, team_stats
 
 #########################
-# Main Training Workflow
+# MAIN DAILY TRAINING WORKFLOW
 #########################
 def daily_training_workflow():
-    start_time = time.time()
-    logger.info("Starting daily training workflow")
-    
     os.makedirs("models", exist_ok=True)
     
-    for sport, load_func in [
-        ("NFL", load_nfl_data),
-        ("NBA", load_nba_data),
-        ("NCAAB", lambda: load_ncaab_data_current_season(2025))
-    ]:
-        try:
-            logger.info(f"Loading {sport} data...")
-            data = load_func()
-            
-            logger.info(f"Training {sport} models...")
-            stack_models, arima_models, team_stats = train_team_models(data, sport)
-            
-            # Save models
-            sport_lower = sport.lower()
-            joblib.dump(stack_models, f"models/stack_models_{sport_lower}.pkl")
-            joblib.dump(arima_models, f"models/arima_models_{sport_lower}.pkl")
-            joblib.dump(team_stats, f"models/team_stats_{sport_lower}.pkl")
-            
-            logger.info(f"{sport} models saved successfully")
-            
-        except Exception as e:
-            logger.error(f"Error processing {sport}: {str(e)}")
-            continue
+    # ----- NFL Training -----
+    print("[train.py] Starting NFL training...")
+    nfl_data = load_nfl_data()
+    stack_models_nfl, arima_models_nfl, team_stats_nfl = train_team_models(nfl_data)
+    joblib.dump(stack_models_nfl, "models/stack_models_nfl.pkl")
+    joblib.dump(arima_models_nfl, "models/arima_models_nfl.pkl")
+    joblib.dump(team_stats_nfl,  "models/team_stats_nfl.pkl")
+    print("[train.py] NFL models saved.")
     
-    duration = time.time() - start_time
-    logger.info(f"Daily training completed in {duration:.2f} seconds")
+    # ----- NBA Training -----
+    print("[train.py] Starting NBA training...")
+    nba_data = load_nba_data()
+    stack_models_nba, arima_models_nba, team_stats_nba = train_team_models(nba_data)
+    joblib.dump(stack_models_nba, "models/stack_models_nba.pkl")
+    joblib.dump(arima_models_nba, "models/arima_models_nba.pkl")
+    joblib.dump(team_stats_nba,  "models/team_stats_nba.pkl")
+    print("[train.py] NBA models saved.")
+    
+    # ----- NCAAB Training -----
+    print("[train.py] Starting NCAAB training...")
+    ncaab_data = load_ncaab_data_current_season(season=2025)
+    stack_models_ncaab, arima_models_ncaab, team_stats_ncaab = train_team_models(ncaab_data)
+    joblib.dump(stack_models_ncaab, "models/stack_models_ncaab.pkl")
+    joblib.dump(arima_models_ncaab, "models/arima_models_ncaab.pkl")
+    joblib.dump(team_stats_ncaab,  "models/team_stats_ncaab.pkl")
+    print("[train.py] NCAAB models saved.")
+    
+    print("[train.py] Daily training complete!")
 
 if __name__ == "__main__":
     daily_training_workflow()
