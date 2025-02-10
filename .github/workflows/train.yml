@@ -2,14 +2,14 @@ name: "Daily Model Training"
 
 on:
   schedule:
-    # Runs daily at 11:00 UTC (≈3:00 AM PT during standard time)
+    # Runs daily at 08:00 UTC (adjust the cron as needed)
     - cron: "0 08 * * *"
   workflow_dispatch: {}
 
 jobs:
   daily_train:
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # 3 hour timeout limit
+    timeout-minutes: 180  # 3-hour timeout limit
 
     steps:
       - name: Check out repository
@@ -22,7 +22,6 @@ jobs:
         with:
           python-version: "3.9"
 
-      # Add caching for pip dependencies
       - name: Cache pip packages
         uses: actions/cache@v2
         with:
@@ -36,11 +35,9 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Add resource monitoring
       - name: Install monitoring tools
         run: sudo apt-get install -y htop
 
-      # Print system info before training
       - name: System information
         run: |
           echo "CPU Info:"
@@ -52,10 +49,11 @@ jobs:
 
       - name: Run training script
         run: |
-          # Run with basic resource monitoring
-          htop -C -d 30 & # Run htop in background
           python train.py
-          kill %1 # Kill htop process
+        shell: /usr/bin/bash -e {0}
+        env:
+          pythonLocation: /opt/hostedtoolcache/Python/3.9.21/x64
+          LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.9.21/x64/lib
 
       - name: List model files after training
         run: ls -l models
