@@ -5,7 +5,7 @@ FoxEdge.py
 Streamlit UI that:
   - Requires user login.
   - Loads pretrained models for NFL, NBA, or NCAAB from the "models/" folder.
-  - Displays predictions for upcoming games (including Top Bets, All Games, CSV export, etc.)
+  - Displays predictions for upcoming games (with Top Bets, All Games, CSV export, etc.)
   - Retains the same UI/UX as your original unsplit script.
   - No in-app model training occurs.
 """
@@ -82,10 +82,6 @@ def logout_user():
 ###############################################
 @st.cache_resource
 def load_pretrained_models(league):
-    """
-    Loads the pretrained models for the specified league.
-    Returns (stack_models, arima_models, team_stats) or (None, None, None) if not found.
-    """
     if league == "NFL":
         if not os.path.exists("models/stack_models_nfl.pkl"):
             return None, None, None
@@ -237,7 +233,11 @@ def fetch_upcoming_nba_games(days_ahead=3):
     for offset in range(days_ahead + 1):
         date_target = now + timedelta(days=offset)
         date_str = date_target.strftime('%Y-%m-%d')
-        scoreboard = ScoreboardV2(game_date=date_str)
+        try:
+            scoreboard = retry_call(lambda: ScoreboardV2(game_date=date_str), retries=3, delay=5)
+        except Exception as e:
+            print(f"Error fetching scoreboard for {date_str}: {e}")
+            continue
         games = scoreboard.get_data_frames()[0]
         if games.empty:
             continue
@@ -257,37 +257,6 @@ def fetch_upcoming_nba_games(days_ahead=3):
     upcoming.sort_values('gameday', inplace=True)
     return upcoming
 
-def load_ncaab_data_current_season(season=2025):
-    info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
-    if info_df.empty:
-        return pd.DataFrame()
-    if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
-        info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
-    home_df = info_df[['game_day', 'home_team', 'home_score', 'away_score']].rename(columns={
-        "game_day": "gameday",
-        "home_team": "team",
-        "home_score": "score",
-        "away_score": "opp_score"
-    })
-    home_df['is_home'] = 1
-    away_df = info_df[['game_day', 'away_team', 'away_score', 'home_score']].rename(columns={
-        "game_day": "gameday",
-        "away_team": "team",
-        "away_score": "score",
-        "home_score": "opp_score"
-    })
-    away_df['is_home'] = 0
-    data = pd.concat([home_df, away_df], ignore_index=True)
-    data.dropna(subset=["score"], inplace=True)
-    data.sort_values("gameday", inplace=True)
-    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
-    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-    data['season_avg'] = data.groupby('team')['score'].transform(lambda x: x.expanding().mean())
-    data['weighted_avg'] = data['rolling_avg'] * 0.6 + data['season_avg'] * 0.4
-    data.sort_values(['team', 'gameday'], inplace=True)
-    data['game_index'] = data.groupby('team').cumcount()
-    return data
-
 def fetch_upcoming_ncaab_games():
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
@@ -297,9 +266,14 @@ def fetch_upcoming_ncaab_games():
     ]
     rows = []
     for date_str in dates:
-        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-        params = {'dates': date_str, 'groups': '50', 'limit': '357'}
-        response = requests.get(url, params=params)
+        try:
+            response = retry_call(lambda: requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard",
+                params={'dates': date_str, 'groups': '50', 'limit': '357'}
+            ), retries=3, delay=5)
+        except Exception as e:
+            st.warning(f"ESPN API request failed for date {date_str}: {e}")
+            continue
         if response.status_code != 200:
             st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
             continue
@@ -329,18 +303,16 @@ def fetch_upcoming_ncaab_games():
     df.sort_values('gameday', inplace=True)
     return df
 
-##############################################
-# 5) MAIN PIPELINE (NO TRAINING)
-##############################################
+#########################
+# MAIN PIPELINE (NO TRAINING)
+#########################
 def run_league_pipeline(league_choice):
     st.header(f"Today's {league_choice} Best Bets 🎯")
-    # 1) Load pretrained models for the selected league
     with st.spinner("Loading pretrained models..."):
         stack_models, arima_models, team_stats = load_pretrained_models(league_choice)
         if not stack_models:
             st.error("No pretrained models found. Please run daily training first.")
             return
-    # 2) Load league data for upcoming games
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
         team_data = preprocess_nfl_data(schedule)
@@ -364,7 +336,7 @@ def run_league_pipeline(league_choice):
         st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
 
-    # (Optional: Compute defensive ratings and adjustments as in original code)
+    # Compute defensive ratings for dynamic adjustments
     if league_choice == "NBA":
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
@@ -384,16 +356,11 @@ def run_league_pipeline(league_choice):
         top_10, bottom_10 = None, None
 
     with st.spinner("Analyzing recent performance data..."):
-        # Note: Instead of training, we load the pretrained models.
-        # For the purposes of dynamic adjustments below, we still need team_stats.
-        # Here, team_stats is already loaded above.
         results = []
         for _, row in upcoming.iterrows():
             home, away = row["home_team"], row["away_team"]
             home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
             away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
-
-            # --- Dynamic Adjustments (same as original) ---
             row_gameday = to_naive(row["gameday"])
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data["team"] == home]
@@ -479,7 +446,6 @@ def run_league_pipeline(league_choice):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
-
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
                 results.append({
