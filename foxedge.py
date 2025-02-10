@@ -32,11 +32,11 @@ from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, TimeSeries
 ###############################
 # Global Options and Tuning Method
 ###############################
-TUNING_METHOD = "bayesian"  # Choose between "grid" or "bayesian"
-PERFORM_NESTED_CV = True    # Option to perform nested cross-validation for diagnostics
+TUNING_METHOD = "bayesian"  # "grid" or "bayesian"
+PERFORM_NESTED_CV = True    # Use nested CV for diagnostics
 
 ################################################################################
-# HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
+# HELPER FUNCTION: Ensure tz-naive datetimes
 ################################################################################
 def to_naive(dt):
     if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
@@ -121,7 +121,7 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 def round_half(number):
     return round(number * 2) / 2
 
-# Helper function to robustly retrieve the recent form value from team_stats.
+# Helper to retrieve the recent form from team_stats (used by detailed insights and social media)
 def get_recent_form(team_name, team_stats):
     key = team_name.strip().lower()
     if key in team_stats and team_stats[key].get('recent_form') is not None:
@@ -394,7 +394,7 @@ def find_top_bets(matchups, threshold=70.0):
     return df_top
 
 ################################################################################
-# NFL DATA LOADING
+# NFL DATA LOADING FUNCTIONS
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nfl_schedule():
@@ -431,7 +431,7 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
     return upcoming[['gameday', 'home_team', 'away_team']]
 
 ################################################################################
-# NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
+# NBA DATA LOADING FUNCTIONS
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
@@ -526,7 +526,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
     return upcoming
 
 ################################################################################
-# NCAAB DATA LOADING & UPCOMING GAMES
+# NCAAB DATA LOADING FUNCTIONS
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
@@ -647,9 +647,7 @@ def generate_social_media_post(bet):
     global team_stats_global
     home_team = bet['home_team']
     away_team = bet['away_team']
-    home_key = home_team.strip().lower()
-    away_key = away_team.strip().lower()
-    # Retrieve recent form using the helper function
+    # Use helper function to retrieve recent form consistently
     recent_form_home = get_recent_form(home_team, team_stats_global)
     recent_form_away = get_recent_form(away_team, team_stats_global)
     recent_form_home_str = f"{recent_form_home:.1f}"
@@ -821,7 +819,6 @@ team_stats_global = {}
 ################################################################################
 # BACKGROUND PREDICTION UPDATE FUNCTIONS
 ################################################################################
-# Compute predictions (all heavy work) for a given league
 def compute_predictions(league_choice):
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
@@ -983,7 +980,7 @@ def compute_predictions(league_choice):
     return results, team_stats, team_data
 
 ################################################################################
-# Display predictions UI
+# DISPLAY UI FOR PREDICTIONS
 ################################################################################
 def display_all_predictions(results, team_stats, team_data):
     view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
@@ -1030,7 +1027,7 @@ def display_all_predictions(results, team_stats, team_data):
             st.info("No upcoming games found.")
 
 ################################################################################
-# Asynchronous background update of predictions
+# BACKGROUND UPDATE: Asynchronous prediction update
 ################################################################################
 async def async_update_predictions(league_choice):
     loop = asyncio.get_running_loop()
@@ -1041,30 +1038,17 @@ async def async_update_predictions(league_choice):
     st.session_state["update_complete"] = True
 
 ################################################################################
-# Background update and loading message rotation
+# BACKGROUND UPDATE AND AUTO-REFRESH
 ################################################################################
 def start_background_update(league_choice):
     st.session_state["update_complete"] = False
-
     def run_bg_update():
         asyncio.run(async_update_predictions(league_choice))
     threading.Thread(target=run_bg_update, daemon=True).start()
-
-    placeholder = st.empty()
-    loading_messages = [
-        "Loading predictions...", "Fetching latest data...", "Training models...", "Almost there..."
-    ]
-    def rotate_messages():
-        i = 0
-        while not st.session_state.get("update_complete", False):
-            placeholder.info(loading_messages[i % len(loading_messages)])
-            time.sleep(1)
-            i += 1
-        placeholder.empty()
-    threading.Thread(target=rotate_messages, daemon=True).start()
-
+    # No st.stop() here; instead, the main UI will auto-refresh.
+    
 ################################################################################
-# OPTIONAL: Schedule periodic background updates (uncomment to enable)
+# OPTIONAL: Periodic Updates Scheduler (uncomment to enable)
 ################################################################################
 def schedule_periodic_updates(interval_minutes=10, league_choice="NBA"):
     def updater():
@@ -1073,7 +1057,7 @@ def schedule_periodic_updates(interval_minutes=10, league_choice="NBA"):
             time.sleep(interval_minutes * 60)
     threading.Thread(target=updater, daemon=True).start()
 
-# Uncomment the following line to enable periodic updates
+# Uncomment the following line to enable periodic updates (e.g., every 10 minutes)
 # schedule_periodic_updates(10, league_choice="NBA")
 
 ################################################################################
@@ -1102,7 +1086,7 @@ def main():
         return
     else:
         st.sidebar.title("Account")
-        st.sidebar.write(f"Logged in as: {st.session_state.get('email', 'Unknown')}")
+        st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
             st.experimental_rerun()
@@ -1111,11 +1095,14 @@ def main():
                                      help="Choose which league's games you'd like to analyze")
     if st.sidebar.button("Refresh Predictions"):
         start_background_update(league_choice)
+        time.sleep(1)  # Give a moment for background update to start
         st.experimental_rerun()
+    # If predictions are not yet available, start background update and auto-refresh every 3 seconds.
     if "update_complete" not in st.session_state or not st.session_state.get("update_complete", False):
         start_background_update(league_choice)
         st.info("Predictions are being updated in the background. Please wait...")
-        st.stop()
+        time.sleep(3)
+        st.experimental_rerun()
     else:
         display_all_predictions(st.session_state["predictions"],
                                   st.session_state["team_stats_global"],
