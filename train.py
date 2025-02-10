@@ -30,7 +30,6 @@ from catboost import CatBoostRegressor
 #########################
 # Helper Functions
 #########################
-
 def round_half(number):
     """Rounds a number to the nearest 0.5."""
     return round(number * 2) / 2
@@ -45,9 +44,7 @@ def tune_model(model, param_grid, X_train, y_train):
 #########################
 # Data Loading Functions
 #########################
-
 def load_nfl_data():
-    """Loads and preprocesses NFL data using nfl_data_py."""
     current_year = datetime.now().year
     years = [current_year - i for i in range(12)]
     schedule = nfl_data_py.import_schedules(years)
@@ -69,7 +66,6 @@ def load_nfl_data():
     return data
 
 def load_nba_data():
-    """Loads and preprocesses NBA data over multiple seasons."""
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
     all_rows = []
@@ -135,7 +131,6 @@ def load_nba_data():
     return df
 
 def load_ncaab_data_current_season(season=2025):
-    """Loads and preprocesses NCAA Men's Basketball data using cbbpy."""
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
         return pd.DataFrame()
@@ -166,74 +161,19 @@ def load_ncaab_data_current_season(season=2025):
     data['game_index'] = data.groupby('team').cumcount()
     return data
 
-# For upcoming games, we use example implementations; adapt as needed.
-def fetch_upcoming_nfl_games(schedule, days_ahead=7):
-    now = datetime.now()
-    future_date = now + timedelta(days=days_ahead)
-    upcoming = schedule[
-        schedule["home_score"].isna() & schedule["away_score"].isna() &
-        (schedule["gameday"] <= future_date)
-    ]
-    upcoming.sort_values("gameday", inplace=True)
-    return upcoming[["gameday", "home_team", "away_team"]]
-
-def fetch_upcoming_nba_games(days_ahead=3):
-    # For brevity, we assume a similar implementation for NBA using ScoreboardV2, etc.
-    # Replace with your actual NBA upcoming game fetching logic.
-    now = datetime.now()
-    # Dummy implementation: create an empty DataFrame if no games.
-    return pd.DataFrame()  # Implement as needed
-
-def fetch_upcoming_ncaab_games():
-    timezone = pytz.timezone('America/Los_Angeles')
-    current_time = datetime.now(timezone)
-    dates = [
-        current_time.strftime('%Y%m%d'),
-        (current_time + timedelta(days=1)).strftime('%Y%m%d')
-    ]
-    rows = []
-    for date_str in dates:
-        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-        params = {'dates': date_str, 'groups': '50', 'limit': '357'}
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
-            continue
-        data = response.json()
-        games = data.get('events', [])
-        if not games:
-            st.info(f"No upcoming NCAAB games for {date_str}.")
-            continue
-        for game in games:
-            game_time_str = game['date']
-            game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
-            competitors = game['competitions'][0]['competitors']
-            home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
-            away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
-            if not home_comp or not away_comp:
-                continue
-            home_team = home_comp['team']['displayName']
-            away_team = away_comp['team']['displayName']
-            rows.append({
-                'gameday': game_time,
-                'home_team': home_team,
-                'away_team': away_team
-            })
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df.sort_values('gameday', inplace=True)
-    return df
-
 #########################
 # Training Function
 #########################
-
 def train_team_models(team_data: pd.DataFrame):
     """
     Trains a hybrid model (StackingRegressor + Auto-ARIMA) for each team's score.
     Returns three dictionaries: stack_models, arima_models, and team_stats.
+    If the DataFrame is empty or missing the "team" column, returns empty dicts.
     """
+    if team_data.empty or "team" not in team_data.columns:
+        print("[train.py] team_data is empty or missing 'team' column.")
+        return {}, {}, {}
+    
     stack_models = {}
     arima_models = {}
     team_stats = {}
@@ -303,7 +243,7 @@ def train_team_models(team_data: pd.DataFrame):
             bias = np.mean(y_train - stack.predict(X_train))
             team_stats[team]["bias"] = bias
         except Exception as e:
-            print(f"[train.py] Error training stack for team {team}: {e}")
+            print(f"[train.py] Error training Stacking Regressor for team {team}: {e}")
             continue
         if len(scores) >= 7:
             try:
