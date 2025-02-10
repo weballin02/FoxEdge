@@ -4,18 +4,19 @@ train.py
 --------
 Headless script that fetches sports data, trains hybrid models 
 (StackingRegressor + Auto-ARIMA) for NFL, NBA, and NCAAB,
-and saves them into the "models/" folder.
+and saves them into the "models/" folder so that the UI can load them.
 No UI or user login code is included.
 """
 
 import os
+import time
 import numpy as np
 import pandas as pd
 import joblib
 from datetime import datetime, timedelta
 
 import nfl_data_py
-from nba_api.stats.endpoints import TeamGameLog
+from nba_api.stats.endpoints import TeamGameLog, ScoreboardV2
 from nba_api.stats.static import teams as nba_teams
 import cbbpy.mens_scraper as cbb
 
@@ -28,6 +29,23 @@ from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 
 #########################
+# Helper Function for Retries
+#########################
+def retry_call(func, retries=3, delay=5, *args, **kwargs):
+    """
+    Calls func with the given args and kwargs.
+    Retries up to 'retries' times if an exception occurs, waiting 'delay' seconds between attempts.
+    """
+    for attempt in range(retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                raise e
+
+#########################
 # HELPER FUNCTIONS
 #########################
 def round_half(number):
@@ -35,9 +53,7 @@ def round_half(number):
     return round(number * 2) / 2
 
 def tune_model(model, param_grid, X_train, y_train):
-    """
-    Tunes a given model using GridSearchCV with TimeSeriesSplit.
-    """
+    """Tunes a given model using GridSearchCV with TimeSeriesSplit."""
     tscv = TimeSeriesSplit(n_splits=3)
     grid = GridSearchCV(model, param_grid, cv=tscv, scoring='neg_mean_squared_error', n_jobs=-1)
     grid.fit(X_train, y_train)
@@ -76,7 +92,8 @@ def load_nba_data():
             team_id = team['id']
             team_abbrev = team.get('abbreviation', str(team_id))
             try:
-                gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
+                gl = retry_call(lambda: TeamGameLog(team_id=team_id, season=season).get_data_frames()[0],
+                                retries=3, delay=5)
                 if gl.empty:
                     continue
                 gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
@@ -119,9 +136,8 @@ def load_nba_data():
             except Exception as e:
                 print(f"Error processing team {team_abbrev} for season {season}: {e}")
                 continue
-    if not all_rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(all_rows)
+    expected_columns = ["gameday", "team", "score", "off_rating", "def_rating", "pace", "rolling_avg", "rolling_std", "season_avg", "weighted_avg"]
+    df = pd.DataFrame(all_rows, columns=expected_columns)
     df.dropna(subset=['score'], inplace=True)
     df.sort_values('gameday', inplace=True)
     for col in ['off_rating','def_rating','pace']:
@@ -170,10 +186,14 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 def fetch_upcoming_nba_games(days_ahead=3):
     now = datetime.now()
     upcoming_rows = []
-    for offset in range(days_ahead+1):
+    for offset in range(days_ahead + 1):
         date_target = now + timedelta(days=offset)
         date_str = date_target.strftime('%Y-%m-%d')
-        scoreboard = ScoreboardV2(game_date=date_str)
+        try:
+            scoreboard = retry_call(lambda: ScoreboardV2(game_date=date_str), retries=3, delay=5)
+        except Exception as e:
+            print(f"Error fetching scoreboard for {date_str}: {e}")
+            continue
         games = scoreboard.get_data_frames()[0]
         if games.empty:
             continue
@@ -202,9 +222,14 @@ def fetch_upcoming_ncaab_games():
     ]
     rows = []
     for date_str in dates:
-        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-        params = {'dates': date_str, 'groups': '50', 'limit': '357'}
-        response = requests.get(url, params=params)
+        try:
+            response = retry_call(lambda: requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard",
+                params={'dates': date_str, 'groups': '50', 'limit': '357'}
+            ), retries=3, delay=5)
+        except Exception as e:
+            st.warning(f"ESPN API request failed for date {date_str}: {e}")
+            continue
         if response.status_code != 200:
             st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
             continue
@@ -241,10 +266,7 @@ def train_team_models(team_data: pd.DataFrame):
     """
     Trains a hybrid model (StackingRegressor + Auto-ARIMA) for each team's 'score' using
     time-series cross validation and hyperparameter optimization.
-    Returns:
-        stack_models: Dictionary of trained StackingRegressors keyed by team.
-        arima_models: Dictionary of trained ARIMA models keyed by team.
-        team_stats: Dictionary containing team statistics (including MSE and bias).
+    Returns three dictionaries: stack_models, arima_models, and team_stats.
     """
     if team_data.empty or "team" not in team_data.columns:
         print("[train.py] team_data is empty or missing 'team' column.")
