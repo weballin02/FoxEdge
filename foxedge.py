@@ -18,6 +18,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import joblib
 import os
+import random  # For rotating templates and dynamic content
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
@@ -764,13 +765,9 @@ def generate_writeup(bet, team_stats_global):
 
 def generate_social_media_post(bet):
     """
-    Generate a concise and engaging social media post based on the game's prediction and analysis.
-    
-    This enhanced version includes:
-      - Clear headlines with emojis and bullet points.
-      - An engaging mini success story.
-      - A strong call-to-action that invites user interaction.
-      - Hashtags for increased discoverability.
+    Generate a concise and engaging social media post based on the game's prediction and analysis,
+    enhanced with adaptive tone, rotating templates, additional CTAs, a "Did You Know?" fact,
+    community engagement, and dynamic hashtags.
     
     Args:
         bet (dict): Dictionary containing prediction details for the game. Expected keys include:
@@ -780,19 +777,94 @@ def generate_social_media_post(bet):
     Returns:
         str: A formatted string that can be directly used as social media content.
     """
-    post = (
+    global team_stats_global
+    recent_form_home = team_stats_global.get(bet['home_team'], {}).get('recent_form', 'N/A')
+    recent_form_away = team_stats_global.get(bet['away_team'], {}).get('recent_form', 'N/A')
+    
+    # Adaptive tone based on confidence:
+    confidence = bet['confidence']
+    if confidence >= 85:
+        tone_phrase = "This is a must-watch bet! Don't miss out!"
+    elif confidence >= 70:
+        tone_phrase = "A promising pick – keep an eye on this one!"
+    else:
+        tone_phrase = "A cautious call, but it might just pay off!"
+
+    # Additional CTA variants:
+    cta_variants = [
+        "Get your edge now! Download the app and comment your pick below!",
+        "Join the winning team – download the app and share your thoughts!",
+        "Tag a friend who needs this tip and stay ahead of the game!",
+        "Don't miss your chance – download the app for real-time predictions and insights!"
+    ]
+    cta = random.choice(cta_variants)
+
+    # "Did You Know?" fact:
+    did_you_know = "Did you know? Our model analyzes recent form and advanced metrics to give you the winning edge!"
+
+    # Community engagement phrase:
+    community_phrase = "Join thousands of bettors who trust our insights."
+
+    # Dynamic hashtags:
+    hashtag_options = [
+        "#SportsBetting", "#GamePrediction", "#WinningEdge", "#BetSmart", "#BettingTips",
+        "#RealTimeAnalytics", "#AIpowered", "#BettingCommunity"
+    ]
+    hashtags = " ".join(random.sample(hashtag_options, 3))
+    
+    # Define multiple template styles:
+    templates = []
+    
+    # Template 1:
+    template1 = (
         f"🏟️ **Game Alert:** {bet['away_team']} @ {bet['home_team']}\n\n"
-        f"🔥 **Prediction Insight:**\n"
-        f"• **Winner:** {bet['predicted_winner']}\n"
-        f"• **Margin:** {bet['predicted_diff']} pts\n"
-        f"• **Total Points:** {bet['predicted_total']}\n"
-        f"• **Confidence:** {bet['confidence']}%\n\n"
+        f"🔥 **Prediction:** {bet['predicted_winner']} wins by {bet['predicted_diff']} pts with a total of {bet['predicted_total']} points.\n"
+        f"💪 **Confidence:** {bet['confidence']}%\n\n"
+        f"📊 **Recent Form:** {bet['home_team']} averages {recent_form_home} pts, while {bet['away_team']} averages {recent_form_away} pts over the last 5 games.\n\n"
+        f"{tone_phrase}\n\n"
+        f"{did_you_know}\n\n"
+        f"{community_phrase}\n\n"
         f"💡 **Betting Tip:** {bet['spread_suggestion']} | {bet['ou_suggestion']}\n\n"
-        "📈 **Success Story:** Last week, our predictions helped many win big – join the winning team!\n\n"
-        "👉 **Get your edge now! Download the app and comment your pick below!**\n\n"
-        "#SportsBetting #GamePrediction #WinningEdge"
+        f"{cta}\n\n"
+        f"{hashtags}"
     )
-    return post
+    templates.append(template1)
+    
+    # Template 2:
+    template2 = (
+        f"🏀 **Tonight's Game:** {bet['away_team']} at {bet['home_team']}\n\n"
+        f"🔮 **Our Pick:** {bet['predicted_winner']} with a margin of {bet['predicted_diff']} points.\n"
+        f"📈 **Projected Total:** {bet['predicted_total']} points | **Confidence:** {bet['confidence']}%\n\n"
+        f"📉 **Recent Averages:** {bet['home_team']}: {recent_form_home} pts | {bet['away_team']}: {recent_form_away} pts\n\n"
+        f"{tone_phrase}\n\n"
+        f"{did_you_know}\n\n"
+        f"{community_phrase}\n\n"
+        f"👉 **Tip:** {bet['spread_suggestion']} | {bet['ou_suggestion']}\n\n"
+        f"{cta}\n\n"
+        f"{hashtags}"
+    )
+    templates.append(template2)
+    
+    # Template 3:
+    template3 = (
+        f"🎯 **Bet of the Day:** {bet['away_team']} @ {bet['home_team']}\n\n"
+        f"🏆 **Predicted Winner:** {bet['predicted_winner']}\n"
+        f"📊 **Margin:** {bet['predicted_diff']} pts | **Total:** {bet['predicted_total']} pts\n"
+        f"🔍 **Confidence Level:** {bet['confidence']}%\n\n"
+        f"📌 **Recent Form:** {bet['home_team']} averages {recent_form_home} pts vs. {bet['away_team']} averaging {recent_form_away} pts\n\n"
+        f"{tone_phrase}\n\n"
+        f"{did_you_know}\n\n"
+        f"{community_phrase}\n\n"
+        f"💡 **Our Tip:** {bet['spread_suggestion']} and {bet['ou_suggestion']}\n\n"
+        f"{cta}\n\n"
+        f"{hashtags}"
+    )
+    templates.append(template3)
+    
+    # Randomly choose one template.
+    chosen_template = random.choice(templates)
+    
+    return chosen_template
 
 def display_bet_card(bet, team_stats_global, team_data=None):
     """Displays a bet card with summary and expandable detailed insights."""
