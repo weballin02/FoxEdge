@@ -761,6 +761,32 @@ def generate_writeup(bet, team_stats_global):
 """
     return writeup
 
+def generate_social_media_post(bet):
+    """
+    Generate a concise and engaging social media post based on the game's prediction and analysis.
+    
+    This function incorporates ideas from the social media content guide:
+      - It highlights predictive insights (predicted winner, point spread, total points, and confidence).
+      - It includes a clear call-to-action encouraging users to download the app.
+      - It uses visual cues (emojis) to draw attention, following best practices for engagement.
+    
+    Args:
+        bet (dict): Dictionary containing prediction details for the game. Expected keys include:
+            'home_team', 'away_team', 'predicted_winner', 'predicted_diff',
+            'predicted_total', 'spread_suggestion', 'ou_suggestion', and 'confidence'.
+    
+    Returns:
+        str: A formatted string that can be directly used as social media content.
+    """
+    post = (
+        f"🏟️ **Game Alert:** {bet['away_team']} @ {bet['home_team']}\n"
+        f"🔥 **Prediction:** {bet['predicted_winner']} wins by {bet['predicted_diff']} pts\n"
+        f"📊 **Total Points:** {bet['predicted_total']} | **Confidence:** {bet['confidence']}%\n"
+        f"💡 **Spread:** {bet['spread_suggestion']} | **O/U:** {bet['ou_suggestion']}\n"
+        "👉 **Get your edge now! Download the app for more real-time predictions!**"
+    )
+    return post
+
 def display_bet_card(bet, team_stats_global, team_data=None):
     """Displays a bet card with summary and expandable detailed insights."""
     # Determine color for confidence based on its value
@@ -824,6 +850,14 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
                 away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(away_scores)
+    
+    # New: Social Media Post Generator
+    with st.expander("Social Media Post", expanded=False):
+        # Use a unique key for the button based on bet details.
+        unique_key = f"social_{str(bet['date']).replace(' ', '_')}_{bet['home_team']}_{bet['away_team']}"
+        if st.button("Generate Social Media Post", key=unique_key):
+            social_post = generate_social_media_post(bet)
+            st.markdown(social_post)
 
 ################################################################################
 # GLOBALS
