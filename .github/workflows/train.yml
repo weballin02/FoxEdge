@@ -3,7 +3,7 @@ name: "Daily Model Training"
 on:
   schedule:
     # Runs daily at 11:00 UTC (≈3:00 AM PT during standard time)
-    - cron: "0 11 * * *"
+    - cron: "0 08 * * *"
   workflow_dispatch: {}
 
 jobs:
