@@ -158,9 +158,9 @@ def train_team_models(team_data: pd.DataFrame):
     time-series cross validation and hyperparameter optimization for base models.
     
     Returns:
-        stack_models: Dictionary of trained Stacking Regressors keyed by team.
-        arima_models: Dictionary of trained ARIMA models keyed by team.
-        team_stats: Dictionary containing statistical summaries (including MSE and bias) for each team.
+        stack_models: Dictionary of trained Stacking Regressors keyed by team (lower-case keys).
+        arima_models: Dictionary of trained ARIMA models keyed by team (lower-case keys).
+        team_stats: Dictionary containing statistical summaries (including MSE and bias) for each team (keys in lower-case).
     """
     stack_models = {}
     arima_models = {}
@@ -168,6 +168,7 @@ def train_team_models(team_data: pd.DataFrame):
 
     all_teams = team_data['team'].unique()
     for team in all_teams:
+        team_key = team.strip().lower()  # Normalize key
         df_team = team_data[team_data['team'] == team].copy()
         df_team.sort_values('gameday', inplace=True)
         scores = df_team['score'].reset_index(drop=True)
@@ -181,8 +182,8 @@ def train_team_models(team_data: pd.DataFrame):
         df_team['season_avg'] = df_team['score'].expanding().mean()
         df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
 
-        # Save basic team stats
-        team_stats[team] = {
+        # Save basic team stats (store with normalized key)
+        team_stats[team_key] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
             'max': round_half(scores.max()),
@@ -248,11 +249,11 @@ def train_team_models(team_data: pd.DataFrame):
             preds = stack.predict(X_test)
             mse = mean_squared_error(y_test, preds)
             print(f"Team: {team}, Stacking Regressor MSE: {mse}")
-            stack_models[team] = stack
-            team_stats[team]['mse'] = mse
+            stack_models[team_key] = stack
+            team_stats[team_key]['mse'] = mse
             # Compute bias from training data for calibration
             bias = np.mean(y_train - stack.predict(X_train))
-            team_stats[team]['bias'] = bias
+            team_stats[team_key]['bias'] = bias
         except Exception as e:
             print(f"Error training Stacking Regressor for team {team}: {e}")
             continue
@@ -269,7 +270,7 @@ def train_team_models(team_data: pd.DataFrame):
                     max_p=3,
                     max_q=3
                 )
-                arima_models[team] = arima
+                arima_models[team_key] = arima
             except Exception as e:
                 print(f"Error training ARIMA for team {team}: {e}")
                 continue
@@ -293,7 +294,8 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     Returns:
         (ensemble_prediction, (conf_low, conf_high)) or (None, (None, None)) if prediction is unreliable.
     """
-    if team not in team_stats:
+    team_key = team.strip().lower()
+    if team_key not in team_stats:
         return None, (None, None)
 
     df_team = team_data[team_data['team'] == team]
@@ -306,16 +308,16 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
     X_next = last_features.values
 
-    if team in stack_models:
+    if team_key in stack_models:
         try:
-            stack_pred = float(stack_models[team].predict(X_next)[0])
+            stack_pred = float(stack_models[team_key].predict(X_next)[0])
         except Exception as e:
             print(f"Error predicting with Stacking Regressor for team {team}: {e}")
             stack_pred = None
 
-    if team in arima_models:
+    if team_key in arima_models:
         try:
-            forecast = arima_models[team].predict(n_periods=1)
+            forecast = arima_models[team_key].predict(n_periods=1)
             arima_pred = float(forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast)
         except Exception as e:
             print(f"Error predicting with ARIMA for team {team}: {e}")
@@ -323,10 +325,10 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
 
     ensemble = None
     if stack_pred is not None and arima_pred is not None:
-        mse_stack = team_stats[team].get('mse', 1)
+        mse_stack = team_stats[team_key].get('mse', 1)
         mse_arima = None
         try:
-            resid = arima_models[team].resid()
+            resid = arima_models[team_key].resid()
             mse_arima = np.mean(np.square(resid))
         except Exception as e:
             mse_arima = None
@@ -345,17 +347,17 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     else:
         ensemble = None
 
-    if team_stats[team].get('mse', 0) > 150:
+    if team_stats[team_key].get('mse', 0) > 150:
         return None, (None, None)
 
     if ensemble is None:
         return None, (None, None)
 
-    bias = team_stats[team].get('bias', 0)
+    bias = team_stats[team_key].get('bias', 0)
     ensemble_calibrated = ensemble + bias
 
-    mu = team_stats[team]['mean']
-    sigma = team_stats[team]['std']
+    mu = team_stats[team_key]['mean']
+    sigma = team_stats[team_key]['std']
 
     if isinstance(mu, (pd.Series, pd.DataFrame, np.ndarray)):
         mu = mu.item()
@@ -390,17 +392,17 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     diff = home_pred - away_pred
     total_points = home_pred + away_pred
 
-    home_std = team_stats.get(home_team, {}).get('std', 5)
-    away_std = team_stats.get(away_team, {}).get('std', 5)
+    home_std = team_stats.get(home_team.strip().lower(), {}).get('std', 5)
+    away_std = team_stats.get(away_team.strip().lower(), {}).get('std', 5)
     combined_std = max(1.0, (home_std + away_std) / 2)
 
     raw_conf = abs(diff) / combined_std
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
 
     penalty = 0
-    if team_stats.get(home_team, {}).get('mse', 0) > 120:
+    if team_stats.get(home_team.strip().lower(), {}).get('mse', 0) > 120:
         penalty += 10
-    if team_stats.get(away_team, {}).get('mse', 0) > 120:
+    if team_stats.get(away_team.strip().lower(), {}).get('mse', 0) > 120:
         penalty += 10
     confidence = max(1, min(99, confidence - penalty))
     winner = home_team if diff > 0 else away_team
@@ -655,8 +657,8 @@ def generate_writeup(bet, team_stats_global):
     away_team = bet['away_team']
     predicted_winner = bet['predicted_winner']
     confidence = bet['confidence']
-    home_stats = team_stats_global.get(home_team, {})
-    away_stats = team_stats_global.get(away_team, {})
+    home_stats = team_stats_global.get(home_team.strip().lower(), {})
+    away_stats = team_stats_global.get(away_team.strip().lower(), {})
     home_mean = home_stats.get('mean', 'N/A')
     home_std = home_stats.get('std', 'N/A')
     home_recent = home_stats.get('recent_form', 'N/A')
@@ -700,31 +702,34 @@ def generate_social_media_post(bet):
         str: A formatted string for social media.
     """
     global team_stats_global
-    recent_form_home = team_stats_global.get(bet['home_team'], {}).get('recent_form', 0)
-    recent_form_away = team_stats_global.get(bet['away_team'], {}).get('recent_form', 0)
+    # Use normalized keys for lookup.
+    home_key = bet['home_team'].strip().lower()
+    away_key = bet['away_team'].strip().lower()
+    recent_form_home = team_stats_global.get(home_key, {}).get('recent_form', 0)
+    recent_form_away = team_stats_global.get(away_key, {}).get('recent_form', 0)
     
     # Compute recent form advantage that backs up the prediction.
     if bet['predicted_winner'] == bet['home_team']:
         form_advantage = round_half(recent_form_home - recent_form_away)
         if form_advantage > 0:
-            form_phrase = f"Notably, the home team averages {form_advantage} pts more than their opponent."
+            form_phrase = f"Notably, {bet['home_team']} averages {form_advantage} pts more than {bet['away_team']}."
         else:
-            form_phrase = "Recent scoring averages are close, yet our analysis favors the home team."
+            form_phrase = f"Scoring averages are close, yet our analysis favors {bet['home_team']}."
     else:
         form_advantage = round_half(recent_form_away - recent_form_home)
         if form_advantage > 0:
-            form_phrase = f"Notably, the away team outpaces their opponent by {form_advantage} pts on average."
+            form_phrase = f"Notably, {bet['away_team']} outpaces {bet['home_team']} by {form_advantage} pts on average."
         else:
-            form_phrase = "Despite similar averages, our model leans toward the away team."
+            form_phrase = f"Despite similar averages, our model leans toward {bet['away_team']}."
     
     # Compute rest days advantage.
     home_rest = bet.get("home_rest")
     away_rest = bet.get("away_rest")
     if home_rest is not None and away_rest is not None:
         if home_rest > away_rest:
-            rest_phrase = f"Edge: The home team enjoys {home_rest} day{'s' if home_rest != 1 else ''} of rest versus the away team's {away_rest} day{'s' if away_rest != 1 else ''}."
+            rest_phrase = f"Edge: {bet['home_team']} has {home_rest} day{'s' if home_rest != 1 else ''} rest versus {bet['away_team']}'s {away_rest} day{'s' if away_rest != 1 else ''}."
         elif away_rest > home_rest:
-            rest_phrase = f"Edge: The away team is better rested with {away_rest} day{'s' if away_rest != 1 else ''}, while the home team has only {home_rest} day{'s' if home_rest != 1 else ''}."
+            rest_phrase = f"Edge: {bet['away_team']} is better rested with {away_rest} day{'s' if away_rest != 1 else ''}, compared to {bet['home_team']}'s {home_rest} day{'s' if home_rest != 1 else ''}."
         else:
             rest_phrase = f"Both teams have similar rest, each with {home_rest} day{'s' if home_rest != 1 else ''}."
     else:
