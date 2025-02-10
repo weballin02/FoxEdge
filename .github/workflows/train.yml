@@ -9,6 +9,7 @@ on:
 jobs:
   daily_train:
     runs-on: ubuntu-latest
+    timeout-minutes: 180  # 3 hour timeout limit
 
     steps:
       - name: Check out repository
@@ -21,13 +22,40 @@ jobs:
         with:
           python-version: "3.9"
 
+      # Add caching for pip dependencies
+      - name: Cache pip packages
+        uses: actions/cache@v2
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Upgrade pip and install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Add resource monitoring
+      - name: Install monitoring tools
+        run: sudo apt-get install -y htop
+
+      # Print system info before training
+      - name: System information
+        run: |
+          echo "CPU Info:"
+          lscpu
+          echo "Memory Info:"
+          free -h
+          echo "Disk Space:"
+          df -h
+
       - name: Run training script
-        run: python train.py
+        run: |
+          # Run with basic resource monitoring
+          htop -C -d 30 & # Run htop in background
+          python train.py
+          kill %1 # Kill htop process
 
       - name: List model files after training
         run: ls -l models
