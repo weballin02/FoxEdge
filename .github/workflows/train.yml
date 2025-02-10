@@ -2,9 +2,9 @@ name: "Daily Model Training"
 
 on:
   schedule:
-    # Runs daily at 11:00 UTC (≈3:00 AM PT in winter; note that during daylight saving it will be 4:00 AM PT)
+    # Runs daily at 11:00 UTC (≈3:00 AM PT in winter)
     - cron: "0 11 * * *"
-  workflow_dispatch: {}  # Allows manual triggering
+  workflow_dispatch: {}
 
 jobs:
   daily_train:
@@ -14,7 +14,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v2
         with:
-          persist-credentials: true
+          persist-credentials: false  # We'll use our own token
 
       - name: Set up Python
         uses: actions/setup-python@v2
@@ -33,14 +33,15 @@ jobs:
         run: ls -l models
 
       - name: Commit and push updated models
+        env:
+          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
         run: |
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
           git add models/
-          # Check for staged changes. If changes exist, commit and push.
           if ! git diff --cached --quiet; then
             git commit -m "Update models from daily training $(date)"
-            git push
+            git push https://$GITHUB_ACTOR:${PUSH_TOKEN}@github.com/weballin02/FoxEdge.git HEAD:main
           else
             echo "No changes to commit."
           fi
