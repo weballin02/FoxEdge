@@ -5,8 +5,8 @@ FoxEdge.py
 Streamlit UI that:
   - Requires user login.
   - Loads pretrained models for NFL, NBA, or NCAAB from the "models/" folder.
-  - Displays predictions for upcoming games.
-  - Contains the same UI elements and design as the original unsplit script.
+  - Displays predictions for upcoming games (including Top Bets, All Games, CSV export, etc.)
+  - Retains the same UI/UX as your original unsplit script.
   - No in-app model training occurs.
 """
 
@@ -142,9 +142,10 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
             mse_arima = np.mean(np.square(resid))
         except:
             mse_arima = None
-        if mse_arima and mse_arima > 0:
-            weight_stack = 1 / (mse_stack + 1e-6)
-            weight_arima = 1 / (mse_arima + 1e-6)
+        eps = 1e-6
+        if mse_arima is not None and mse_arima > 0:
+            weight_stack = 1 / (mse_stack + eps)
+            weight_arima = 1 / (mse_arima + eps)
             ensemble = (stack_pred * weight_stack + arima_pred * weight_arima) / (weight_stack + weight_arima)
         else:
             ensemble = (stack_pred + arima_pred) / 2
@@ -218,24 +219,43 @@ def preprocess_nfl_data(schedule):
     data.sort_values("gameday", inplace=True)
     data["rolling_avg"] = data.groupby("team")["score"].transform(lambda x: x.rolling(3, min_periods=1).mean())
     data["rolling_std"] = data.groupby("team")["score"].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-    data["season_avg"] = data.groupby("team")["score"].transform(lambda x: x.expanding().mean())
+    data["season_avg"] = data.groupby("team")["score"].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
     data["weighted_avg"] = data["rolling_avg"] * 0.6 + data["season_avg"] * 0.4
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
+    upcoming = schedule[schedule["home_score"].isna() & schedule["away_score"].isna()].copy()
     now = datetime.now()
-    future_date = now + timedelta(days=days_ahead)
-    upcoming = schedule[
-        schedule["home_score"].isna() & schedule["away_score"].isna() &
-        (schedule["gameday"] <= future_date)
-    ]
+    filter_date = now + timedelta(days=days_ahead)
+    upcoming = upcoming[upcoming["gameday"] <= filter_date].copy()
     upcoming.sort_values("gameday", inplace=True)
     return upcoming[["gameday", "home_team", "away_team"]]
 
 def fetch_upcoming_nba_games(days_ahead=3):
-    # Replace with your actual NBA upcoming game fetching logic.
-    # For this example, we return an empty DataFrame.
-    return pd.DataFrame()
+    now = datetime.now()
+    upcoming_rows = []
+    for offset in range(days_ahead + 1):
+        date_target = now + timedelta(days=offset)
+        date_str = date_target.strftime('%Y-%m-%d')
+        scoreboard = ScoreboardV2(game_date=date_str)
+        games = scoreboard.get_data_frames()[0]
+        if games.empty:
+            continue
+        nba_team_dict = {tm['id']: tm['abbreviation'] for tm in nba_teams.get_teams()}
+        games['HOME_TEAM_ABBREV'] = games['HOME_TEAM_ID'].map(nba_team_dict)
+        games['AWAY_TEAM_ABBREV'] = games['VISITOR_TEAM_ID'].map(nba_team_dict)
+        upcoming_df = games[~games['GAME_STATUS_TEXT'].str.contains("Final", case=False, na=False)]
+        for _, g in upcoming_df.iterrows():
+            upcoming_rows.append({
+                'gameday': pd.to_datetime(date_str),
+                'home_team': g['HOME_TEAM_ABBREV'],
+                'away_team': g['AWAY_TEAM_ABBREV']
+            })
+    if not upcoming_rows:
+        return pd.DataFrame()
+    upcoming = pd.DataFrame(upcoming_rows)
+    upcoming.sort_values('gameday', inplace=True)
+    return upcoming
 
 def load_ncaab_data_current_season(season=2025):
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
@@ -309,13 +329,13 @@ def fetch_upcoming_ncaab_games():
     df.sort_values('gameday', inplace=True)
     return df
 
-##################################################
-# 5) Main Pipeline (No Training)
-##################################################
+##############################################
+# 5) MAIN PIPELINE (NO TRAINING)
+##############################################
 def run_league_pipeline(league_choice):
     st.header(f"Today's {league_choice} Best Bets 🎯")
-    # 1) Load pretrained models for selected league
-    with st.spinner("Analyzing recent performance data..."):
+    # 1) Load pretrained models for the selected league
+    with st.spinner("Loading pretrained models..."):
         stack_models, arima_models, team_stats = load_pretrained_models(league_choice)
         if not stack_models:
             st.error("No pretrained models found. Please run daily training first.")
@@ -323,61 +343,210 @@ def run_league_pipeline(league_choice):
     # 2) Load league data for upcoming games
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
-        data = preprocess_nfl_data(schedule)
-        upcoming = fetch_upcoming_nfl_games(schedule)
+        team_data = preprocess_nfl_data(schedule)
+        upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
     elif league_choice == "NBA":
-        data = load_nba_data()
-        if data.empty:
+        team_data = load_nba_data()
+        if team_data.empty:
             st.error("Unable to load NBA data.")
             return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
     elif league_choice == "NCAAB":
-        data = load_ncaab_data_current_season(season=2025)
-        if data.empty:
+        team_data = load_ncaab_data_current_season(season=2025)
+        if team_data.empty:
             st.error("Unable to load NCAAB data.")
             return
         upcoming = fetch_upcoming_ncaab_games()
     else:
         st.error("Invalid league selection.")
         return
-    if data.empty or upcoming.empty:
-        st.warning("No upcoming data available for analysis.")
+    if team_data.empty or upcoming.empty:
+        st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
-    results = []
-    for _, row in upcoming.iterrows():
-        home, away = row["home_team"], row["away_team"]
-        home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, data)
-        away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, data)
-        outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
-        if outcome:
-            results.append({
-                "date": row["gameday"],
-                "league": league_choice,
-                "home_team": home,
-                "away_team": away,
-                "home_pred": home_pred,
-                "away_pred": away_pred,
-                "predicted_winner": outcome["predicted_winner"],
-                "predicted_diff": outcome["diff"],
-                "predicted_total": outcome["total_points"],
-                "confidence": outcome["confidence"],
-                "spread_suggestion": outcome["spread_suggestion"],
-                "ou_suggestion": outcome["ou_suggestion"],
-            })
-    if not results:
-        st.info("No matchups found or no predictions available.")
-        return
-    st.subheader("All Games Analysis")
-    for bet in results:
-        st.write("----")
-        st.write(f"**{bet['away_team']} @ {bet['home_team']}** - {bet['date']}")
-        st.write(f"Predicted Winner: {bet['predicted_winner']}, Confidence: {bet['confidence']}%")
-        st.write(f"Spread Suggestion: {bet['spread_suggestion']}")
-        st.write(f"Total Suggestion: {bet['ou_suggestion']}")
 
-##################################################
+    # (Optional: Compute defensive ratings and adjustments as in original code)
+    if league_choice == "NBA":
+        def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted(def_ratings.items(), key=lambda x: x[1], reverse=True)[:10]])
+    elif league_choice == "NFL":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
+    elif league_choice == "NCAAB":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
+    else:
+        top_10, bottom_10 = None, None
+
+    with st.spinner("Analyzing recent performance data..."):
+        # Note: Instead of training, we load the pretrained models.
+        # For the purposes of dynamic adjustments below, we still need team_stats.
+        # Here, team_stats is already loaded above.
+        results = []
+        for _, row in upcoming.iterrows():
+            home, away = row["home_team"], row["away_team"]
+            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+
+            # --- Dynamic Adjustments (same as original) ---
+            row_gameday = to_naive(row["gameday"])
+            if league_choice == "NBA" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data["team"] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games["gameday"].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data["team"] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games["gameday"].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data["team"] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games["gameday"].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 2
+                    elif rest_days_home >= 3:
+                        home_pred += 1
+                away_games = team_data[team_data["team"] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games["gameday"].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 2
+                    elif rest_days_away >= 3:
+                        away_pred += 1
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data["team"] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games["gameday"].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data["team"] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games["gameday"].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+
+            outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
+            if outcome:
+                results.append({
+                    "date": row["gameday"],
+                    "league": league_choice,
+                    "home_team": home,
+                    "away_team": away,
+                    "home_pred": home_pred,
+                    "away_pred": away_pred,
+                    "predicted_winner": outcome["predicted_winner"],
+                    "predicted_diff": outcome["diff"],
+                    "predicted_total": outcome["total_points"],
+                    "confidence": outcome["confidence"],
+                    "spread_suggestion": outcome["spread_suggestion"],
+                    "ou_suggestion": outcome["ou_suggestion"]
+                })
+
+    view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
+    if view_mode == "🎯 Top Bets Only":
+        conf_threshold = st.slider(
+            "Minimum Confidence Level",
+            min_value=50.0,
+            max_value=99.0,
+            value=75.0,
+            step=5.0,
+            help="Only show bets with confidence level above this threshold"
+        )
+        top_bets = None
+        if results:
+            df_results = pd.DataFrame(results)
+            top_bets = df_results[df_results["confidence"] >= conf_threshold].copy()
+            top_bets.sort_values("confidence", ascending=False, inplace=True)
+        if top_bets is not None and not top_bets.empty:
+            st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
+            previous_date = None
+            for _, bet_row in top_bets.iterrows():
+                bet = bet_row.to_dict()
+                current_date = bet["date"].date() if isinstance(bet["date"], datetime) else bet["date"]
+                if previous_date != current_date:
+                    if isinstance(bet["date"], datetime):
+                        st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                    else:
+                        st.markdown(f"## {bet['date']}")
+                    previous_date = current_date
+                display_bet_card(bet, team_stats, team_data=team_data)
+        else:
+            st.info("No high-confidence bets found. Try lowering the threshold.")
+    else:
+        if results:
+            st.markdown("### 📊 All Games Analysis")
+            sorted_results = sorted(results, key=lambda x: x["date"])
+            previous_date = None
+            for bet in sorted_results:
+                current_date = bet["date"].date() if isinstance(bet["date"], datetime) else bet["date"]
+                if previous_date != current_date:
+                    if isinstance(bet["date"], datetime):
+                        st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                    else:
+                        st.markdown(f"## {bet['date']}")
+                    previous_date = current_date
+                display_bet_card(bet, team_stats, team_data=team_data)
+        else:
+            st.info(f"No upcoming {league_choice} games found.")
+
+######################################
 # 6) Streamlit Main + Login
-##################################################
+######################################
 def main():
     st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
     st.title("🦊 FoxEdge Sports Betting Insights (No In-App Training)")
@@ -401,7 +570,7 @@ def main():
         return
     else:
         st.sidebar.title("Account")
-        st.sidebar.write(f"Logged in as {st.session_state.get('email','Unknown')}")
+        st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
             st.experimental_rerun()
