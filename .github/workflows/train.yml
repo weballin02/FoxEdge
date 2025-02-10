@@ -2,7 +2,7 @@ name: "Daily Model Training"
 
 on:
   schedule:
-    # Runs daily at 08:00 UTC (adjust the cron as needed)
+    # Runs daily at 08:00 UTC (adjust the cron expression as needed)
     - cron: "0 08 * * *"
   workflow_dispatch: {}
 
@@ -67,7 +67,7 @@ jobs:
           git add models/
           if ! git diff --cached --quiet; then
             git commit -m "Update models from daily training $(date)"
-            git push https://$GITHUB_ACTOR:${PUSH_TOKEN}@github.com/weballin02/FoxEdge.git HEAD:main
+            git push https://x-access-token:${{ secrets.PUSH_TOKEN }}@github.com/weballin02/FoxEdge.git HEAD:main
           else
             echo "No changes to commit."
           fi
