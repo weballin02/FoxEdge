@@ -6,6 +6,10 @@ on:
     - cron: "0 08 * * *"
   workflow_dispatch: {}
 
+# Grant the workflow permission to push changes
+permissions:
+  contents: write
+
 jobs:
   daily_train:
     runs-on: ubuntu-latest
@@ -15,7 +19,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v2
         with:
-          persist-credentials: true
+          # Disable persisting the default GITHUB_TOKEN so that our custom PAT is used instead
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v2
