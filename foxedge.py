@@ -299,6 +299,9 @@ def train_team_models(team_data: pd.DataFrame):
     return stack_models, arima_models, team_stats
 
 def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
+    # Fix: Check if the team value is a valid string.
+    if not isinstance(team, str):
+        return None, (None, None)
     team_key = team.strip().lower()
     if team_key not in team_stats:
         return None, (None, None)
@@ -1115,7 +1118,8 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.experimental_get_query_params()
+    # Updated to use st.query_params instead of the deprecated st.experimental_get_query_params
+    query_params = st.query_params()
     if "trigger" in query_params:
         scheduled_task()
         st.write("Task triggered successfully.")
