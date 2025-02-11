@@ -81,3 +81,4 @@ shap
 ipython
 lightgbm
 catboost
+optuna
