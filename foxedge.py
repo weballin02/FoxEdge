@@ -548,6 +548,8 @@ def find_top_bets(matchups, threshold=70.0):
         DataFrame: Filtered and sorted bets.
     """
     df = pd.DataFrame(matchups)
+    if df.empty or 'confidence' not in df.columns:
+        return df
     df_top = df[df['confidence'] >= threshold].copy()
     df_top.sort_values('confidence', ascending=False, inplace=True)
     return df_top
@@ -996,7 +998,8 @@ def generate_social_media_post(bet):
         f"🏆 **Predicted Winner:** {bet['predicted_winner']}\n"
         f"📊 **Margin:** {bet['predicted_diff']} pts | **Total:** {bet['predicted_total']} pts\n"
         f"🔍 **Confidence:** {bet['confidence']}%\n\n"
-        f"📌 **Recent Form:** {home_team} averages {recent_form_home_str} pts vs. {away_team}'s {recent_form_away_str} pts\n"
+        f"📌 **Recent Form:** {home_team} averages {recent_form_home_str} pts vs. "
+        f"{away_team}'s {recent_form_away_str} pts\n"
         f"👉 **Form Edge:** {form_phrase}\n"
         f"⏱️ **Rest Info:** {rest_phrase}\n\n"
         f"{tone_phrase}\n\n"
@@ -1334,7 +1337,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.experimental_rerun()
+                    # Removed rerun call.
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1344,18 +1347,18 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.experimental_rerun()
+            # Removed rerun call.
     
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
                                      help="Choose which league's games you'd like to analyze")
     if st.sidebar.button("Refresh Predictions"):
-        # Simply recompute predictions synchronously.
+        # Recompute predictions synchronously.
         results, team_stats, team_data = compute_all_predictions(league_choice)
         st.session_state["predictions"] = results
         st.session_state["team_stats_global"] = team_stats
         st.session_state["team_data"] = team_data
-        st.experimental_rerun()
+        # Removed rerun call.
     
     # Compute predictions synchronously if not already in session.
     if "predictions" not in st.session_state:
@@ -1384,7 +1387,8 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.experimental_get_query_params()
+    # Replace experimental_get_query_params with query_params.
+    query_params = st.query_params()
     if "trigger" in query_params:
         results, team_stats, team_data = compute_all_predictions("NBA")
         st.session_state["predictions"] = results
