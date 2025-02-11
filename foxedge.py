@@ -20,6 +20,8 @@ import joblib
 import os
 import random  # For rotating templates and dynamic content
 import optuna  # For Bayesian optimization
+import threading
+import time
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
@@ -27,15 +29,24 @@ import cbbpy.mens_scraper as cbb
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, TimeSeriesSplit, cross_val_score
 
 ###############################
-# Global Tuning Method Options
+# Global Options and Tuning Method
 ###############################
 TUNING_METHOD = "bayesian"  # "grid" or "bayesian"
-PERFORM_NESTED_CV = True    # Option to perform nested cross-validation for diagnostics
+PERFORM_NESTED_CV = True    # Use nested CV for diagnostics
 
 ################################################################################
-# HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
+# HELPER FUNCTION: Ensure tz-naive datetimes
 ################################################################################
 def to_naive(dt):
+    """
+    Converts a datetime object to tz-naive if it is tz-aware.
+    
+    Args:
+        dt (datetime): A datetime object.
+    
+    Returns:
+        datetime: A tz-naive datetime object.
+    """
     if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
         return dt.replace(tzinfo=None)
     return dt
@@ -64,6 +75,16 @@ except KeyError:
     st.warning("Firebase secrets not found or incomplete in st.secrets. Please verify your secrets.toml.")
 
 def login_with_rest(email, password):
+    """
+    Logs in a user using the Firebase REST API.
+    
+    Args:
+        email (str): User's email.
+        password (str): User's password.
+    
+    Returns:
+        dict or None: Response JSON if successful, else None.
+    """
     try:
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
         payload = {"email": email, "password": password, "returnSecureToken": True}
@@ -78,6 +99,16 @@ def login_with_rest(email, password):
         return None
 
 def signup_user(email, password):
+    """
+    Signs up a new user using Firebase.
+    
+    Args:
+        email (str): New user's email.
+        password (str): New user's password.
+    
+    Returns:
+        User object or None.
+    """
     try:
         user = auth.create_user(email=email, password=password)
         st.success(f"User {email} created successfully!")
@@ -86,6 +117,9 @@ def signup_user(email, password):
         st.error(f"Error: {e}")
 
 def logout_user():
+    """
+    Logs out the current user by deleting session state keys.
+    """
     for key in ['email', 'logged_in']:
         if key in st.session_state:
             del st.session_state[key]
@@ -96,6 +130,12 @@ def logout_user():
 CSV_FILE = "predictions.csv"
 
 def initialize_csv(csv_file=CSV_FILE):
+    """
+    Initialize the CSV file if it does not exist.
+    
+    Args:
+        csv_file (str): Path to the CSV file.
+    """
     if not Path(csv_file).exists():
         columns = [
             "date", "league", "home_team", "away_team", "home_pred", "away_pred",
@@ -105,6 +145,13 @@ def initialize_csv(csv_file=CSV_FILE):
         pd.DataFrame(columns=columns).to_csv(csv_file, index=False)
 
 def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
+    """
+    Saves predictions to a CSV file.
+    
+    Args:
+        predictions (list): List of prediction dictionaries.
+        csv_file (str): Path to the CSV file.
+    """
     df = pd.DataFrame(predictions)
     if Path(csv_file).exists():
         existing_df = pd.read_csv(csv_file)
@@ -116,15 +163,32 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 # UTILITY FUNCTIONS
 ################################################################################
 def round_half(number):
+    """
+    Rounds a number to the nearest 0.5.
+    
+    Args:
+        number (float): The number to round.
+    
+    Returns:
+        float: The rounded number.
+    """
     return round(number * 2) / 2
 
-# Helper function to robustly retrieve the recent form value
 def get_recent_form(team_name, team_stats):
+    """
+    Retrieves the recent form (average score over recent games) for a given team
+    from the team_stats dictionary.
+
+    Args:
+        team_name (str): The name of the team.
+        team_stats (dict): Dictionary with team keys (lowercase) and statistics.
+
+    Returns:
+        float: The recent form for the team (default is 0.0 if not found).
+    """
     key = team_name.strip().lower()
-    # Return the stored recent form if available
     if key in team_stats and team_stats[key].get('recent_form') is not None:
         return team_stats[key]['recent_form']
-    # As a fallback, check for a fuzzy match (optional)
     for k, v in team_stats.items():
         if team_name.lower() in k or k in team_name.lower():
             return v.get('recent_form', 0.0)
@@ -134,6 +198,20 @@ def get_recent_form(team_name, team_stats):
 # TUNING FUNCTIONS
 ################################################################################
 def tune_model_grid(model, param_grid, X_train, y_train, early_stopping_rounds=None, eval_set=None):
+    """
+    Tunes a given model using GridSearchCV.
+    
+    Args:
+        model: Model instance.
+        param_grid (dict): Hyperparameter grid.
+        X_train (array-like): Training features.
+        y_train (array-like): Training labels.
+        early_stopping_rounds (int, optional): Early stopping rounds.
+        eval_set (tuple, optional): Evaluation set.
+    
+    Returns:
+        Best estimator.
+    """
     if early_stopping_rounds is not None and eval_set is not None:
         model.set_params(early_stopping_rounds=early_stopping_rounds, eval_set=eval_set, verbose=False)
     tscv = TimeSeriesSplit(n_splits=3)
@@ -142,7 +220,18 @@ def tune_model_grid(model, param_grid, X_train, y_train, early_stopping_rounds=N
     return grid.best_estimator_
 
 def bayesian_objective(trial, model_class, X_train, y_train):
-    from sklearn.model_selection import cross_val_score
+    """
+    Objective function for Bayesian hyperparameter optimization using Optuna.
+    
+    Args:
+        trial: Optuna trial object.
+        model_class: The model class (e.g., XGBRegressor).
+        X_train (array-like): Training features.
+        y_train (array-like): Training labels.
+    
+    Returns:
+        Mean cross-validated score.
+    """
     if model_class == XGBRegressor:
         params = {
             'n_estimators': trial.suggest_int("n_estimators", 50, 200),
@@ -172,6 +261,20 @@ def bayesian_objective(trial, model_class, X_train, y_train):
     return np.mean(scores)
 
 def tune_model_bayesian(model_class, X_train, y_train, n_trials=50, early_stopping_rounds=None, eval_set=None):
+    """
+    Tunes a model using Bayesian optimization (Optuna).
+    
+    Args:
+        model_class: The model class to optimize.
+        X_train (array-like): Training features.
+        y_train (array-like): Training labels.
+        n_trials (int): Number of Optuna trials.
+        early_stopping_rounds (int, optional): Early stopping rounds.
+        eval_set (tuple, optional): Evaluation set.
+    
+    Returns:
+        Trained model.
+    """
     study = optuna.create_study(direction="maximize")
     study.optimize(lambda trial: bayesian_objective(trial, model_class, X_train, y_train), n_trials=n_trials)
     best_params = study.best_trial.params
@@ -182,6 +285,18 @@ def tune_model_bayesian(model_class, X_train, y_train, n_trials=50, early_stoppi
     return model
 
 def nested_cv_evaluation(model, X, y, n_splits=3):
+    """
+    Evaluates a model using nested cross-validation.
+    
+    Args:
+        model: Model instance.
+        X (array-like): Features.
+        y (array-like): Labels.
+        n_splits (int): Number of CV splits.
+    
+    Returns:
+        float: Mean RMSE.
+    """
     tscv = TimeSeriesSplit(n_splits=n_splits)
     scores = cross_val_score(model, X, y, cv=tscv, scoring='neg_mean_squared_error', n_jobs=-1)
     mean_rmse = np.sqrt(-np.mean(scores))
@@ -192,6 +307,15 @@ def nested_cv_evaluation(model, X, y, n_splits=3):
 ################################################################################
 @st.cache_data(ttl=14400)
 def train_team_models(team_data: pd.DataFrame):
+    """
+    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team.
+    
+    Args:
+        team_data (DataFrame): Historical team game data.
+    
+    Returns:
+        tuple: (stack_models, arima_models, team_stats)
+    """
     stack_models = {}
     arima_models = {}
     team_stats = {}
@@ -230,7 +354,8 @@ def train_team_models(team_data: pd.DataFrame):
             print(f"Nested CV RMSE for team {team}: {nested_rmse}")
         if TUNING_METHOD == "grid":
             xgb_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5], 'learning_rate': [0.05, 0.1]}
-            lgbm_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5], 'num_leaves': [31, 50], 'learning_rate': [0.05, 0.1], 'min_data_in_leaf': [20, 40]}
+            lgbm_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5], 'num_leaves': [31, 50],
+                         'learning_rate': [0.05, 0.1], 'min_data_in_leaf': [20, 40]}
             cat_grid = {'iterations': [50, 100], 'learning_rate': [0.05, 0.1], 'depth': [3, 5]}
             try:
                 xgb_best = tune_model_grid(XGBRegressor(random_state=42), xgb_grid, X_train, y_train)
@@ -299,6 +424,19 @@ def train_team_models(team_data: pd.DataFrame):
     return stack_models, arima_models, team_stats
 
 def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
+    """
+    Predicts the next-game score for a team by combining the stacking and ARIMA predictions.
+    
+    Args:
+        team (str): Team name.
+        stack_models (dict): Dictionary of stacking models.
+        arima_models (dict): Dictionary of ARIMA models.
+        team_stats (dict): Dictionary of team statistics.
+        team_data (DataFrame): Historical team data.
+    
+    Returns:
+        tuple: (ensemble prediction, (conf_low, conf_high)) or (None, (None, None)) if unreliable.
+    """
     team_key = team.strip().lower()
     if team_key not in team_stats:
         return None, (None, None)
@@ -357,6 +495,19 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     return round_half(ensemble_calibrated), (conf_low, conf_high)
 
 def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
+    """
+    Evaluates a matchup by computing predicted spread, total points, and confidence.
+    
+    Args:
+        home_team (str): Home team.
+        away_team (str): Away team.
+        home_pred (float): Predicted home team score.
+        away_pred (float): Predicted away team score.
+        team_stats (dict): Dictionary with team statistics.
+    
+    Returns:
+        dict or None: Dictionary with matchup evaluation or None if predictions are unavailable.
+    """
     home_key = home_team.strip().lower()
     away_key = away_team.strip().lower()
     if home_pred is None or away_pred is None:
@@ -386,16 +537,32 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     }
 
 def find_top_bets(matchups, threshold=70.0):
+    """
+    Filters matchups with confidence above a threshold.
+    
+    Args:
+        matchups (list): List of bet dictionaries.
+        threshold (float): Minimum confidence threshold.
+    
+    Returns:
+        DataFrame: Filtered and sorted bets.
+    """
     df = pd.DataFrame(matchups)
     df_top = df[df['confidence'] >= threshold].copy()
     df_top.sort_values('confidence', ascending=False, inplace=True)
     return df_top
 
 ################################################################################
-# NFL DATA LOADING
+# NFL DATA LOADING FUNCTIONS
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nfl_schedule():
+    """
+    Loads NFL schedule data.
+    
+    Returns:
+        DataFrame: NFL schedule.
+    """
     current_year = datetime.now().year
     years = [current_year - i for i in range(12)]
     schedule = nfl.import_schedules(years)
@@ -405,6 +572,15 @@ def load_nfl_schedule():
     return schedule
 
 def preprocess_nfl_data(schedule):
+    """
+    Preprocesses NFL schedule data.
+    
+    Args:
+        schedule (DataFrame): Raw NFL schedule.
+    
+    Returns:
+        DataFrame: Processed NFL data.
+    """
     home_df = schedule[['gameday', 'home_team', 'home_score', 'away_score']].rename(
         columns={'home_team': 'team', 'home_score': 'score', 'away_score': 'opp_score'}
     )
@@ -421,6 +597,16 @@ def preprocess_nfl_data(schedule):
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
+    """
+    Retrieves upcoming NFL games.
+    
+    Args:
+        schedule (DataFrame): NFL schedule.
+        days_ahead (int): How many days ahead to look.
+    
+    Returns:
+        DataFrame: Upcoming NFL games.
+    """
     upcoming = schedule[schedule['home_score'].isna() & schedule['away_score'].isna()].copy()
     now = datetime.now()
     filter_date = now + timedelta(days=days_ahead)
@@ -429,10 +615,16 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
     return upcoming[['gameday', 'home_team', 'away_team']]
 
 ################################################################################
-# NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
+# NBA DATA LOADING FUNCTIONS
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
+    """
+    Loads NBA team logs with advanced features.
+    
+    Returns:
+        DataFrame: NBA game data.
+    """
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
     all_rows = []
@@ -498,6 +690,15 @@ def load_nba_data():
     return df
 
 def fetch_upcoming_nba_games(days_ahead=3):
+    """
+    Fetches upcoming NBA games.
+    
+    Args:
+        days_ahead (int): Number of days ahead to check.
+    
+    Returns:
+        DataFrame: Upcoming NBA games.
+    """
     now = datetime.now()
     upcoming_rows = []
     for offset in range(days_ahead + 1):
@@ -524,10 +725,19 @@ def fetch_upcoming_nba_games(days_ahead=3):
     return upcoming
 
 ################################################################################
-# NCAAB DATA LOADING & UPCOMING GAMES
+# NCAAB DATA LOADING FUNCTIONS
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
+    """
+    Loads current season NCAAB data.
+    
+    Args:
+        season (int): Season year.
+    
+    Returns:
+        DataFrame: NCAAB game data.
+    """
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
         return pd.DataFrame()
@@ -559,6 +769,12 @@ def load_ncaab_data_current_season(season=2025):
     return data
 
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
+    """
+    Fetches upcoming NCAAB games for today and tomorrow.
+    
+    Returns:
+        DataFrame: Upcoming NCAAB games.
+    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
     dates = [
@@ -607,6 +823,16 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 # UI COMPONENTS
 ################################################################################
 def generate_writeup(bet, team_stats_global):
+    """
+    Generates a detailed analysis writeup for a bet.
+    
+    Args:
+        bet (dict): Bet prediction details.
+        team_stats_global (dict): Global team statistics.
+    
+    Returns:
+        str: Formatted analysis writeup.
+    """
     home_team = bet['home_team']
     away_team = bet['away_team']
     predicted_winner = bet['predicted_winner']
@@ -642,17 +868,31 @@ def generate_writeup(bet, team_stats_global):
     return writeup
 
 def generate_social_media_post(bet):
+    """
+    Generates a detailed, engaging social media post based on the betting prediction.
+    The post is built dynamically using team recent form, rest information,
+    tone variations based on confidence, and a variety of caption templates.
+
+    Args:
+        bet (dict): A dictionary containing game prediction details and insights.
+                    Expected keys include 'home_team', 'away_team', 'predicted_winner',
+                    'predicted_diff', 'predicted_total', 'spread_suggestion',
+                    'ou_suggestion', 'confidence', and optionally 'home_rest' and 'away_rest'.
+
+    Returns:
+        str: A formatted social media post ready for publishing.
+    """
     global team_stats_global
     home_team = bet['home_team']
     away_team = bet['away_team']
-    home_key = home_team.strip().lower()
-    away_key = away_team.strip().lower()
-    # Retrieve recent form using the helper function so we use the same data as in detailed insights.
+
+    # Retrieve recent form for both teams using our helper function.
     recent_form_home = get_recent_form(home_team, team_stats_global)
     recent_form_away = get_recent_form(away_team, team_stats_global)
     recent_form_home_str = f"{recent_form_home:.1f}"
     recent_form_away_str = f"{recent_form_away:.1f}"
-    
+
+    # Determine form advantage and generate a phrase based on the predicted winner.
     if bet['predicted_winner'] == home_team:
         form_advantage = round_half(recent_form_home - recent_form_away)
         if form_advantage > 0:
@@ -665,19 +905,27 @@ def generate_social_media_post(bet):
             form_phrase = f"Notably, {away_team} outpaces {home_team} by {form_advantage:.1f} pts on average."
         else:
             form_phrase = f"Despite similar averages, our model leans toward {away_team}."
-    
+
+    # Build a phrase describing the teams’ rest advantage if available.
     home_rest = bet.get("home_rest")
     away_rest = bet.get("away_rest")
     if home_rest is not None and away_rest is not None:
         if home_rest > away_rest:
-            rest_phrase = f"Edge: {home_team} has {home_rest} day{'s' if home_rest != 1 else ''} of rest versus {away_team}'s {away_rest} day{'s' if away_rest != 1 else ''}."
+            rest_phrase = (
+                f"Edge: {home_team} has {home_rest} day{'s' if home_rest != 1 else ''} of rest "
+                f"versus {away_team}'s {away_rest} day{'s' if away_rest != 1 else ''}."
+            )
         elif away_rest > home_rest:
-            rest_phrase = f"Edge: {away_team} is better rested with {away_rest} day{'s' if away_rest != 1 else ''}, compared to {home_team}'s {home_rest} day{'s' if home_rest != 1 else ''}."
+            rest_phrase = (
+                f"Edge: {away_team} is better rested with {away_rest} day{'s' if away_rest != 1 else ''}, "
+                f"compared to {home_team}'s {home_rest} day{'s' if home_rest != 1 else ''}."
+            )
         else:
             rest_phrase = f"Both teams have similar rest, each with {home_rest} day{'s' if home_rest != 1 else ''}."
     else:
         rest_phrase = ""
-    
+
+    # Vary the tone based on the confidence level.
     confidence = bet['confidence']
     if confidence >= 85:
         tone_phrase = "This is a must-watch bet! Don't miss out!"
@@ -685,7 +933,8 @@ def generate_social_media_post(bet):
         tone_phrase = "A promising pick – keep an eye on this one!"
     else:
         tone_phrase = "A cautious call, but it might just pay off!"
-    
+
+    # Rotate through a set of call-to-action (CTA) variants.
     cta_variants = [
         "Get your edge now! Download the app and comment your pick below!",
         "Join the winning team – download the app and share your thoughts!",
@@ -693,21 +942,28 @@ def generate_social_media_post(bet):
         "Don't miss your chance – download the app for real-time predictions and insights!"
     ]
     cta = random.choice(cta_variants)
-    
-    did_you_know = "Did you know? Our model leverages advanced metrics, recent form, and rest analysis to pinpoint winning edges!"
+
+    did_you_know = (
+        "Did you know? Our model leverages advanced metrics, recent form, and rest analysis "
+        "to pinpoint winning edges!"
+    )
     community_phrase = "Join thousands of bettors who trust our insights."
     hashtag_options = [
-        "#SportsBetting", "#GamePrediction", "#WinningEdge", "#BetSmart", "#BettingTips",
-        "#RealTimeAnalytics", "#AIpowered", "#BettingCommunity"
+        "#SportsBetting", "#GamePrediction", "#WinningEdge", "#BetSmart",
+        "#BettingTips", "#RealTimeAnalytics", "#AIpowered", "#BettingCommunity"
     ]
     hashtags = " ".join(random.sample(hashtag_options, 3))
-    
+
+    # Construct a list of caption templates.
     templates = []
+
     template1 = (
         f"🏟️ **Game Alert:** {away_team} @ {home_team}\n\n"
-        f"🔥 **Prediction:** {bet['predicted_winner']} wins by {bet['predicted_diff']} pts (Total: {bet['predicted_total']} pts).\n"
+        f"🔥 **Prediction:** {bet['predicted_winner']} wins by {bet['predicted_diff']} pts "
+        f"(Total: {bet['predicted_total']} pts).\n"
         f"💪 **Confidence:** {bet['confidence']}%\n\n"
-        f"📊 **Recent Form:** {home_team} averages {recent_form_home_str} pts vs. {away_team}'s {recent_form_away_str} pts.\n"
+        f"📊 **Recent Form:** {home_team} averages {recent_form_home_str} pts vs. "
+        f"{away_team}'s {recent_form_away_str} pts.\n"
         f"👉 **Form Edge:** {form_phrase}\n"
         f"⏱️ **Rest Edge:** {rest_phrase}\n\n"
         f"{tone_phrase}\n\n"
@@ -718,6 +974,7 @@ def generate_social_media_post(bet):
         f"{hashtags}"
     )
     templates.append(template1)
+
     template2 = (
         f"🏀 **Tonight's Game:** {away_team} at {home_team}\n\n"
         f"🔮 **Our Pick:** {bet['predicted_winner']} with a margin of {bet['predicted_diff']} pts.\n"
@@ -733,6 +990,7 @@ def generate_social_media_post(bet):
         f"{hashtags}"
     )
     templates.append(template2)
+
     template3 = (
         f"🎯 **Bet of the Day:** {away_team} @ {home_team}\n\n"
         f"🏆 **Predicted Winner:** {bet['predicted_winner']}\n"
@@ -749,10 +1007,21 @@ def generate_social_media_post(bet):
         f"{hashtags}"
     )
     templates.append(template3)
+
+    # Randomly select one template for variety.
     chosen_template = random.choice(templates)
     return chosen_template
 
 def display_bet_card(bet, team_stats_global, team_data=None):
+    """
+    Displays a bet card with summary, detailed analysis, recent trends,
+    and an option to generate a social media post.
+    
+    Args:
+        bet (dict): Bet prediction details.
+        team_stats_global (dict): Global team statistics.
+        team_data (DataFrame, optional): Team performance data.
+    """
     conf = bet['confidence']
     if conf >= 80:
         confidence_color = "green"
@@ -760,6 +1029,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
         confidence_color = "red"
     else:
         confidence_color = "orange"
+
     with st.container():
         st.markdown("---")
         col1, col2, col3 = st.columns([2, 2, 1])
@@ -772,11 +1042,11 @@ def display_bet_card(bet, team_stats_global, team_data=None):
             if bet['confidence'] >= 80:
                 st.markdown("🔥 **High-Confidence Bet** 🔥")
             st.markdown(
-                f"**<span title='Spread Suggestion is based on the predicted point difference'>Spread Suggestion:</span>** {bet['spread_suggestion']}",
+                f"**Spread Suggestion:** {bet['spread_suggestion']}",
                 unsafe_allow_html=True,
             )
             st.markdown(
-                f"**<span title='Total Suggestion indicates the recommended bet on the combined score'>Total Suggestion:</span>** {bet['ou_suggestion']}",
+                f"**Total Suggestion:** {bet['ou_suggestion']}",
                 unsafe_allow_html=True,
             )
         with col3:
@@ -817,32 +1087,36 @@ results = []
 team_stats_global = {}
 
 ################################################################################
-# MAIN PIPELINE
+# SYNCHRONOUS PREDICTION UPDATE FUNCTION
 ################################################################################
-def run_league_pipeline(league_choice):
-    st.header(f"Today's {league_choice} Best Bets 🎯")
+def compute_all_predictions(league_choice):
+    """
+    Computes predictions for the selected league synchronously.
+    
+    Args:
+        league_choice (str): League name ("NFL", "NBA", or "NCAAB").
+    
+    Returns:
+        tuple: (results, team_stats, team_data)
+    """
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
         if schedule.empty:
-            st.error("Unable to load NFL schedule.")
-            return
+            return [], {}, pd.DataFrame()
         team_data = preprocess_nfl_data(schedule)
         upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
     elif league_choice == "NBA":
         team_data = load_nba_data()
         if team_data.empty:
-            st.error("Unable to load NBA data.")
-            return
+            return [], {}, pd.DataFrame()
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
     else:
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
-            st.error("Unable to load NCAAB data.")
-            return
+            return [], {}, pd.DataFrame()
         upcoming = fetch_upcoming_ncaab_games()
     if team_data.empty or upcoming.empty:
-        st.warning(f"No upcoming {league_choice} data available for analysis.")
-        return
+        return [], {}, team_data
     if league_choice == "NBA":
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
@@ -860,129 +1134,142 @@ def run_league_pipeline(league_choice):
         bottom_10 = set([t for t, r in sorted_def[-10:]])
     else:
         top_10, bottom_10 = None, None
-    with st.spinner("Analyzing recent performance data..."):
-        stack_models, arima_models, team_stats = train_team_models(team_data)
-        team_stats_global = team_stats
-        results.clear()
-        for _, row in upcoming.iterrows():
-            home, away = row['home_team'], row['away_team']
-            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
-            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
-            row_gameday = to_naive(row['gameday'])
-            if league_choice == "NBA" and home_pred is not None and away_pred is not None:
-                home_games = team_data[team_data['team'] == home]
-                if not home_games.empty:
-                    last_game_home = to_naive(home_games['gameday'].max())
-                    rest_days_home = (row_gameday - last_game_home).days
-                    if rest_days_home == 0:
-                        home_pred -= 3
-                    elif rest_days_home >= 3:
-                        home_pred += 2
-                away_games = team_data[team_data['team'] == away]
-                if not away_games.empty:
-                    last_game_away = to_naive(away_games['gameday'].max())
-                    rest_days_away = (row_gameday - last_game_away).days
-                    if rest_days_away == 0:
-                        away_pred -= 3
-                    elif rest_days_away >= 3:
-                        away_pred += 2
-                home_pred += 1
-                away_pred -= 1
-                if top_10 and bottom_10:
-                    if away in top_10:
-                        home_pred -= 2
-                    elif away in bottom_10:
-                        home_pred += 2
-                    if home in top_10:
-                        away_pred -= 2
-                    elif home in bottom_10:
-                        away_pred += 2
-            elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
-                home_games = team_data[team_data['team'] == home]
-                if not home_games.empty:
-                    last_game_home = to_naive(home_games['gameday'].max())
-                    rest_days_home = (row_gameday - last_game_home).days
-                    if rest_days_home == 0:
-                        home_pred -= 2
-                    elif rest_days_home >= 3:
-                        home_pred += 1
-                away_games = team_data[team_data['team'] == away]
-                if not away_games.empty:
-                    last_game_away = to_naive(away_games['gameday'].max())
-                    rest_days_away = (row_gameday - last_game_away).days
-                    if rest_days_away == 0:
-                        away_pred -= 2
-                    elif rest_days_away >= 3:
-                        away_pred += 1
-                home_pred += 1
-                away_pred -= 1
-                if top_10 and bottom_10:
-                    if away in top_10:
-                        home_pred -= 2
-                    elif away in bottom_10:
-                        home_pred += 2
-                    if home in top_10:
-                        away_pred -= 2
-                    elif home in bottom_10:
-                        away_pred += 2
-            elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
-                home_games = team_data[team_data['team'] == home]
-                if not home_games.empty:
-                    last_game_home = to_naive(home_games['gameday'].max())
-                    rest_days_home = (row_gameday - last_game_home).days
-                    if rest_days_home == 0:
-                        home_pred -= 3
-                    elif rest_days_home >= 3:
-                        home_pred += 2
-                away_games = team_data[team_data['team'] == away]
-                if not away_games.empty:
-                    last_game_away = to_naive(away_games['gameday'].max())
-                    rest_days_away = (row_gameday - last_game_away).days
-                    if rest_days_away == 0:
-                        away_pred -= 3
-                    elif rest_days_away >= 3:
-                        away_pred += 2
-                home_pred += 1
-                away_pred -= 1
-                if top_10 and bottom_10:
-                    if away in top_10:
-                        home_pred -= 2
-                    elif away in bottom_10:
-                        home_pred += 2
-                    if home in top_10:
-                        away_pred -= 2
-                    elif home in bottom_10:
-                        away_pred += 2
-            outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
-            if outcome:
-                home_games = team_data[team_data['team'] == home]
-                if not home_games.empty:
-                    last_game_home = to_naive(home_games['gameday'].max())
-                    rest_days_home = (row_gameday - last_game_home).days
-                else:
-                    rest_days_home = None
-                away_games = team_data[team_data['team'] == away]
-                if not away_games.empty:
-                    last_game_away = to_naive(away_games['gameday'].max())
-                    rest_days_away = (row_gameday - last_game_away).days
-                else:
-                    rest_days_away = None
-                results.append({
-                    'date': row['gameday'],
-                    'league': league_choice,
-                    'home_team': home,
-                    'away_team': away,
-                    'home_pred': home_pred,
-                    'away_pred': away_pred,
-                    'predicted_winner': outcome['predicted_winner'],
-                    'predicted_diff': outcome['diff'],
-                    'predicted_total': outcome['total_points'],
-                    'confidence': outcome['confidence'],
-                    'spread_suggestion': outcome['spread_suggestion'],
-                    'ou_suggestion': outcome['ou_suggestion'],
-                    'home_rest': rest_days_home,
-                    'away_rest': rest_days_away
-                })
+
+    stack_models, arima_models, team_stats = train_team_models(team_data)
+    results_local = []
+    for _, row in upcoming.iterrows():
+        home, away = row['home_team'], row['away_team']
+        home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
+        away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+        row_gameday = to_naive(row['gameday'])
+        if league_choice == "NBA" and home_pred is not None and away_pred is not None:
+            home_games = team_data[team_data['team'] == home]
+            if not home_games.empty:
+                last_game_home = to_naive(home_games['gameday'].max())
+                rest_days_home = (row_gameday - last_game_home).days
+                if rest_days_home == 0:
+                    home_pred -= 3
+                elif rest_days_home >= 3:
+                    home_pred += 2
+            away_games = team_data[team_data['team'] == away]
+            if not away_games.empty:
+                last_game_away = to_naive(away_games['gameday'].max())
+                rest_days_away = (row_gameday - last_game_away).days
+                if rest_days_away == 0:
+                    away_pred -= 3
+                elif rest_days_away >= 3:
+                    away_pred += 2
+            home_pred += 1
+            away_pred -= 1
+            if top_10 and bottom_10:
+                if away in top_10:
+                    home_pred -= 2
+                elif away in bottom_10:
+                    home_pred += 2
+                if home in top_10:
+                    away_pred -= 2
+                elif home in bottom_10:
+                    away_pred += 2
+        elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
+            home_games = team_data[team_data['team'] == home]
+            if not home_games.empty:
+                last_game_home = to_naive(home_games['gameday'].max())
+                rest_days_home = (row_gameday - last_game_home).days
+                if rest_days_home == 0:
+                    home_pred -= 2
+                elif rest_days_home >= 3:
+                    home_pred += 1
+            away_games = team_data[team_data['team'] == away]
+            if not away_games.empty:
+                last_game_away = to_naive(away_games['gameday'].max())
+                rest_days_away = (row_gameday - last_game_away).days
+                if rest_days_away == 0:
+                    away_pred -= 2
+                elif rest_days_away >= 3:
+                    away_pred += 1
+            home_pred += 1
+            away_pred -= 1
+            if top_10 and bottom_10:
+                if away in top_10:
+                    home_pred -= 2
+                elif away in bottom_10:
+                    home_pred += 2
+                if home in top_10:
+                    away_pred -= 2
+                elif home in bottom_10:
+                    away_pred += 2
+        elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
+            home_games = team_data[team_data['team'] == home]
+            if not home_games.empty:
+                last_game_home = to_naive(home_games['gameday'].max())
+                rest_days_home = (row_gameday - last_game_home).days
+                if rest_days_home == 0:
+                    home_pred -= 3
+                elif rest_days_home >= 3:
+                    home_pred += 2
+            away_games = team_data[team_data['team'] == away]
+            if not away_games.empty:
+                last_game_away = to_naive(away_games['gameday'].max())
+                rest_days_away = (row_gameday - last_game_away).days
+                if rest_days_away == 0:
+                    away_pred -= 3
+                elif rest_days_away >= 3:
+                    away_pred += 2
+            home_pred += 1
+            away_pred -= 1
+            if top_10 and bottom_10:
+                if away in top_10:
+                    home_pred -= 2
+                elif away in bottom_10:
+                    home_pred += 2
+                if home in top_10:
+                    away_pred -= 2
+                elif home in bottom_10:
+                    away_pred += 2
+        outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
+        if outcome:
+            home_games = team_data[team_data['team'] == home]
+            if not home_games.empty:
+                last_game_home = to_naive(home_games['gameday'].max())
+                rest_days_home = (row_gameday - last_game_home).days
+            else:
+                rest_days_home = None
+            away_games = team_data[team_data['team'] == away]
+            if not away_games.empty:
+                last_game_away = to_naive(away_games['gameday'].max())
+                rest_days_away = (row_gameday - last_game_away).days
+            else:
+                rest_days_away = None
+            results_local.append({
+                'date': row['gameday'],
+                'league': league_choice,
+                'home_team': home,
+                'away_team': away,
+                'home_pred': home_pred,
+                'away_pred': away_pred,
+                'predicted_winner': outcome['predicted_winner'],
+                'predicted_diff': outcome['diff'],
+                'predicted_total': outcome['total_points'],
+                'confidence': outcome['confidence'],
+                'spread_suggestion': outcome['spread_suggestion'],
+                'ou_suggestion': outcome['ou_suggestion'],
+                'home_rest': rest_days_home,
+                'away_rest': rest_days_away
+            })
+    return results_local, team_stats, team_data
+
+################################################################################
+# DISPLAY UI FOR PREDICTIONS
+################################################################################
+def display_all_predictions(results, team_stats, team_data):
+    """
+    Displays predictions in the UI.
+    
+    Args:
+        results (list): List of prediction dictionaries.
+        team_stats (dict): Global team statistics.
+        team_data (DataFrame): Team performance data.
+    """
     view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
     if view_mode == "🎯 Top Bets Only":
         conf_threshold = st.slider(
@@ -1006,7 +1293,7 @@ def run_league_pipeline(league_choice):
                     else:
                         st.markdown(f"## {bet['date']}")
                     previous_date = current_date
-                display_bet_card(bet, team_stats_global, team_data=team_data)
+                display_bet_card(bet, team_stats, team_data=team_data)
         else:
             st.info("No high-confidence bets found. Try lowering the threshold.")
     else:
@@ -1022,50 +1309,18 @@ def run_league_pipeline(league_choice):
                     else:
                         st.markdown(f"## {bet['date']}")
                     previous_date = current_date
-                display_bet_card(bet, team_stats_global, team_data=team_data)
+                display_bet_card(bet, team_stats, team_data=team_data)
         else:
-            st.info(f"No upcoming {league_choice} games found.")
+            st.info("No upcoming games found.")
 
 ################################################################################
-# STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
+# MAIN PIPELINE & UI
 ################################################################################
-def scheduled_task():
-    st.write("🕒 Scheduled task running: Fetching and updating predictions...")
-    st.write("📡 Fetching latest NFL schedule and results...")
-    schedule = nfl.import_schedules([datetime.now().year])
-    schedule.to_csv("nfl_schedule.csv", index=False)
-    st.write("🏀 Fetching latest NBA team game logs...")
-    nba_data = []
-    for team_id in range(1, 31):
-        try:
-            logs = TeamGameLog(team_id=team_id, season="2024-25").get_data_frames()[0]
-            nba_data.append(logs)
-        except Exception as e:
-            st.warning(f"Error fetching data for NBA team {team_id}: {e}")
-    if nba_data:
-        nba_df = pd.concat(nba_data, ignore_index=True)
-        nba_df.to_csv("nba_team_logs.csv", index=False)
-    st.write("🏀 Fetching latest NCAAB data...")
-    ncaab_df, _, _ = cbb.get_games_season(season=2025, info=True, box=False, pbp=False)
-    if not ncaab_df.empty:
-        ncaab_df.to_csv("ncaab_games.csv", index=False)
-    st.write("🤖 Updating prediction models...")
-    if os.path.exists("nfl_schedule.csv"):
-        joblib.dump(schedule, "models/nfl_model.pkl")
-    if os.path.exists("nba_team_logs.csv"):
-        joblib.dump(nba_df, "models/nba_model.pkl")
-    if os.path.exists("ncaab_games.csv"):
-        joblib.dump(ncaab_df, "models/ncaab_model.pkl")
-    st.success("✅ Scheduled task completed successfully!")
-    st.success("Scheduled task completed successfully.")
-
 def main():
-    st.set_page_config(
-        page_title="FoxEdge Sports Betting Edge",
-        page_icon="🦊",
-        layout="centered"
-    )
+    st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
     st.title("🦊 FoxEdge Sports Betting Insights")
+    
+    # User login logic
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if not st.session_state['logged_in']:
@@ -1079,7 +1334,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.rerun()
+                    st.experimental_rerun()
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1089,35 +1344,52 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.rerun()
+            st.experimental_rerun()
+    
     st.sidebar.header("Navigation")
-    league_choice = st.sidebar.radio(
-        "Select League",
-        ["NFL", "NBA", "NCAAB"],
-        help="Choose which league's games you'd like to analyze"
-    )
-    run_league_pipeline(league_choice)
+    league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
+                                     help="Choose which league's games you'd like to analyze")
+    if st.sidebar.button("Refresh Predictions"):
+        # Simply recompute predictions synchronously.
+        results, team_stats, team_data = compute_all_predictions(league_choice)
+        st.session_state["predictions"] = results
+        st.session_state["team_stats_global"] = team_stats
+        st.session_state["team_data"] = team_data
+        st.experimental_rerun()
+    
+    # Compute predictions synchronously if not already in session.
+    if "predictions" not in st.session_state:
+        results, team_stats, team_data = compute_all_predictions(league_choice)
+        st.session_state["predictions"] = results
+        st.session_state["team_stats_global"] = team_stats
+        st.session_state["team_data"] = team_data
+
+    display_all_predictions(st.session_state["predictions"],
+                              st.session_state["team_stats_global"],
+                              st.session_state["team_data"])
+    
     st.sidebar.markdown(
         "### About FoxEdge\n"
         "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
     )
     if st.button("Save Predictions to CSV"):
-        if results:
-            save_predictions_to_csv(results)
-            csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download Predictions as CSV",
-                data=csv,
-                file_name='predictions.csv',
-                mime='text/csv',
-            )
+        if st.session_state.get("predictions"):
+            save_predictions_to_csv(st.session_state["predictions"])
+            csv = pd.DataFrame(st.session_state["predictions"]).to_csv(index=False).encode('utf-8')
+            st.download_button(label="Download Predictions as CSV",
+                               data=csv,
+                               file_name='predictions.csv',
+                               mime='text/csv')
         else:
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
     query_params = st.experimental_get_query_params()
     if "trigger" in query_params:
-        scheduled_task()
+        results, team_stats, team_data = compute_all_predictions("NBA")
+        st.session_state["predictions"] = results
+        st.session_state["team_stats_global"] = team_stats
+        st.session_state["team_data"] = team_data
         st.write("Task triggered successfully.")
     else:
         main()
