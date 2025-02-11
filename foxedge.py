@@ -30,7 +30,7 @@ from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, TimeSeries
 # Global Tuning Method Options
 ###############################
 TUNING_METHOD = "bayesian"  # "grid" or "bayesian"
-PERFORM_NESTED_CV = True    # Option to perform nested CV for diagnostics
+PERFORM_NESTED_CV = True    # Option to perform nested cross-validation for diagnostics
 
 ################################################################################
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
@@ -118,6 +118,18 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 def round_half(number):
     return round(number * 2) / 2
 
+# Helper function to robustly retrieve the recent form value
+def get_recent_form(team_name, team_stats):
+    key = team_name.strip().lower()
+    # Return the stored recent form if available
+    if key in team_stats and team_stats[key].get('recent_form') is not None:
+        return team_stats[key]['recent_form']
+    # As a fallback, check for a fuzzy match (optional)
+    for k, v in team_stats.items():
+        if team_name.lower() in k or k in team_name.lower():
+            return v.get('recent_form', 0.0)
+    return 0.0
+
 ################################################################################
 # TUNING FUNCTIONS
 ################################################################################
@@ -180,15 +192,6 @@ def nested_cv_evaluation(model, X, y, n_splits=3):
 ################################################################################
 @st.cache_data(ttl=14400)
 def train_team_models(team_data: pd.DataFrame):
-    """
-    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score.
-    Uses either grid search or Bayesian tuning based on TUNING_METHOD.
-    
-    Returns:
-        stack_models: Dict of stacking regressors keyed by normalized team names.
-        arima_models: Dict of ARIMA models keyed by normalized team names.
-        team_stats: Dict of team statistics keyed by normalized team names.
-    """
     stack_models = {}
     arima_models = {}
     team_stats = {}
@@ -547,8 +550,8 @@ def load_ncaab_data_current_season(season=2025):
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
-    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
-    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
+    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(window=3, min_periods=1).mean())
+    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(window=3, min_periods=1).std().fillna(0))
     data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
     data.sort_values(['team', 'gameday'], inplace=True)
@@ -567,7 +570,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         params = {
             'dates': date_str,
-            'groups': '50',
+            'groups': '50',  # D1 men's
             'limit': '357'
         }
         response = requests.get(url, params=params)
@@ -644,11 +647,11 @@ def generate_social_media_post(bet):
     away_team = bet['away_team']
     home_key = home_team.strip().lower()
     away_key = away_team.strip().lower()
-    recent_form_home = team_stats_global.get(home_key, {}).get('recent_form')
-    recent_form_away = team_stats_global.get(away_key, {}).get('recent_form')
-    # Format the recent form values to one decimal place.
-    recent_form_home_str = f"{recent_form_home:.1f}" if recent_form_home is not None else "0.0"
-    recent_form_away_str = f"{recent_form_away:.1f}" if recent_form_away is not None else "0.0"
+    # Retrieve recent form using the helper function so we use the same data as in detailed insights.
+    recent_form_home = get_recent_form(home_team, team_stats_global)
+    recent_form_away = get_recent_form(away_team, team_stats_global)
+    recent_form_home_str = f"{recent_form_home:.1f}"
+    recent_form_away_str = f"{recent_form_away:.1f}"
     
     if bet['predicted_winner'] == home_team:
         form_advantage = round_half(recent_form_home - recent_form_away)
