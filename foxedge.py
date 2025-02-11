@@ -1065,25 +1065,6 @@ def main():
         page_icon="🦊",
         layout="centered"
     )
-    # Restore login session from localStorage using a small JS snippet.
-    st.components.v1.html(
-    """
-    <script>
-      const email = localStorage.getItem("email");
-      if(email && !window.location.href.includes("email=")){
-          const newUrl = new URL(window.location.href);
-          newUrl.searchParams.set("email", email);
-          window.location.href = newUrl.toString();
-      }
-    </script>
-    """, height=0)
-    
-    # Check query parameters for stored email and restore session state.
-    query_params = st.experimental_get_query_params()
-    if "email" in query_params and not st.session_state.get("logged_in", False):
-        st.session_state["logged_in"] = True
-        st.session_state["email"] = query_params["email"][0]
-
     st.title("🦊 FoxEdge Sports Betting Insights")
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
@@ -1097,12 +1078,6 @@ def main():
                 if user_data:
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
-                    # Store login session in localStorage so that users remain logged in on reload.
-                    st.components.v1.html(f"""
-                    <script>
-                    localStorage.setItem("email", "{user_data['email']}");
-                    </script>
-                    """, height=0)
                     st.success(f"Welcome, {user_data['email']}!")
                     st.rerun()
         with col2:
@@ -1114,12 +1089,6 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            # Remove credentials from localStorage so that the session is fully cleared.
-            st.components.v1.html("""
-            <script>
-            localStorage.removeItem("email");
-            </script>
-            """, height=0)
             st.rerun()
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio(
