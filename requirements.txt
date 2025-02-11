@@ -83,3 +83,15 @@ lightgbm
 catboost
 Pillow
 Optuna
+streamlit
+pybaseball
+pandas
+numpy
+tensorflow
+xgboost
+bayesian-optimization
+seaborn
+matplotlib
+scikit-learn
+requests
+tqdm
