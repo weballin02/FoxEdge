@@ -270,7 +270,7 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
-@st.cache_data(ttl=14400)
+@st.cache_data(ttl=0)
 def train_team_models(team_data: pd.DataFrame):
     """
     Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score using
@@ -482,7 +482,7 @@ def find_top_bets(matchups, threshold=70.0):
 ################################################################################
 # NFL DATA LOADING
 ################################################################################
-@st.cache_data(ttl=14400)
+@st.cache_data(ttl=00)
 def load_nfl_schedule():
     current_year = datetime.now().year
     years = [current_year - i for i in range(12)]
@@ -519,7 +519,7 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ################################################################################
 # NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
-@st.cache_data(ttl=14400)
+@st.cache_data(ttl=0)
 def load_nba_data():
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
@@ -606,7 +606,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 # NCAAB HISTORICAL LOADER (UPDATED)
 ################################################################################
-@st.cache_data(ttl=14400)
+@st.cache_data(ttl=0)
 def load_ncaab_data_current_season(season=2025):
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
