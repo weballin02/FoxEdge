@@ -83,4 +83,4 @@ lightgbm
 catboost
 Pillow
 Optuna
-tensorflow
+tensorflow>=2.18.0
