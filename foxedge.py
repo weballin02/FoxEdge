@@ -19,7 +19,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import joblib
 import os
-import optuna  # For Bayesian search
+import optuna  # For Bayesian hyperparameter optimization
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
@@ -27,9 +27,9 @@ import cbbpy.mens_scraper as cbb
 # Additional imports for hyperparameter tuning and time-series cross validation
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
-# --- Global Flags for Model Tuning ---
-USE_RANDOMIZED_SEARCH = False    # If True, use RandomizedSearchCV (if not using Optuna)
-USE_OPTUNA_SEARCH = True           # If True, use Bayesian (Optuna) hyperparameter optimization
+# --- Global Flags for Model Tuning (Optimal Setup) ---
+USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (Optuna is used)
+USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimization
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 
 ################################################################################
@@ -134,7 +134,7 @@ def round_half(number):
     return round(number * 2) / 2
 
 ################################################################################
-# MODEL TUNING HELPER
+# BAYESIAN HYPERPARAMETER OPTIMIZATION VIA OPTUNA
 ################################################################################
 def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=False):
     """
@@ -156,7 +156,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
-            # Use categorical suggestion for parameters (since our grid is given as lists)
+            # Use categorical suggestion since our grid is defined as a list of candidates.
             params[key] = trial.suggest_categorical(key, values)
         fit_params = {}
         X_train_used = X_train
@@ -173,7 +173,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
             trial_model = model.__class__(**params, random_state=42)
             trial_model.fit(X_tr, y_tr, **fit_params)
             preds = trial_model.predict(X_val_cv)
-            score = -mean_squared_error(y_val_cv, preds)  # negative MSE as score
+            score = -mean_squared_error(y_val_cv, preds)
             scores.append(score)
         return np.mean(scores)
     
@@ -190,13 +190,16 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
         best_model.fit(X_train, y_train)
     return best_model
 
+################################################################################
+# MODEL TUNING FUNCTION
+################################################################################
 def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_stopping=False):
     """
     Tunes a given model using either GridSearchCV/RandomizedSearchCV or Bayesian optimization via Optuna.
     
     Args:
         model: The estimator to tune.
-        param_grid: Dictionary (or distributions) of hyperparameters.
+        param_grid: Hyperparameter grid or distributions.
         X_train: Training features.
         y_train: Training target.
         use_randomized (bool): If True, uses RandomizedSearchCV.
@@ -235,18 +238,18 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
 ################################################################################
 def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_stopping=False):
     """
-    Evaluates the model performance using nested cross-validation.
+    Evaluates model performance using nested cross-validation.
     
     Args:
         model: The estimator to tune.
-        param_grid: Hyperparameter grid or distributions.
+        param_grid: Hyperparameter grid.
         X: Features.
         y: Target values.
         use_randomized (bool): If True, uses RandomizedSearchCV for inner CV.
-        early_stopping (bool): If True, enables early stopping in the inner search.
+        early_stopping (bool): If True, enables early stopping in inner search.
     
     Returns:
-        A list of scores from the outer CV folds.
+        A list of scores from outer CV folds.
     """
     from sklearn.model_selection import KFold
     outer_cv = KFold(n_splits=5, shuffle=False)
@@ -267,7 +270,7 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 def train_team_models(team_data: pd.DataFrame):
     """
     Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score using
-    time-series cross validation and hyperparameter optimization for base models.
+    time-series CV and hyperparameter optimization for base models.
     
     Returns:
         stack_models: Dict of trained Stacking Regressors keyed by team.
