@@ -9,6 +9,7 @@ from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 import xgboost as xgb
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
+from tensorflow.keras import backend as K  # For clearing session in Keras
 
 # ------------------------------------------------------------------------------
 # Helper Function to Determine Projected Starting Players
@@ -31,7 +32,6 @@ def get_projected_starting_players(players_df, data_fetcher, games=3, n=5):
         if stats.empty:
             avg_min = 0
         else:
-            # Ensure MIN is numeric and compute average minutes
             stats['MIN'] = pd.to_numeric(stats['MIN'], errors='coerce')
             avg_min = stats['MIN'].mean()
         players_with_minutes.append({
@@ -78,13 +78,20 @@ def create_value_bet_message(bet):
 # ------------------------------------------------------------------------------
 class DataProcessor:
     def __init__(self):
+        # Define the stat columns (excluding MIN) for per-minute calculations.
         self.stats_columns = ['PTS', 'AST', 'REB', 'STL', 'BLK']
 
     def process_player_stats(self, player_stats_df):
-        """Process player statistics."""
+        """
+        Process player statistics by computing rolling averages for MIN as well
+        as other key stats.
+        """
         if player_stats_df.empty:
             return pd.DataFrame()
-        processed_stats = calculate_rolling_averages(player_stats_df, self.stats_columns, [5, 10])
+        # Compute rolling averages for MIN and the other stats.
+        base_columns = ['MIN'] + self.stats_columns
+        processed_stats = calculate_rolling_averages(player_stats_df, base_columns, [5, 10])
+        # Optionally compute per-minute metrics for the other stats.
         for stat in self.stats_columns:
             processed_stats[f'{stat}_PER_MIN'] = (processed_stats[stat] / processed_stats['MIN']).fillna(0)
         return processed_stats
@@ -246,6 +253,8 @@ class PropPredictor:
         :param X_train: DataFrame of features.
         :param y_train_dict: Dictionary with target names as keys.
         """
+        # Clear previous Keras session to avoid graph clutter and name scope issues.
+        K.clear_session()
         self.ensemble_models = {}
         for prop in y_train_dict.keys():
             # XGBoost model
