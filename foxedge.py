@@ -201,6 +201,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
         params = {}
         for key, values in param_grid.items():
             params[key] = trial.suggest_categorical(key, values)
+        # Set up fit parameters if early stopping is enabled
         fit_params = {}
         X_train_used = X_train
         y_train_used = y_train
@@ -208,22 +209,30 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
             split = int(0.8 * len(X_train))
             X_train_used, X_val = X_train[:split], X_train[split:]
             y_train_used, y_val = y_train[:split], y_train[split:]
-            fit_params = {'early_stopping_rounds': EARLY_STOPPING_ROUNDS, 'eval_set': [(X_val, y_val)], 'verbose': False}
+            fit_params = {
+                'early_stopping_rounds': EARLY_STOPPING_ROUNDS,
+                'eval_set': [(X_val, y_val)],
+                'verbose': False
+            }
         scores = []
         for train_idx, val_idx in cv.split(X_train_used):
             X_tr, X_val_cv = X_train_used[train_idx], X_train_used[val_idx]
             y_tr, y_val_cv = y_train_used[train_idx], y_train_used[val_idx]
             trial_model = model.__class__(**params, random_state=42)
+            local_fit_params = fit_params.copy()
             try:
-                trial_model.fit(X_tr, y_tr, **fit_params)
+                trial_model.fit(X_tr, y_tr, **local_fit_params)
             except TypeError as e:
+                # Check for unsupported keys and remove them
+                unsupported_keys = []
                 if "early_stopping_rounds" in str(e):
-                    # Remove early_stopping_rounds and try again
-                    if 'early_stopping_rounds' in fit_params:
-                        del fit_params['early_stopping_rounds']
-                    trial_model.fit(X_tr, y_tr, **fit_params)
-                else:
-                    raise e
+                    unsupported_keys.append("early_stopping_rounds")
+                if "verbose" in str(e):
+                    unsupported_keys.append("verbose")
+                for key in unsupported_keys:
+                    if key in local_fit_params:
+                        del local_fit_params[key]
+                trial_model.fit(X_tr, y_tr, **local_fit_params)
             preds = trial_model.predict(X_val_cv)
             score = -mean_squared_error(y_val_cv, preds)
             scores.append(score)
@@ -235,17 +244,23 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
     best_model = model.__class__(**best_params, random_state=42)
     if early_stopping and isinstance(best_model, LGBMRegressor):
         split = int(0.8 * len(X_train))
+        local_fit_params = {
+            'early_stopping_rounds': EARLY_STOPPING_ROUNDS,
+            'eval_set': [(X_train[split:], y_train[split:])],
+            'verbose': False
+        }
         try:
-            best_model.fit(X_train[:split], y_train[:split],
-                           early_stopping_rounds=EARLY_STOPPING_ROUNDS, eval_set=[(X_train[split:], y_train[split:])],
-                           verbose=False)
+            best_model.fit(X_train[:split], y_train[:split], **local_fit_params)
         except TypeError as e:
+            unsupported_keys = []
             if "early_stopping_rounds" in str(e):
-                best_model.fit(X_train[:split], y_train[:split],
-                           eval_set=[(X_train[split:], y_train[split:])],
-                           verbose=False)
-            else:
-                raise e
+                unsupported_keys.append("early_stopping_rounds")
+            if "verbose" in str(e):
+                unsupported_keys.append("verbose")
+            for key in unsupported_keys:
+                if key in local_fit_params:
+                    del local_fit_params[key]
+            best_model.fit(X_train[:split], y_train[:split], **local_fit_params)
     else:
         best_model.fit(X_train, y_train)
     return best_model
@@ -1158,6 +1173,8 @@ def main():
             logout_user()
             st.rerun()
     st.sidebar.header("Navigation")
+    # Replace deprecated st.experimental_get_query_params() with st.query_params()
+    query_params = st.query_params()
     league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
                                      help="Choose which league's games you'd like to analyze")
     run_league_pipeline(league_choice)
@@ -1175,7 +1192,8 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.experimental_get_query_params()
+    # Use st.query_params() instead of experimental_get_query_params
+    query_params = st.query_params()
     if "trigger" in query_params:
         scheduled_task()
         st.write("Task triggered successfully.")
