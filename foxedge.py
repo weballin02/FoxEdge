@@ -32,6 +32,11 @@ import cbbpy.mens_scraper as cbb
 ################################################################################
 # GLOBAL CONFIGURATION CONSTANTS
 ################################################################################
+# Global Flags for Hyperparameter Tuning
+USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (we rely on Bayesian search)
+USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimization
+ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
+
 # Feature Engineering
 ROLLING_WINDOW = 5
 ROLLING_WEIGHT = 0.6
@@ -77,10 +82,10 @@ PENALTY_MSE_THRESHOLD = 120
 def to_naive(dt):
     """
     Converts a datetime object to tz-naive if it is tz-aware.
-
+    
     Args:
         dt: A datetime object.
-
+    
     Returns:
         A tz-naive datetime object.
     """
@@ -178,7 +183,7 @@ def round_half(number):
 def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIALS, early_stopping=False):
     """
     Tunes a given model using Bayesian hyperparameter optimization via Optuna.
-
+    
     Args:
         model: The estimator to tune.
         param_grid: Dictionary of hyperparameter candidate values.
@@ -186,12 +191,12 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
         y_train: Training target.
         n_trials (int): Number of trials.
         early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
-
+    
     Returns:
         The best estimator fitted on X_train and y_train.
     """
     cv = TimeSeriesSplit(n_splits=TS_SPLITS)
-
+    
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
@@ -214,7 +219,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
             score = -mean_squared_error(y_val_cv, preds)
             scores.append(score)
         return np.mean(scores)
-
+    
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=n_trials)
     best_params = study.best_trial.params
@@ -238,7 +243,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
 def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_stopping=False):
     """
     Tunes a given model using either GridSearchCV/RandomizedSearchCV or Bayesian optimization via Optuna.
-
+    
     Args:
         model: The estimator to tune.
         param_grid: Hyperparameter grid or candidate values.
@@ -246,7 +251,7 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
         y_train: Training target.
         use_randomized (bool): If True, uses RandomizedSearchCV.
         early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
-
+    
     Returns:
         The best estimator.
     """
@@ -280,7 +285,7 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
 def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_stopping=False):
     """
     Evaluates model performance using nested cross-validation.
-
+    
     Args:
         model: The estimator to tune.
         param_grid: Hyperparameter grid.
@@ -288,7 +293,7 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
         y: Target.
         use_randomized (bool): If True, uses RandomizedSearchCV for inner CV.
         early_stopping (bool): If True, enables early stopping in inner search.
-
+    
     Returns:
         A list of scores from outer CV folds.
     """
@@ -312,7 +317,7 @@ def train_team_models(team_data: pd.DataFrame):
     """
     Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score using
     time-series cross-validation and hyperparameter optimization.
-
+    
     Returns:
         stack_models: Dict of trained Stacking Regressors keyed by team.
         arima_models: Dict of trained ARIMA models keyed by team.
