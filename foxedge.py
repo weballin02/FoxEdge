@@ -214,7 +214,16 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
             X_tr, X_val_cv = X_train_used[train_idx], X_train_used[val_idx]
             y_tr, y_val_cv = y_train_used[train_idx], y_train_used[val_idx]
             trial_model = model.__class__(**params, random_state=42)
-            trial_model.fit(X_tr, y_tr, **fit_params)
+            try:
+                trial_model.fit(X_tr, y_tr, **fit_params)
+            except TypeError as e:
+                if "early_stopping_rounds" in str(e):
+                    # Remove early_stopping_rounds and try again
+                    if 'early_stopping_rounds' in fit_params:
+                        del fit_params['early_stopping_rounds']
+                    trial_model.fit(X_tr, y_tr, **fit_params)
+                else:
+                    raise e
             preds = trial_model.predict(X_val_cv)
             score = -mean_squared_error(y_val_cv, preds)
             scores.append(score)
@@ -226,13 +235,17 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
     best_model = model.__class__(**best_params, random_state=42)
     if early_stopping and isinstance(best_model, LGBMRegressor):
         split = int(0.8 * len(X_train))
-        best_model.fit(
-            X_train[:split],
-            y_train[:split],
-            early_stopping_rounds=EARLY_STOPPING_ROUNDS,
-            eval_set=[(X_train[split:], y_train[split:])],
-            verbose=False
-        )
+        try:
+            best_model.fit(X_train[:split], y_train[:split],
+                           early_stopping_rounds=EARLY_STOPPING_ROUNDS, eval_set=[(X_train[split:], y_train[split:])],
+                           verbose=False)
+        except TypeError as e:
+            if "early_stopping_rounds" in str(e):
+                best_model.fit(X_train[:split], y_train[:split],
+                           eval_set=[(X_train[split:], y_train[split:])],
+                           verbose=False)
+            else:
+                raise e
     else:
         best_model.fit(X_train, y_train)
     return best_model
