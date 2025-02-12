@@ -219,20 +219,19 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
             X_tr, X_val_cv = X_train_used[train_idx], X_train_used[val_idx]
             y_tr, y_val_cv = y_train_used[train_idx], y_train_used[val_idx]
             trial_model = model.__class__(**params, random_state=42)
+            # Attempt to fit, removing unsupported keywords iteratively.
             local_fit_params = fit_params.copy()
-            try:
-                trial_model.fit(X_tr, y_tr, **local_fit_params)
-            except TypeError as e:
-                # Check for unsupported keys and remove them
-                unsupported_keys = []
-                if "early_stopping_rounds" in str(e):
-                    unsupported_keys.append("early_stopping_rounds")
-                if "verbose" in str(e):
-                    unsupported_keys.append("verbose")
-                for key in unsupported_keys:
-                    if key in local_fit_params:
+            while True:
+                try:
+                    trial_model.fit(X_tr, y_tr, **local_fit_params)
+                    break
+                except TypeError as e:
+                    msg = str(e)
+                    keys_to_remove = [key for key in list(local_fit_params.keys()) if key in msg]
+                    if not keys_to_remove:
+                        raise e
+                    for key in keys_to_remove:
                         del local_fit_params[key]
-                trial_model.fit(X_tr, y_tr, **local_fit_params)
             preds = trial_model.predict(X_val_cv)
             score = -mean_squared_error(y_val_cv, preds)
             scores.append(score)
@@ -249,18 +248,17 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIAL
             'eval_set': [(X_train[split:], y_train[split:])],
             'verbose': False
         }
-        try:
-            best_model.fit(X_train[:split], y_train[:split], **local_fit_params)
-        except TypeError as e:
-            unsupported_keys = []
-            if "early_stopping_rounds" in str(e):
-                unsupported_keys.append("early_stopping_rounds")
-            if "verbose" in str(e):
-                unsupported_keys.append("verbose")
-            for key in unsupported_keys:
-                if key in local_fit_params:
+        while True:
+            try:
+                best_model.fit(X_train[:split], y_train[:split], **local_fit_params)
+                break
+            except TypeError as e:
+                msg = str(e)
+                keys_to_remove = [key for key in list(local_fit_params.keys()) if key in msg]
+                if not keys_to_remove:
+                    raise e
+                for key in keys_to_remove:
                     del local_fit_params[key]
-            best_model.fit(X_train[:split], y_train[:split], **local_fit_params)
     else:
         best_model.fit(X_train, y_train)
     return best_model
