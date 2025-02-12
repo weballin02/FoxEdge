@@ -1,3 +1,7 @@
+import warnings
+# Suppress known joblib/loky resource_tracker warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="joblib")
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -28,7 +32,7 @@ import cbbpy.mens_scraper as cbb
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 # --- Global Flags for Model Tuning (Optimal Setup) ---
-USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (Optuna is used)
+USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (we rely on Bayesian search)
 USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimization
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 
@@ -145,7 +149,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
         param_grid: Dictionary of hyperparameter candidate values.
         X_train: Training features.
         y_train: Training target.
-        n_trials (int): Number of trials for the optimization.
+        n_trials (int): Number of trials.
         early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
     
     Returns:
@@ -156,7 +160,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
-            # Use categorical suggestion since our grid is defined as a list of candidates.
+            # Suggest one of the candidate values
             params[key] = trial.suggest_categorical(key, values)
         fit_params = {}
         X_train_used = X_train
@@ -199,14 +203,14 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
     
     Args:
         model: The estimator to tune.
-        param_grid: Hyperparameter grid or distributions.
+        param_grid: Hyperparameter grid or candidate values.
         X_train: Training features.
         y_train: Training target.
         use_randomized (bool): If True, uses RandomizedSearchCV.
         early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
     
     Returns:
-        The best estimator found.
+        The best estimator.
     """
     if USE_OPTUNA_SEARCH:
         return optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=early_stopping)
@@ -244,7 +248,7 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
         model: The estimator to tune.
         param_grid: Hyperparameter grid.
         X: Features.
-        y: Target values.
+        y: Target.
         use_randomized (bool): If True, uses RandomizedSearchCV for inner CV.
         early_stopping (bool): If True, enables early stopping in inner search.
     
@@ -270,7 +274,7 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 def train_team_models(team_data: pd.DataFrame):
     """
     Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score using
-    time-series CV and hyperparameter optimization for base models.
+    time-series cross-validation and hyperparameter optimization.
     
     Returns:
         stack_models: Dict of trained Stacking Regressors keyed by team.
