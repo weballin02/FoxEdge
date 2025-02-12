@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import random
 import time
 from datetime import datetime
 from nba_api.stats.endpoints import scoreboardv2, playergamelogs, teamgamelogs, commonteamroster
@@ -11,14 +12,144 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
 from tensorflow.keras import backend as K  # For clearing session in Keras
 
-# ------------------------------------------------------------------------------
-# Helper Function to Determine Projected Starting Players
-# ------------------------------------------------------------------------------
+################################################################################
+# UTILITY FUNCTIONS
+################################################################################
+
+def calculate_rolling_averages(df, columns, windows):
+    """Calculate rolling averages for specified columns and windows."""
+    result = df.copy()
+    for col in columns:
+        for window in windows:
+            result[f'{col}_{window}_AVG'] = df[col].rolling(window=window, min_periods=1).mean()
+    return result
+
+def format_prediction_output(predictions):
+    """Format predictions for display."""
+    return {
+        'Points': f"{predictions.get('PTS', 0):.1f}",
+        'Assists': f"{predictions.get('AST', 0):.1f}",
+        'Rebounds': f"{predictions.get('REB', 0):.1f}",
+        'Steals': f"{predictions.get('STL', 0):.1f}",
+        'Blocks': f"{predictions.get('BLK', 0):.1f}"
+    }
+
+################################################################################
+# UI COMPONENTS (Adapted for Player Props)
+################################################################################
+
+def generate_social_media_post(bet):
+    """
+    Generate a social media post for a given bet (here, a player prop).
+    Expects bet to include 'player_name', 'team', 'predictions', and 'confidence'.
+    """
+    conf = bet.get('confidence', 0)
+    if conf >= 85:
+        tone = "This one’s a sure-fire winner! Don’t miss out!"
+    elif conf >= 70:
+        tone = "Looks promising – keep an eye on this one…"
+    else:
+        tone = "A cautious bet worth watching!"
+    
+    templates = [
+        f"🔥 **Bet Alert!** 🔥\n\n"
+        f"**Player:** {bet['player_name']} from {bet['team']}\n\n"
+        f"**Prediction Highlights:**\n"
+        f"• Points: {bet['predictions'].get('PTS', 0):.1f}\n"
+        f"• Assists: {bet['predictions'].get('AST', 0):.1f}\n"
+        f"• Rebounds: {bet['predictions'].get('REB', 0):.1f}\n\n"
+        f"**Confidence:** {bet.get('confidence', 0):.1f}%\n\n"
+        f"{tone}\n\n"
+        f"👉 **CTA:** {{cta}}\n\n"
+        f"🏷️ {{hashtags}}",
+        
+        f"🚀 **Hot Tip Alert!** 🚀\n\n"
+        f"Player: {bet['player_name']} ({bet['team']})\n\n"
+        f"• Points: {bet['predictions'].get('PTS', 0):.1f}\n"
+        f"• Assists: {bet['predictions'].get('AST', 0):.1f}\n"
+        f"• Rebounds: {bet['predictions'].get('REB', 0):.1f}\n"
+        f"• Confidence: {bet.get('confidence', 0):.1f}%\n\n"
+        f"{tone}\n\n"
+        f"👉 **CTA:** {{cta}}\n\n"
+        f"🏷️ {{hashtags}}",
+        
+        f"🎯 **Pro Pick Alert!** 🎯\n\n"
+        f"Player: {bet['player_name']} | Team: {bet['team']}\n"
+        f"Predicted Stats: {format_prediction_output(bet['predictions'])}\n"
+        f"Confidence: {bet.get('confidence', 0):.1f}%\n\n"
+        f"{tone}\n\n"
+        f"👉 **CTA:** {{cta}}\n\n"
+        f"🏷️ {{hashtags}}"
+    ]
+    
+    selected_template = random.choice(templates)
+    cta_options = [
+        "Comment your prediction below!",
+        "Tag a friend who needs this tip!",
+        "Download now for real-time insights!",
+        "Join the winning team and share your pick!"
+    ]
+    selected_cta = random.choice(cta_options)
+    hashtag_pool = ["#SportsBetting", "#GameDay", "#BetSmart", "#WinningTips", "#Edge", "#BettingCommunity"]
+    selected_hashtags = " ".join(random.sample(hashtag_pool, k=3))
+    post = selected_template.replace("{cta}", selected_cta).replace("{hashtags}", selected_hashtags)
+    return post
+
+def display_prop_card(bet):
+    """
+    Display a player prop card using a design layout with containers, columns, and expanders.
+    Expects a bet dictionary with:
+      - 'player_name'
+      - 'team'
+      - 'predictions': dict (e.g., 'PTS', 'AST', etc.)
+      - 'value_bets': list (optional)
+      - 'confidence': numeric value for styling.
+    """
+    confidence = bet.get('confidence', 0)
+    if confidence >= 80:
+        confidence_color = "green"
+    elif confidence < 60:
+        confidence_color = "red"
+    else:
+        confidence_color = "orange"
+
+    with st.container():
+        st.markdown("---")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"### **{bet['player_name']}**")
+            st.caption(f"Team: {bet['team']}")
+        with col2:
+            st.markdown(
+                f"<h3 style='color:{confidence_color};'>{confidence:.1f}% Confidence</h3>",
+                unsafe_allow_html=True,
+            )
+        if 'predictions' in bet:
+            formatted_preds = format_prediction_output(bet['predictions'])
+            cols = st.columns(len(formatted_preds))
+            for col, (prop, value) in zip(cols, formatted_preds.items()):
+                col.metric(label=prop, value=value)
+    with st.expander("Detailed Insights", expanded=False):
+        if bet.get('value_bets'):
+            for vb in bet['value_bets']:
+                st.markdown(
+                    f"**Prop:** {vb.get('prop', '')} | **Suggestion:** {'OVER' if vb.get('value', 0) > 0 else 'UNDER'} | **Confidence:** {vb.get('confidence', 0):.0%}"
+                )
+        else:
+            st.info("No value bets available.")
+    with st.expander("Generate Social Media Post", expanded=False):
+        if st.button("Generate Post", key=f"post_{bet['player_name']}"):
+            post = generate_social_media_post(bet)
+            st.code(post, language="markdown")
+
+################################################################################
+# DATA PROCESSING & PREDICTION FUNCTIONS (Player Props)
+################################################################################
+
 def get_projected_starting_players(players_df, data_fetcher, games=3, n=5):
     """
-    For each player in players_df, fetch recent game logs (last `games` games)
-    and compute average minutes. Then, select the top `n` players with highest
-    average minutes.
+    For each player in players_df, fetch recent game logs and compute average minutes.
+    Returns the top n players by average minutes.
     """
     players_with_minutes = []
     for _, player in players_df.iterrows():
@@ -37,46 +168,13 @@ def get_projected_starting_players(players_df, data_fetcher, games=3, n=5):
     df = df.sort_values(by='avg_min', ascending=False)
     return df.head(n)
 
-# ------------------------------------------------------------------------------
-# Utility Functions
-# ------------------------------------------------------------------------------
-def calculate_rolling_averages(df, columns, windows):
-    """Calculate rolling averages for specified columns and windows."""
-    result = df.copy()
-    for col in columns:
-        for window in windows:
-            result[f'{col}_{window}_AVG'] = df[col].rolling(window=window, min_periods=1).mean()
-    return result
-
-def format_prediction_output(predictions):
-    """Format predictions for display."""
-    return {
-        'Points': f"{predictions['PTS']:.1f}",
-        'Assists': f"{predictions['AST']:.1f}",
-        'Rebounds': f"{predictions['REB']:.1f}",
-        'Steals': f"{predictions['STL']:.1f}",
-        'Blocks': f"{predictions['BLK']:.1f}"
-    }
-
-def create_value_bet_message(bet):
-    """Create formatted message for value bet display."""
-    direction = 'OVER' if bet['value'] > 0 else 'UNDER'
-    return (
-        f"{bet['prop']} {direction} {bet['line']:.1f}\n"
-        f"Prediction: {bet['prediction']:.1f}\n"
-        f"Confidence: {bet['confidence']:.2%}"
-    )
-
-# ------------------------------------------------------------------------------
-# Data Processor Class
-# ------------------------------------------------------------------------------
 class DataProcessor:
     def __init__(self):
         self.stats_columns = ['PTS', 'AST', 'REB', 'STL', 'BLK']
 
     def process_player_stats(self, player_stats_df):
         """
-        Process player statistics by computing rolling averages for MIN and key stats.
+        Process player stats by computing rolling averages for MIN and key stats.
         """
         if player_stats_df.empty:
             return pd.DataFrame()
@@ -87,35 +185,22 @@ class DataProcessor:
         return processed_stats
 
     def adjust_for_opponent(self, player_stats, team_stats):
-        """Adjust player stats based on team defense rating."""
-        if player_stats.empty or team_stats.empty:
-            return player_stats
-        if 'PTS' in team_stats.columns:
-            points_allowed = team_stats['PTS'].mean()
-            league_avg_points = 110.0
-            defense_factor = league_avg_points / points_allowed if points_allowed > 0 else 1.0
-            for stat in self.stats_columns:
-                player_stats[f'{stat}_ADJUSTED'] = (player_stats[stat] * defense_factor).fillna(player_stats[stat])
+        """(Optional) Adjust stats based on opponent metrics (not used here)."""
         return player_stats
 
-# ------------------------------------------------------------------------------
-# NBA Data Fetcher Class
-# ------------------------------------------------------------------------------
 class NBADataFetcher:
     @st.cache_data(ttl=3600)
     def get_team_name(team_id):
-        """Get team name from team ID."""
         try:
             nba_teams = teams.get_teams()
             team_info = next((team for team in nba_teams if team['id'] == team_id), None)
             return team_info['full_name'] if team_info else f"Team {team_id}"
         except Exception as e:
-            st.error(f"Error fetching team name: {str(e)}")
+            st.error(f"Error fetching team name: {e}")
             return f"Team {team_id}"
 
     @st.cache_data(ttl=3600)
     def get_team_players(team_id):
-        """Get active players for a team."""
         try:
             time.sleep(0.6)
             roster = commonteamroster.CommonTeamRoster(team_id=team_id)
@@ -128,12 +213,11 @@ class NBADataFetcher:
                 return pd.DataFrame(players_data)
             return pd.DataFrame([{'id': '1', 'name': 'Player Data Unavailable'}])
         except Exception as e:
-            st.error(f"Error fetching team players: {str(e)}")
+            st.error(f"Error fetching team players: {e}")
             return pd.DataFrame(columns=['id', 'name'])
 
     @st.cache_data(ttl=3600)
     def get_todays_games():
-        """Fetch today's NBA games."""
         try:
             time.sleep(0.6)
             scoreboard = scoreboardv2.ScoreboardV2(game_date=datetime.now().strftime("%Y-%m-%d"))
@@ -141,18 +225,16 @@ class NBADataFetcher:
             if not games_df.empty:
                 games_df['HOME_TEAM_NAME'] = games_df['HOME_TEAM_ID'].apply(NBADataFetcher.get_team_name)
                 games_df['VISITOR_TEAM_NAME'] = games_df['VISITOR_TEAM_ID'].apply(NBADataFetcher.get_team_name)
-                return games_df[['GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 
+                return games_df[['GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID',
                                  'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME']]
-            return pd.DataFrame(columns=['GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 
+            return pd.DataFrame(columns=['GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID',
                                          'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME'])
         except Exception as e:
-            st.error(f"Error fetching games: {str(e)}")
-            return pd.DataFrame(columns=['GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID', 
-                                         'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME'])
+            st.error(f"Error fetching games: {e}")
+            return pd.DataFrame()
 
     @st.cache_data(ttl=3600)
     def get_player_stats(player_id, last_n_games=10):
-        """Fetch player game logs."""
         try:
             time.sleep(0.6)
             player_logs = playergamelogs.PlayerGameLogs(
@@ -164,29 +246,9 @@ class NBADataFetcher:
                 return stats_df
             return pd.DataFrame(columns=['GAME_DATE', 'MIN', 'PTS', 'AST', 'REB', 'STL', 'BLK'])
         except Exception as e:
-            st.error(f"Error fetching player stats: {str(e)}")
-            return pd.DataFrame(columns=['GAME_DATE', 'MIN', 'PTS', 'AST', 'REB', 'STL', 'BLK'])
+            st.error(f"Error fetching player stats: {e}")
+            return pd.DataFrame()
 
-    @st.cache_data(ttl=3600)
-    def get_team_stats(team_id, last_n_games=10):
-        """Fetch team game logs."""
-        try:
-            time.sleep(0.6)
-            team_logs = teamgamelogs.TeamGameLogs(
-                team_id_nullable=team_id,
-                last_n_games_nullable=last_n_games
-            )
-            team_df = team_logs.get_data_frames()[0]
-            if not team_df.empty:
-                return team_df
-            return pd.DataFrame(columns=['GAME_DATE', 'PTS', 'REB', 'AST'])
-        except Exception as e:
-            st.error(f"Error fetching team stats: {str(e)}")
-            return pd.DataFrame(columns=['GAME_DATE', 'PTS', 'REB', 'AST'])
-
-# ------------------------------------------------------------------------------
-# Prop Predictor Class with Ensemble Implementation and Live Training
-# ------------------------------------------------------------------------------
 class PropPredictor:
     def __init__(self):
         self.models = {
@@ -200,9 +262,6 @@ class PropPredictor:
 
     @staticmethod
     def prepare_features(player_stats):
-        """
-        Prepare features for prediction using a simplified feature set.
-        """
         try:
             feature_cols = [
                 'MIN_5_AVG', 'PTS_5_AVG', 'AST_5_AVG', 'REB_5_AVG',
@@ -215,13 +274,12 @@ class PropPredictor:
                     player_stats[col] = 0
             return player_stats[feature_cols].fillna(0)
         except Exception as e:
-            st.error(f"Error preparing features: {str(e)}")
+            st.error(f"Error preparing features: {e}")
             return pd.DataFrame(columns=feature_cols)
 
     @staticmethod
     @st.cache_data
     def _cached_predict(_player_stats):
-        """Static cached prediction method as a fallback."""
         try:
             if _player_stats.empty:
                 return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
@@ -233,14 +291,11 @@ class PropPredictor:
                 predictions[prop] = max(0, base_value + variation)
             return pd.Series(predictions)
         except Exception as e:
-            st.error(f"Error in prediction: {str(e)}")
+            st.error(f"Error in prediction: {e}")
             return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
 
     def train_ensemble_models(self, X_train, y_train_dict):
-        """
-        Train ensemble models for each target prop using XGBoost, GradientBoosting, and a Neural Network.
-        """
-        K.clear_session()  # Clear previous Keras session to avoid name scope issues.
+        K.clear_session()  # Clear previous Keras session.
         self.ensemble_models = {}
         for prop in y_train_dict.keys():
             xgb_model = xgb.XGBRegressor(n_estimators=100, random_state=42)
@@ -257,9 +312,6 @@ class PropPredictor:
         st.success("Ensemble models trained successfully on live data.")
 
     def predict_ensemble(self, player_stats):
-        """
-        Predict player props using the ensemble models.
-        """
         X = self.prepare_features(player_stats)
         predictions = {}
         for prop in self.ensemble_models.keys():
@@ -271,9 +323,6 @@ class PropPredictor:
         return pd.Series(predictions)
 
     def predict_props(self, player_stats):
-        """
-        Generate predictions for player props.
-        """
         if player_stats is None or player_stats.empty:
             return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
         if self.ensemble_models:
@@ -281,7 +330,6 @@ class PropPredictor:
         return self._cached_predict(player_stats)
 
     def identify_value_bets(self, predictions, sportsbook_lines):
-        """Compare predictions to sportsbook lines."""
         try:
             value_bets = []
             mock_lines = {
@@ -302,15 +350,11 @@ class PropPredictor:
                         })
             return value_bets
         except Exception as e:
-            st.error(f"Error identifying value bets: {str(e)}")
+            st.error(f"Error identifying value bets: {e}")
             return []
 
     @staticmethod
     def build_live_training_data(players_df, data_fetcher, min_games=10, last_n_games=20):
-        """
-        Build training data from live NBA data using historical game logs for players in players_df.
-        Returns (X, y_train_dict).
-        """
         training_rows = []
         target_cols = ['PTS', 'AST', 'REB', 'STL', 'BLK']
         for _, player in players_df.iterrows():
@@ -352,78 +396,73 @@ class PropPredictor:
         y_train_dict = {target: training_df[target] for target in target_cols}
         return X, y_train_dict
 
-# ------------------------------------------------------------------------------
-# Helper Function to Process a Single Game's Predictions
-# ------------------------------------------------------------------------------
+################################################################################
+# HELPER FUNCTION TO PROCESS A SINGLE GAME'S PREDICTIONS
+################################################################################
+
 def process_game(game_data, data_fetcher, processor, predictor, only_starting):
     """
-    For a given game, fetch team stats and rosters (filtering to starting players if desired),
-    then compute predictions (and value bets) for each player.
-    Returns a list of prediction dictionaries.
+    For a given game, fetch team rosters (filtered to starting players if desired)
+    and compute predictions for each player. Returns a list of bet dictionaries.
     """
-    home_stats = data_fetcher.get_team_stats(game_data['HOME_TEAM_ID'])
-    away_stats = data_fetcher.get_team_stats(game_data['VISITOR_TEAM_ID'])
     home_players = data_fetcher.get_team_players(game_data['HOME_TEAM_ID'])
     away_players = data_fetcher.get_team_players(game_data['VISITOR_TEAM_ID'])
     if only_starting:
         home_players = get_projected_starting_players(home_players, data_fetcher, games=3, n=5)
         away_players = get_projected_starting_players(away_players, data_fetcher, games=3, n=5)
-    predictions_list = []
+    bets = []
     for player in pd.concat([home_players, away_players]).drop_duplicates(subset='id').itertuples(index=False):
         player_stats = data_fetcher.get_player_stats(player.id)
         if player_stats.empty:
             continue
         processed_stats = processor.process_player_stats(player_stats)
+        # Determine team membership.
         if player.id in home_players['id'].values:
-            adjusted_stats = processor.adjust_for_opponent(processed_stats, away_stats)
             team_name = game_data['HOME_TEAM_NAME']
         elif player.id in away_players['id'].values:
-            adjusted_stats = processor.adjust_for_opponent(processed_stats, home_stats)
             team_name = game_data['VISITOR_TEAM_NAME']
         else:
-            adjusted_stats = processed_stats
             team_name = "Unknown"
-        preds = predictor.predict_props(adjusted_stats)
+        preds = predictor.predict_props(processed_stats)
         value_bets = predictor.identify_value_bets(preds, None)
-        predictions_list.append({
+        bet = {
             'player_name': player.name,
             'team': team_name,
             'predictions': preds,
-            'value_bets': value_bets
-        })
-    return predictions_list
+            'value_bets': value_bets,
+            'confidence': np.mean([preds.get('PTS', 0), preds.get('AST', 0), preds.get('REB', 0)])
+        }
+        bets.append(bet)
+    return bets
 
-# ------------------------------------------------------------------------------
-# Main Streamlit App
-# ------------------------------------------------------------------------------
+################################################################################
+# MAIN STREAMLIT APP
+################################################################################
+
 def main():
-    st.set_page_config(
-        page_title="NBA Player Props Predictor",
-        page_icon="🏀",
-        layout="wide"
+    st.set_page_config(page_title="NBA Player Props Predictor", page_icon="🏀", layout="wide")
+    st.title("🏀 NBA Player Props Predictor")
+    st.markdown("Select a view mode to display player prop predictions for today.")
+
+    # Horizontal radio select with a dummy placeholder on the same line.
+    view_mode = st.radio(
+        "View Mode:",
+        options=["Please select a view option", "Top Props (Daily)", "Props by Game", "Single Game Analysis"],
+        horizontal=True
     )
+
+    # Only proceed if a valid view mode is selected.
+    if view_mode == "Please select a view option":
+        st.info("Please select a valid view mode to begin.")
+        return
+
+    # Sidebar options.
+    use_live_training = st.sidebar.checkbox("Train Ensemble Models (Live)", value=True)
+    only_starting = st.sidebar.checkbox("Only Predict for Starting Players", value=True)
 
     data_fetcher = NBADataFetcher
     processor = DataProcessor()
     predictor = PropPredictor()
-
-    st.title("🏀 NBA Player Props Predictor")
-    st.markdown("Select a view mode to display player prop predictions and value bets for today.")
-
-    # Horizontal radio select with a placeholder.
-    view_mode = st.radio(
-        "Select View Mode",
-        options=["Please select a view mode", "Top Props (Daily)", "Props by Game", "Single Game Analysis"],
-        horizontal=True
-    )
-
-    # Sidebar options (none of these are affected by view mode).
-    use_live_training = st.sidebar.checkbox("Train Ensemble Models (Live)", value=True)
-    only_starting = st.sidebar.checkbox("Only Predict for Starting Players", value=True)
-
-    if view_mode == "Please select a view mode":
-        st.info("Please select a view mode from the options above.")
-        return
 
     games_df = data_fetcher.get_todays_games()
     if games_df.empty:
@@ -431,148 +470,33 @@ def main():
         return
 
     if view_mode in ["Top Props (Daily)", "Props by Game"]:
-        # Aggregate rosters from all games.
-        all_players_list = []
+        all_bets = []
         for _, game in games_df.iterrows():
-            home_players = data_fetcher.get_team_players(game['HOME_TEAM_ID'])
-            away_players = data_fetcher.get_team_players(game['VISITOR_TEAM_ID'])
-            if only_starting:
-                home_players = get_projected_starting_players(home_players, data_fetcher, games=3, n=5)
-                away_players = get_projected_starting_players(away_players, data_fetcher, games=3, n=5)
-            all_players_list.append(home_players)
-            all_players_list.append(away_players)
-        if all_players_list:
-            all_players = pd.concat(all_players_list).drop_duplicates(subset='id')
-            if use_live_training:
-                st.info("Training ensemble models on live data aggregated from all games...")
-                X_train, y_train_dict = PropPredictor.build_live_training_data(all_players, data_fetcher, min_games=10, last_n_games=20)
-                if not X_train.empty and y_train_dict:
-                    predictor.train_ensemble_models(X_train, y_train_dict)
-                else:
-                    st.error("Live training data could not be built. Using fallback predictions.")
-        if view_mode == "Props by Game":
+            bets = process_game(game, data_fetcher, processor, predictor, only_starting)
+            all_bets.extend(bets)
+        if view_mode == "Top Props (Daily)":
+            all_bets.sort(key=lambda x: x['confidence'], reverse=True)
+            st.header("🎯 Top Value Props (Daily)")
+            for bet in all_bets[:5]:
+                display_prop_card(bet)
+        elif view_mode == "Props by Game":
             for _, game in games_df.iterrows():
                 st.subheader(f"{game['HOME_TEAM_NAME']} vs {game['VISITOR_TEAM_NAME']}")
-                game_preds = process_game(game, data_fetcher, processor, predictor, only_starting)
-                if game_preds:
-                    for pred in game_preds:
-                        st.markdown(f"**{pred['player_name']}** ({pred['team']})")
-                        formatted_preds = format_prediction_output(pred['predictions'])
-                        cols = st.columns(len(formatted_preds))
-                        for col, (prop, value) in zip(cols, formatted_preds.items()):
-                            col.metric(label=prop, value=value)
-                    st.markdown("---")
-                else:
-                    st.info("No predictions available for this game.")
-        elif view_mode == "Top Props (Daily)":
-            all_value_bets = []
-            for _, game in games_df.iterrows():
-                game_preds = process_game(game, data_fetcher, processor, predictor, only_starting)
-                for pred in game_preds:
-                    for bet in pred['value_bets']:
-                        bet['player_name'] = pred['player_name']
-                        bet['team'] = pred['team']
-                        bet['game'] = f"{game['HOME_TEAM_NAME']} vs {game['VISITOR_TEAM_NAME']}"
-                        all_value_bets.append(bet)
-            if all_value_bets:
-                all_value_bets.sort(key=lambda x: x['confidence'], reverse=True)
-                st.header("🎯 Top Value Props (Daily)")
-                for i, bet in enumerate(all_value_bets[:5]):
-                    st.markdown(f"""
-                    <div class='top-prop'>
-                        <div class='prop-header'>
-                            {i+1}. {bet['player_name']} ({bet['game']}) - {bet['prop']}
-                        </div>
-                        <div class='value-indicator'>
-                            {'OVER' if bet['value'] > 0 else 'UNDER'} {bet['line']:.1f} 
-                            (Prediction: {bet['prediction']:.1f})
-                        </div>
-                        <div>
-                            Confidence: {bet['confidence']:.0%}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("No value bets identified for today.")
+                bets = process_game(game, data_fetcher, processor, predictor, only_starting)
+                for bet in bets:
+                    display_prop_card(bet)
+                st.markdown("---")
     elif view_mode == "Single Game Analysis":
         game_options = [f"{row['HOME_TEAM_NAME']} vs {row['VISITOR_TEAM_NAME']}" for _, row in games_df.iterrows()]
         selected_game = st.selectbox("Select Game", options=game_options, key="game_selector")
         if selected_game:
             game_idx = game_options.index(selected_game)
             game_data = games_df.iloc[game_idx]
-            home_players = data_fetcher.get_team_players(game_data['HOME_TEAM_ID'])
-            away_players = data_fetcher.get_team_players(game_data['VISITOR_TEAM_ID'])
-            if only_starting:
-                home_players = get_projected_starting_players(home_players, data_fetcher, games=3, n=5)
-                away_players = get_projected_starting_players(away_players, data_fetcher, games=3, n=5)
-            if use_live_training:
-                all_players = pd.concat([home_players, away_players]).drop_duplicates(subset='id')
-                st.info("Training ensemble models on live data for selected game...")
-                X_train, y_train_dict = PropPredictor.build_live_training_data(all_players, data_fetcher, min_games=10, last_n_games=20)
-                if not X_train.empty and y_train_dict:
-                    predictor.train_ensemble_models(X_train, y_train_dict)
-                else:
-                    st.error("Live training data could not be built. Using fallback predictions.")
-            home_stats = data_fetcher.get_team_stats(game_data['HOME_TEAM_ID'])
-            away_stats = data_fetcher.get_team_stats(game_data['VISITOR_TEAM_ID'])
-            all_predictions = []
-            all_value_bets = []
-            for player in pd.concat([home_players, away_players]).drop_duplicates(subset='id').itertuples(index=False):
-                player_stats = data_fetcher.get_player_stats(player.id)
-                if not player_stats.empty:
-                    processed_stats = processor.process_player_stats(player_stats)
-                    if player.id in home_players['id'].values:
-                        adjusted_stats = processor.adjust_for_opponent(processed_stats, away_stats)
-                    elif player.id in away_players['id'].values:
-                        adjusted_stats = processor.adjust_for_opponent(processed_stats, home_stats)
-                    else:
-                        adjusted_stats = processed_stats
-                    preds = predictor.predict_props(adjusted_stats)
-                    value_bets = predictor.identify_value_bets(preds, None)
-                    for bet in value_bets:
-                        bet['player_name'] = player.name
-                    all_value_bets.extend(value_bets)
-                    team_name = game_data['HOME_TEAM_NAME'] if player.id in home_players['id'].values else game_data['VISITOR_TEAM_NAME']
-                    all_predictions.append({
-                        'player_name': player.name,
-                        'team': team_name,
-                        'predictions': preds
-                    })
-            st.header("🎯 Top Value Props")
-            for i, bet in enumerate(all_value_bets[:5]):
-                st.markdown(f"""
-                <div class='top-prop'>
-                    <div class='prop-header'>
-                        {i+1}. {bet['player_name']} - {bet['prop']}
-                    </div>
-                    <div class='value-indicator'>
-                        {'OVER' if bet['value'] > 0 else 'UNDER'} {bet['line']:.1f} 
-                        (Prediction: {bet['prediction']:.1f})
-                    </div>
-                    <div>
-                        Confidence: {bet['confidence']:.0%}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            with st.expander("View All Player Props"):
-                home_tab, away_tab = st.tabs([
-                    f"🏠 {game_data['HOME_TEAM_NAME']}", 
-                    f"🏃 {game_data['VISITOR_TEAM_NAME']}"
-                ])
-                with home_tab:
-                    for pred in [p for p in all_predictions if p['team'] == game_data['HOME_TEAM_NAME']]:
-                        st.subheader(pred['player_name'])
-                        formatted_preds = format_prediction_output(pred['predictions'])
-                        cols = st.columns(len(formatted_preds))
-                        for col, (prop, value) in zip(cols, formatted_preds.items()):
-                            col.metric(label=prop, value=value)
-                with away_tab:
-                    for pred in [p for p in all_predictions if p['team'] == game_data['VISITOR_TEAM_NAME']]:
-                        st.subheader(pred['player_name'])
-                        formatted_preds = format_prediction_output(pred['predictions'])
-                        cols = st.columns(len(formatted_preds))
-                        for col, (prop, value) in zip(cols, formatted_preds.items()):
-                            col.metric(label=prop, value=value)
+            bets = process_game(game_data, data_fetcher, processor, predictor, only_starting)
+            st.header("🎯 Player Props for Selected Game")
+            for bet in bets:
+                display_prop_card(bet)
+
     st.markdown("---")
     st.markdown("Data provided by NBA API | Built with Streamlit")
 
