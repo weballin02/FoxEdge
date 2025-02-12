@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pytz
+import random
 from datetime import datetime, timedelta
 import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
@@ -418,12 +419,15 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     # Example threshold for over/under (adjust if needed)
     ou_threshold = 145
 
+    # Ensure the spread suggestion lean is always a negative number.
+    spread_value = -abs(round_half(diff))
+
     return {
         'predicted_winner': winner,
         'diff': round_half(diff),
         'total_points': round_half(total_points),
         'confidence': confidence,
-        'spread_suggestion': f"Lean {winner} by {round_half(diff):.1f}",
+        'spread_suggestion': f"Lean {winner} by {spread_value:.1f}",
         'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
     }
 
@@ -763,15 +767,8 @@ def generate_writeup(bet, team_stats_global):
 
 def generate_social_media_post(bet):
     """
-    Generates a concise, engaging social media post for a given bet with enhanced formatting, storytelling, and CTAs.
-    
-    Recommended enhancements:
-      1. Refined formatting with clear headlines, bullet points, and emojis.
-      2. Engaging storytelling using a mini success story (testimonial) and the PAS (Problem-Agitation-Solution) framework.
-      3. Clear and strong calls-to-action (CTAs) encouraging engagement.
-      4. Interactive questions and relevant hashtags.
-      5. Content variety with a mix of prediction highlights and educational snippets.
-      6. Conciseness and clarity with punchy, active language.
+    Generates a concise, engaging social media post for a given bet with enhanced formatting, adaptive tone,
+    rotating template styles, additional CTAs, a “Did You Know?” fact, community language, and dynamic hashtags.
     
     Args:
         bet (dict): Bet details.
@@ -779,17 +776,17 @@ def generate_social_media_post(bet):
     Returns:
         str: A formatted social media post.
     """
-    # Simulated user testimonial
-    testimonial = "“I turned a $10 bet into $50 thanks to FoxEdge – total game changer!” – Alex"
-    
-    # Problem-Agitation-Solution (PAS) framework text
-    pas = (
-        "❗ **Problem:** Struggling to pick the winning team?\n"
-        "😤 **Agitation:** Tired of missing out on hot bets and expert insights?\n"
-        "✅ **Solution:** FoxEdge delivers real-time predictions that give you the edge!"
-    )
-    
-    post = (
+    conf = bet['confidence']
+    # Adaptive tone based on confidence level
+    if conf >= 85:
+        tone = "This one’s a sure-fire winner! Don’t miss out!"
+    elif conf >= 70:
+        tone = "This looks promising – keep an eye on this one…"
+    else:
+        tone = "A cautious bet worth watching!"
+
+    # Define multiple template styles
+    templates = [
         f"🔥 **Bet Alert!** 🔥\n\n"
         f"**Matchup:** {bet['away_team']} @ {bet['home_team']}\n\n"
         f"**Prediction Highlights:**\n"
@@ -797,11 +794,52 @@ def generate_social_media_post(bet):
         f"• **Spread:** {bet['spread_suggestion']}\n"
         f"• **Total Points:** {bet['predicted_total']}\n"
         f"• **Confidence:** {bet['confidence']:.1f}%\n\n"
-        f"{pas}\n\n"
-        f"💬 **User Testimonial:** {testimonial}\n\n"
-        f"👉 **CTA:** Comment your pick below, download now for real-time insights, and tell us—who will win tonight?\n"
-        f"🔎 #SportsBetting #GamePrediction #BetSmart"
-    )
+        f"{tone}\n\n"
+        f"💬 **User Testimonial:** “I turned a $10 bet into $50 thanks to FoxEdge – total game changer!” – Alex\n\n"
+        f"👉 **CTA:** {{cta}}\n\n"
+        f"💡 **Did You Know?** Our model analyzes recent form and key metrics to give you an edge!\n\n"
+        f"👥 **Community:** Join thousands of winning bettors!\n\n"
+        f"🔎 {{hashtags}}",
+        
+        f"🚀 **Hot Tip Alert!** 🚀\n\n"
+        f"**Game:** {bet['away_team']} @ {bet['home_team']}\n\n"
+        f"**Key Stats:**\n"
+        f"• Winner: {bet['predicted_winner']}\n"
+        f"• Spread: {bet['spread_suggestion']}\n"
+        f"• Total: {bet['predicted_total']}\n"
+        f"• Confidence: {bet['confidence']:.1f}%\n\n"
+        f"{tone}\n\n"
+        f"💡 Did you know our predictions are powered by advanced analytics?\n\n"
+        f"👉 **CTA:** {{cta}}\n\n"
+        f"🏷️ {{hashtags}}",
+        
+        f"🎯 **Pro Pick Alert!** 🎯\n\n"
+        f"Matchup: {bet['away_team']} vs {bet['home_team']}\n"
+        f"Predicted Winner: {bet['predicted_winner']}\n"
+        f"Spread: {bet['spread_suggestion']}\n"
+        f"Total Points: {bet['predicted_total']}\n"
+        f"Confidence: {bet['confidence']:.1f}%\n\n"
+        f"{tone}\n\n"
+        f"👉 **CTA:** {{cta}}\n\n"
+        f"💡 Did you know? Our system leverages key metrics for an unbeatable edge!\n\n"
+        f"{{hashtags}}"
+    ]
+    selected_template = random.choice(templates)
+    
+    # Additional CTA variants
+    cta_options = [
+        "Comment your prediction below!",
+        "Tag a friend who needs this tip!",
+        "Download now for real-time insights!",
+        "Join the winning team and share your pick!"
+    ]
+    selected_cta = random.choice(cta_options)
+    
+    # Dynamic hashtag generation (rotate among a set)
+    hashtag_pool = ["#SportsBetting", "#GameDay", "#BetSmart", "#WinningTips", "#Edge", "#BettingCommunity"]
+    selected_hashtags = " ".join(random.sample(hashtag_pool, k=3))
+    
+    post = selected_template.replace("{cta}", selected_cta).replace("{hashtags}", selected_hashtags)
     return post
 
 def display_bet_card(bet, team_stats_global, team_data=None):
