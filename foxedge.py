@@ -763,7 +763,15 @@ def generate_writeup(bet, team_stats_global):
 
 def generate_social_media_post(bet):
     """
-    Generates a concise, engaging social media post for a given bet.
+    Generates a concise, engaging social media post for a given bet with enhanced formatting, storytelling, and CTAs.
+    
+    Recommended enhancements:
+      1. Refined formatting with clear headlines, bullet points, and emojis.
+      2. Engaging storytelling using a mini success story (testimonial) and the PAS (Problem-Agitation-Solution) framework.
+      3. Clear and strong calls-to-action (CTAs) encouraging engagement.
+      4. Interactive questions and relevant hashtags.
+      5. Content variety with a mix of prediction highlights and educational snippets.
+      6. Conciseness and clarity with punchy, active language.
     
     Args:
         bet (dict): Bet details.
@@ -771,12 +779,28 @@ def generate_social_media_post(bet):
     Returns:
         str: A formatted social media post.
     """
+    # Simulated user testimonial
+    testimonial = "“I turned a $10 bet into $50 thanks to FoxEdge – total game changer!” – Alex"
+    
+    # Problem-Agitation-Solution (PAS) framework text
+    pas = (
+        "❗ **Problem:** Struggling to pick the winning team?\n"
+        "😤 **Agitation:** Tired of missing out on hot bets and expert insights?\n"
+        "✅ **Solution:** FoxEdge delivers real-time predictions that give you the edge!"
+    )
+    
     post = (
-        f"🎯 **Bet Alert!** {bet['away_team']} @ {bet['home_team']} tonight!\n"
-        f"🔮 Predicted Winner: **{bet['predicted_winner']}**\n"
-        f"📊 Spread: {bet['spread_suggestion']}\n"
-        f"📈 Total: {bet['predicted_total']} | {bet['confidence']:.1f}% Confidence\n"
-        f"Get your edge now! #SportsBetting #Prediction"
+        f"🔥 **Bet Alert!** 🔥\n\n"
+        f"**Matchup:** {bet['away_team']} @ {bet['home_team']}\n\n"
+        f"**Prediction Highlights:**\n"
+        f"• **Winner:** {bet['predicted_winner']}\n"
+        f"• **Spread:** {bet['spread_suggestion']}\n"
+        f"• **Total Points:** {bet['predicted_total']}\n"
+        f"• **Confidence:** {bet['confidence']:.1f}%\n\n"
+        f"{pas}\n\n"
+        f"💬 **User Testimonial:** {testimonial}\n\n"
+        f"👉 **CTA:** Comment your pick below, download now for real-time insights, and tell us—who will win tonight?\n"
+        f"🔎 #SportsBetting #GamePrediction #BetSmart"
     )
     return post
 
