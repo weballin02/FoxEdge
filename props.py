@@ -410,18 +410,20 @@ def main():
     st.title("🏀 NBA Player Props Predictor")
     st.markdown("Select a view mode to display player prop predictions and value bets for today.")
 
-    # Display placeholder text on its own line.
-    st.markdown("**Please select a view mode:**")
-    # Horizontal radio select for the three valid view modes.
+    # Horizontal radio select with a placeholder.
     view_mode = st.radio(
-        "",
-        options=["Top Props (Daily)", "Props by Game", "Single Game Analysis"],
+        "Select View Mode",
+        options=["Please select a view mode", "Top Props (Daily)", "Props by Game", "Single Game Analysis"],
         horizontal=True
     )
 
-    # Sidebar options.
+    # Sidebar options (none of these are affected by view mode).
     use_live_training = st.sidebar.checkbox("Train Ensemble Models (Live)", value=True)
     only_starting = st.sidebar.checkbox("Only Predict for Starting Players", value=True)
+
+    if view_mode == "Please select a view mode":
+        st.info("Please select a view mode from the options above.")
+        return
 
     games_df = data_fetcher.get_todays_games()
     if games_df.empty:
