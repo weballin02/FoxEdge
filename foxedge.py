@@ -1174,7 +1174,7 @@ def main():
             st.rerun()
     st.sidebar.header("Navigation")
     # Replace deprecated st.experimental_get_query_params() with st.query_params()
-    query_params = st.query_params()
+    query_params = st.query_params
     league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
                                      help="Choose which league's games you'd like to analyze")
     run_league_pipeline(league_choice)
