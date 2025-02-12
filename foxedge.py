@@ -24,17 +24,52 @@ from firebase_admin import credentials, auth
 import joblib
 import os
 import optuna  # For Bayesian hyperparameter optimization
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
 
-# Additional imports for hyperparameter tuning and time-series cross validation
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+################################################################################
+# GLOBAL CONFIGURATION CONSTANTS
+################################################################################
+# Feature Engineering
+ROLLING_WINDOW = 5
+ROLLING_WEIGHT = 0.6
+SEASON_WEIGHT = 0.4
 
-# --- Global Flags for Model Tuning (Optimal Setup) ---
-USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (we rely on Bayesian search)
-USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimization
-ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
+# Hyperparameter Tuning
+EARLY_STOPPING_ROUNDS = 15
+OPTUNA_TRIALS = 50
+TS_SPLITS = 5        # Number of splits for TimeSeriesSplit CV
+STACKING_CV = 5      # CV folds for stacking regressor
+
+# Domain-Specific Adjustment Constants for NBA
+NBA_REST_PENALTY_ZERO = -3
+NBA_REST_BONUS = 2
+NBA_HOME_FINAL_ADJUST = 1
+NBA_AWAY_FINAL_ADJUST = -1
+NBA_OPP_TOP10_ADJUST = -2
+NBA_OPP_BOTTOM10_ADJUST = 2
+
+# Domain-Specific Adjustment Constants for NFL
+NFL_REST_PENALTY_ZERO = -2
+NFL_REST_BONUS = 1
+NFL_HOME_FINAL_ADJUST = 1
+NFL_AWAY_FINAL_ADJUST = -1
+NFL_OPP_TOP10_ADJUST = -2
+NFL_OPP_BOTTOM10_ADJUST = 2
+
+# Domain-Specific Adjustment Constants for NCAAB
+NCAAB_REST_PENALTY_ZERO = -3
+NCAAB_REST_BONUS = 2
+NCAAB_HOME_FINAL_ADJUST = 1
+NCAAB_AWAY_FINAL_ADJUST = -1
+NCAAB_OPP_TOP10_ADJUST = -2
+NCAAB_OPP_BOTTOM10_ADJUST = 2
+
+# MSE Thresholds for Filtering and Penalties
+GLOBAL_MSE_THRESHOLD = 150
+PENALTY_MSE_THRESHOLD = 120
 
 ################################################################################
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
@@ -42,10 +77,10 @@ ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 def to_naive(dt):
     """
     Converts a datetime object to tz-naive if it is tz-aware.
-    
+
     Args:
         dt: A datetime object.
-    
+
     Returns:
         A tz-naive datetime object.
     """
@@ -140,10 +175,10 @@ def round_half(number):
 ################################################################################
 # BAYESIAN HYPERPARAMETER OPTIMIZATION VIA OPTUNA
 ################################################################################
-def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=False):
+def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIALS, early_stopping=False):
     """
     Tunes a given model using Bayesian hyperparameter optimization via Optuna.
-    
+
     Args:
         model: The estimator to tune.
         param_grid: Dictionary of hyperparameter candidate values.
@@ -151,16 +186,15 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
         y_train: Training target.
         n_trials (int): Number of trials.
         early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
-    
+
     Returns:
         The best estimator fitted on X_train and y_train.
     """
-    cv = TimeSeriesSplit(n_splits=3)
-    
+    cv = TimeSeriesSplit(n_splits=TS_SPLITS)
+
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
-            # Suggest one of the candidate values
             params[key] = trial.suggest_categorical(key, values)
         fit_params = {}
         X_train_used = X_train
@@ -169,7 +203,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
             split = int(0.8 * len(X_train))
             X_train_used, X_val = X_train[:split], X_train[split:]
             y_train_used, y_val = y_train[:split], y_train[split:]
-            fit_params = {'early_stopping_rounds': 10, 'eval_set': [(X_val, y_val)], 'verbose': False}
+            fit_params = {'early_stopping_rounds': EARLY_STOPPING_ROUNDS, 'eval_set': [(X_val, y_val)], 'verbose': False}
         scores = []
         for train_idx, val_idx in cv.split(X_train_used):
             X_tr, X_val_cv = X_train_used[train_idx], X_train_used[val_idx]
@@ -180,16 +214,20 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
             score = -mean_squared_error(y_val_cv, preds)
             scores.append(score)
         return np.mean(scores)
-    
+
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=n_trials)
     best_params = study.best_trial.params
     best_model = model.__class__(**best_params, random_state=42)
     if early_stopping and isinstance(best_model, LGBMRegressor):
         split = int(0.8 * len(X_train))
-        best_model.fit(X_train[:split], y_train[:split],
-                       early_stopping_rounds=10, eval_set=[(X_train[split:], y_train[split:])],
-                       verbose=False)
+        best_model.fit(
+            X_train[:split],
+            y_train[:split],
+            early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+            eval_set=[(X_train[split:], y_train[split:])],
+            verbose=False
+        )
     else:
         best_model.fit(X_train, y_train)
     return best_model
@@ -200,7 +238,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
 def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_stopping=False):
     """
     Tunes a given model using either GridSearchCV/RandomizedSearchCV or Bayesian optimization via Optuna.
-    
+
     Args:
         model: The estimator to tune.
         param_grid: Hyperparameter grid or candidate values.
@@ -208,28 +246,27 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
         y_train: Training target.
         use_randomized (bool): If True, uses RandomizedSearchCV.
         early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
-    
+
     Returns:
         The best estimator.
     """
     if USE_OPTUNA_SEARCH:
-        return optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=early_stopping)
+        return optuna_tune_model(model, param_grid, X_train, y_train, n_trials=OPTUNA_TRIALS, early_stopping=early_stopping)
     else:
-        cv = TimeSeriesSplit(n_splits=3)
+        cv = TimeSeriesSplit(n_splits=TS_SPLITS)
         fit_params = {}
         if early_stopping and isinstance(model, LGBMRegressor):
             split = int(0.8 * len(X_train))
             X_train, X_val = X_train[:split], X_train[split:]
             y_train, y_val = y_train[:split], y_train[split:]
-            fit_params = {'early_stopping_rounds': 10, 'eval_set': [(X_val, y_val)], 'verbose': False}
+            fit_params = {'early_stopping_rounds': EARLY_STOPPING_ROUNDS, 'eval_set': [(X_val, y_val)], 'verbose': False}
         if use_randomized:
             from sklearn.model_selection import RandomizedSearchCV
             search = RandomizedSearchCV(
                 model, param_distributions=param_grid, cv=cv,
-                scoring='neg_mean_squared_error', n_jobs=-1, n_iter=20, random_state=42
+                scoring='neg_mean_squared_error', n_jobs=-1, n_iter=OPTUNA_TRIALS, random_state=42
             )
         else:
-            from sklearn.model_selection import GridSearchCV
             search = GridSearchCV(
                 model, param_grid=param_grid, cv=cv,
                 scoring='neg_mean_squared_error', n_jobs=-1
@@ -243,7 +280,7 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
 def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_stopping=False):
     """
     Evaluates model performance using nested cross-validation.
-    
+
     Args:
         model: The estimator to tune.
         param_grid: Hyperparameter grid.
@@ -251,7 +288,7 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
         y: Target.
         use_randomized (bool): If True, uses RandomizedSearchCV for inner CV.
         early_stopping (bool): If True, enables early stopping in inner search.
-    
+
     Returns:
         A list of scores from outer CV folds.
     """
@@ -275,7 +312,7 @@ def train_team_models(team_data: pd.DataFrame):
     """
     Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score using
     time-series cross-validation and hyperparameter optimization.
-    
+
     Returns:
         stack_models: Dict of trained Stacking Regressors keyed by team.
         arima_models: Dict of trained ARIMA models keyed by team.
@@ -291,10 +328,10 @@ def train_team_models(team_data: pd.DataFrame):
         scores = df_team['score'].reset_index(drop=True)
         if len(scores) < 3:
             continue
-        df_team['rolling_avg'] = df_team['score'].rolling(window=3, min_periods=1).mean()
-        df_team['rolling_std'] = df_team['score'].rolling(window=3, min_periods=1).std().fillna(0)
+        df_team['rolling_avg'] = df_team['score'].rolling(window=ROLLING_WINDOW, min_periods=1).mean()
+        df_team['rolling_std'] = df_team['score'].rolling(window=ROLLING_WINDOW, min_periods=1).std().fillna(0)
         df_team['season_avg'] = df_team['score'].expanding().mean()
-        df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
+        df_team['weighted_avg'] = (df_team['rolling_avg'] * ROLLING_WEIGHT) + (df_team['season_avg'] * SEASON_WEIGHT)
         team_stats[team] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
@@ -312,37 +349,52 @@ def train_team_models(team_data: pd.DataFrame):
         X_test = X[split_index:]
         y_train = y[:split_index]
         y_test = y[split_index:]
+        # Expanded hyperparameter grids for base models
+        xgb = XGBRegressor(random_state=42)
+        xgb_grid = {
+            'n_estimators': [50, 100, 150, 200],
+            'max_depth': [3, 5, 7],
+            'learning_rate': [0.01, 0.05, 0.1],
+            'subsample': [0.8, 1.0]
+        }
         try:
-            xgb = XGBRegressor(random_state=42)
-            xgb_grid = {'n_estimators': [50, 100, 150], 'max_depth': [3, 5, 7]}
             xgb_best = tune_model(xgb, xgb_grid, X_train, y_train,
                                   use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
         except Exception as e:
             print(f"Error tuning XGB for team {team}: {e}")
             xgb_best = XGBRegressor(n_estimators=100, random_state=42)
+        lgbm = LGBMRegressor(random_state=42)
+        lgbm_grid = {
+            'n_estimators': [50, 100, 150, 200, 300],
+            'max_depth': [None, 5, 10],
+            'num_leaves': [31, 50, 70],
+            'min_child_samples': [20, 30, 50],
+            'reg_alpha': [0, 0.1, 0.5],
+            'reg_lambda': [0, 0.1, 0.5],
+            'learning_rate': [0.01, 0.05, 0.1]
+        }
         try:
-            lgbm = LGBMRegressor(random_state=42)
-            lgbm_grid = {
-                'n_estimators': [50, 100, 150],
-                'max_depth': [None, 5, 10],
-                'num_leaves': [31, 50, 70],
-                'min_child_samples': [20, 30, 50],
-                'reg_alpha': [0, 0.1, 0.5],
-                'reg_lambda': [0, 0.1, 0.5]
-            }
             lgbm_best = tune_model(lgbm, lgbm_grid, X_train, y_train,
                                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=ENABLE_EARLY_STOPPING)
         except Exception as e:
             print(f"Error tuning LGBM for team {team}: {e}")
             lgbm_best = LGBMRegressor(n_estimators=100, random_state=42)
+        cat = CatBoostRegressor(verbose=0, random_state=42)
+        cat_grid = {
+            'iterations': [50, 100, 150, 200],
+            'learning_rate': [0.1, 0.05, 0.01],
+            'depth': [4, 6, 8],
+            'l2_leaf_reg': [1, 3, 5]
+        }
         try:
-            cat = CatBoostRegressor(verbose=0, random_state=42)
-            cat_grid = {'iterations': [50, 100, 150], 'learning_rate': [0.1, 0.05, 0.01]}
             cat_best = tune_model(cat, cat_grid, X_train, y_train,
                                   use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
         except Exception as e:
             print(f"Error tuning CatBoost for team {team}: {e}")
             cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+        # Tune final estimator for stacking
+        final_estimator = tune_model(LGBMRegressor(random_state=42), lgbm_grid, X_train, y_train,
+                                     use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=ENABLE_EARLY_STOPPING)
         estimators = [
             ('xgb', xgb_best),
             ('lgbm', lgbm_best),
@@ -350,9 +402,9 @@ def train_team_models(team_data: pd.DataFrame):
         ]
         stack = StackingRegressor(
             estimators=estimators,
-            final_estimator=LGBMRegressor(),
+            final_estimator=final_estimator,
             passthrough=False,
-            cv=3
+            cv=STACKING_CV
         )
         try:
             stack.fit(X_train, y_train)
@@ -429,7 +481,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
         ensemble = arima_pred
     else:
         ensemble = None
-    if team_stats[team].get('mse', 0) > 150:
+    if team_stats[team].get('mse', 0) > GLOBAL_MSE_THRESHOLD:
         return None, (None, None)
     if ensemble is None:
         return None, (None, None)
@@ -456,9 +508,9 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     raw_conf = abs(diff) / combined_std
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
     penalty = 0
-    if team_stats.get(home_team, {}).get('mse', 0) > 120:
+    if team_stats.get(home_team, {}).get('mse', 0) > PENALTY_MSE_THRESHOLD:
         penalty += 10
-    if team_stats.get(away_team, {}).get('mse', 0) > 120:
+    if team_stats.get(away_team, {}).get('mse', 0) > PENALTY_MSE_THRESHOLD:
         penalty += 10
     confidence = max(1, min(99, confidence - penalty))
     winner = home_team if diff > 0 else away_team
@@ -502,10 +554,10 @@ def preprocess_nfl_data(schedule):
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=['score'], inplace=True)
     data.sort_values('gameday', inplace=True)
-    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
-    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
+    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(ROLLING_WINDOW, min_periods=1).mean())
+    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(ROLLING_WINDOW, min_periods=1).std().fillna(0))
     data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
-    data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
+    data['weighted_avg'] = (data['rolling_avg'] * ROLLING_WEIGHT) + (data['season_avg'] * SEASON_WEIGHT)
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
@@ -544,10 +596,10 @@ def load_nba_data():
                 gl['OFF_RATING'] = np.where(gl['TEAM_POSSESSIONS'] > 0, (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100, np.nan)
                 gl['DEF_RATING'] = np.where(gl['TEAM_POSSESSIONS'] > 0, (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100, np.nan)
                 gl['PACE'] = gl['TEAM_POSSESSIONS']
-                gl['rolling_avg'] = gl['PTS'].rolling(window=3, min_periods=1).mean()
-                gl['rolling_std'] = gl['PTS'].rolling(window=3, min_periods=1).std().fillna(0)
+                gl['rolling_avg'] = gl['PTS'].rolling(window=ROLLING_WINDOW, min_periods=1).mean()
+                gl['rolling_std'] = gl['PTS'].rolling(window=ROLLING_WINDOW, min_periods=1).std().fillna(0)
                 gl['season_avg'] = gl['PTS'].expanding().mean()
-                gl['weighted_avg'] = (gl['rolling_avg'] * 0.6) + (gl['season_avg'] * 0.4)
+                gl['weighted_avg'] = (gl['rolling_avg'] * ROLLING_WEIGHT) + (gl['season_avg'] * SEASON_WEIGHT)
                 for idx, row_ in gl.iterrows():
                     try:
                         all_rows.append({
@@ -630,10 +682,10 @@ def load_ncaab_data_current_season(season=2025):
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
-    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).mean())
-    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0))
+    data['rolling_avg'] = data.groupby('team')['score'].transform(lambda x: x.rolling(ROLLING_WINDOW, min_periods=1).mean())
+    data['rolling_std'] = data.groupby('team')['score'].transform(lambda x: x.rolling(ROLLING_WINDOW, min_periods=1).std().fillna(0))
     data['season_avg'] = data.groupby('team')['score'].apply(lambda x: x.expanding().mean()).reset_index(level=0, drop=True)
-    data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
+    data['weighted_avg'] = (data['rolling_avg'] * ROLLING_WEIGHT) + (data['season_avg'] * SEASON_WEIGHT)
     data.sort_values(['team', 'gameday'], inplace=True)
     data['game_index'] = data.groupby('team').cumcount()
     return data
@@ -896,84 +948,84 @@ def run_league_pipeline(league_choice):
                     last_game_home = to_naive(home_games['gameday'].max())
                     rest_days_home = (row_gameday - last_game_home).days
                     if rest_days_home == 0:
-                        home_pred -= 3
+                        home_pred += NBA_REST_PENALTY_ZERO
                     elif rest_days_home >= 3:
-                        home_pred += 2
+                        home_pred += NBA_REST_BONUS
                 away_games = team_data[team_data['team'] == away]
                 if not away_games.empty:
                     last_game_away = to_naive(away_games['gameday'].max())
                     rest_days_away = (row_gameday - last_game_away).days
                     if rest_days_away == 0:
-                        away_pred -= 3
+                        away_pred += NBA_REST_PENALTY_ZERO
                     elif rest_days_away >= 3:
-                        away_pred += 2
-                home_pred += 1
-                away_pred -= 1
+                        away_pred += NBA_REST_BONUS
+                home_pred += NBA_HOME_FINAL_ADJUST
+                away_pred += NBA_AWAY_FINAL_ADJUST
                 if top_10 and bottom_10:
                     if away in top_10:
-                        home_pred -= 2
+                        home_pred += NBA_OPP_TOP10_ADJUST
                     elif away in bottom_10:
-                        home_pred += 2
+                        home_pred += NBA_OPP_BOTTOM10_ADJUST
                     if home in top_10:
-                        away_pred -= 2
+                        away_pred += NBA_OPP_TOP10_ADJUST
                     elif home in bottom_10:
-                        away_pred += 2
+                        away_pred += NBA_OPP_BOTTOM10_ADJUST
             elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
                     last_game_home = to_naive(home_games['gameday'].max())
                     rest_days_home = (row_gameday - last_game_home).days
                     if rest_days_home == 0:
-                        home_pred -= 2
+                        home_pred += NFL_REST_PENALTY_ZERO
                     elif rest_days_home >= 3:
-                        home_pred += 1
+                        home_pred += NFL_REST_BONUS
                 away_games = team_data[team_data['team'] == away]
                 if not away_games.empty:
                     last_game_away = to_naive(away_games['gameday'].max())
                     rest_days_away = (row_gameday - last_game_away).days
                     if rest_days_away == 0:
-                        away_pred -= 2
+                        away_pred += NFL_REST_PENALTY_ZERO
                     elif rest_days_away >= 3:
-                        away_pred += 1
-                home_pred += 1
-                away_pred -= 1
+                        away_pred += NFL_REST_BONUS
+                home_pred += NFL_HOME_FINAL_ADJUST
+                away_pred += NFL_AWAY_FINAL_ADJUST
                 if top_10 and bottom_10:
                     if away in top_10:
-                        home_pred -= 2
+                        home_pred += NFL_OPP_TOP10_ADJUST
                     elif away in bottom_10:
-                        home_pred += 2
+                        home_pred += NFL_OPP_BOTTOM10_ADJUST
                     if home in top_10:
-                        away_pred -= 2
+                        away_pred += NFL_OPP_TOP10_ADJUST
                     elif home in bottom_10:
-                        away_pred += 2
+                        away_pred += NFL_OPP_BOTTOM10_ADJUST
             elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
                     last_game_home = to_naive(home_games['gameday'].max())
                     rest_days_home = (row_gameday - last_game_home).days
                     if rest_days_home == 0:
-                        home_pred -= 3
+                        home_pred += NCAAB_REST_PENALTY_ZERO
                     elif rest_days_home >= 3:
-                        home_pred += 2
+                        home_pred += NCAAB_REST_BONUS
                 away_games = team_data[team_data['team'] == away]
                 if not away_games.empty:
                     last_game_away = to_naive(away_games['gameday'].max())
                     rest_days_away = (row_gameday - last_game_away).days
                     if rest_days_away == 0:
-                        away_pred -= 3
+                        away_pred += NCAAB_REST_PENALTY_ZERO
                     elif rest_days_away >= 3:
-                        away_pred += 2
-                home_pred += 1
-                away_pred -= 1
+                        away_pred += NCAAB_REST_BONUS
+                home_pred += NCAAB_HOME_FINAL_ADJUST
+                away_pred += NCAAB_AWAY_FINAL_ADJUST
                 if top_10 and bottom_10:
                     if away in top_10:
-                        home_pred -= 2
+                        home_pred += NCAAB_OPP_TOP10_ADJUST
                     elif away in bottom_10:
-                        home_pred += 2
+                        home_pred += NCAAB_OPP_BOTTOM10_ADJUST
                     if home in top_10:
-                        away_pred -= 2
+                        away_pred += NCAAB_OPP_TOP10_ADJUST
                     elif home in bottom_10:
-                        away_pred += 2
+                        away_pred += NCAAB_OPP_BOTTOM10_ADJUST
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
                 results.append({
