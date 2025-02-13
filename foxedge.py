@@ -3,6 +3,9 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="joblib")
 
 import streamlit as st
+# Set page configuration as the very first Streamlit command
+st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
+
 import pandas as pd
 import numpy as np
 import pytz
@@ -37,85 +40,95 @@ USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimi
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 
 ################################################################################
-# CUSTOM CSS & GLOBAL UI STYLING
+# CUSTOM CSS & GLOBAL UI STYLING (DARK MODE & Vibrant Accents)
 ################################################################################
 st.markdown("""
 <style>
-/* Overall Typography */
-body {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-}
+  /* Global Background & Typography */
+  body {
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      background-color: #1e1e1e;
+      color: #eee;
+  }
 
-/* Header Banner */
-.header-banner {
-    background: linear-gradient(90deg, #ff8c00, #ff0080);
-    padding: 20px;
-    border-radius: 8px;
-    text-align: center;
-    margin-bottom: 20px;
-}
-.header-banner h1 {
-    color: white;
-    margin: 0;
-    font-size: 2.5em;
-}
-.header-banner p {
-    color: white;
-    margin: 0;
-    font-size: 1.2em;
-}
+  /* Header Banner */
+  .header-banner {
+      background: linear-gradient(90deg, #ff8c00, #ff0080);
+      padding: 20px;
+      border-radius: 8px;
+      text-align: center;
+      margin-bottom: 20px;
+  }
+  .header-banner h1 {
+      color: white;
+      margin: 0;
+      font-size: 2.5em;
+  }
+  .header-banner p {
+      color: white;
+      margin: 0;
+      font-size: 1.2em;
+  }
 
-/* Bet Card Styling */
-.bet-card {
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
-    padding: 15px;
-    margin-bottom: 20px;
-    transition: transform 0.2s, box-shadow 0.2s;
-}
-.bet-card:hover {
-    transform: scale(1.02);
-    box-shadow: 4px 4px 20px rgba(0,0,0,0.2);
-}
-.bet-card .card-header {
-    background: #f0f0f0;
-    padding: 10px;
-    border-radius: 5px;
-    margin-bottom: 10px;
-}
-.bet-card .card-body {
-    margin-bottom: 10px;
-}
-.bet-card .card-footer {
-    text-align: right;
-}
+  /* Bet Card Styling */
+  .bet-card {
+      background-color: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 8px;
+      box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
+      padding: 15px;
+      margin-bottom: 20px;
+      transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .bet-card:hover {
+      transform: scale(1.02);
+      box-shadow: 4px 4px 20px rgba(0,0,0,0.4);
+  }
+  .bet-card .card-header {
+      background: #3a3a3a;
+      padding: 10px;
+      border-radius: 5px;
+      margin-bottom: 10px;
+  }
+  .bet-card .card-header h3, .bet-card .card-header p {
+      margin: 0;
+      color: #eee;
+  }
+  .bet-card .card-body {
+      margin-bottom: 10px;
+  }
+  .bet-card .card-body p {
+      margin: 5px 0;
+  }
+  .bet-card .card-footer {
+      text-align: right;
+  }
 
-/* Custom Buttons */
-.button-custom {
-    background-color: #ff0080;
-    color: white;
-    border: none;
-    border-radius: 5px;
-    padding: 8px 16px;
-    cursor: pointer;
-    transition: background-color 0.2s;
-}
-.button-custom:hover {
-    background-color: #e60073;
-}
+  /* Custom Buttons */
+  .button-custom {
+      background-color: #ff0080;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      padding: 8px 16px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+  }
+  .button-custom:hover {
+      background-color: #e60073;
+  }
 
-/* Confidence Badges */
-.badge {
-    display: inline-block;
-    padding: 5px 10px;
-    border-radius: 5px;
-    color: white;
-    font-weight: bold;
-}
-.badge.green { background-color: green; }
-.badge.orange { background-color: orange; }
-.badge.red { background-color: red; }
+  /* Confidence Badges */
+  .badge {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 5px;
+      color: white;
+      font-weight: bold;
+  }
+  .badge.green { background-color: #28a745; }
+  .badge.orange { background-color: #fd7e14; }
+  .badge.red { background-color: #dc3545; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -787,8 +800,6 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
 def generate_writeup(bet, team_stats_global):
     home_team = bet['home_team']
     away_team = bet['away_team']
-    home_pred = bet['home_pred']
-    away_pred = bet['away_pred']
     predicted_winner = bet['predicted_winner']
     confidence = bet['confidence']
     home_stats = team_stats_global.get(home_team, {})
@@ -881,28 +892,36 @@ def generate_social_media_post(bet):
     return post
 
 def display_bet_card(bet, team_stats_global, team_data=None):
-    # New card design with three sections and custom CSS classes
+    # New card design with three sections and custom CSS classes, with tooltips for key metrics
     with st.container():
         st.markdown(f'<div class="bet-card">', unsafe_allow_html=True)
-        # Top Section: Matchup header and game time
+        # Top Section: Matchup header and game time (with icon tooltip)
         date_obj = bet['date']
         date_str = date_obj.strftime("%A, %B %d - %I:%M %p") if isinstance(date_obj, datetime) else str(date_obj)
-        st.markdown(f'<div class="card-header"><h3>{bet["away_team"]} @ {bet["home_team"]}</h3><p>{date_str}</p></div>', unsafe_allow_html=True)
-        # Middle Section: Key metrics with color-coded confidence badge
+        st.markdown(
+            f'<div class="card-header"><h3>{bet["away_team"]} @ {bet["home_team"]}</h3>'
+            f'<p title="Game time">{date_str}</p></div>', unsafe_allow_html=True)
+        # Middle Section: Key metrics with color-coded confidence badge and tooltips
         conf_color = "green" if bet['confidence'] >= 80 else "red" if bet['confidence'] < 60 else "orange"
         st.markdown('<div class="card-body">', unsafe_allow_html=True)
-        st.markdown(f'<p><strong>Spread Suggestion:</strong> {bet["spread_suggestion"]}</p>', unsafe_allow_html=True)
-        st.markdown(f'<p><strong>Total Suggestion:</strong> {bet["ou_suggestion"]}</p>', unsafe_allow_html=True)
-        st.markdown(f'<p><span class="badge {conf_color}">{bet["confidence"]:.1f}% Confidence</span></p>', unsafe_allow_html=True)
+        st.markdown(
+            f'<p title="Spread Suggestion is based on the predicted margin">Spread Suggestion: {bet["spread_suggestion"]}</p>',
+            unsafe_allow_html=True)
+        st.markdown(
+            f'<p title="Total Suggestion is based on the combined score prediction">Total Suggestion: {bet["ou_suggestion"]}</p>',
+            unsafe_allow_html=True)
+        st.markdown(
+            f'<p><span class="badge {conf_color}" title="Confidence indicates the statistical edge from combined team metrics">{bet["confidence"]:.1f}% Confidence</span></p>',
+            unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-        # Bottom Section: Action buttons (integrated social sharing)
+        # Bottom Section: Action buttons for social sharing
         st.markdown('<div class="card-footer">', unsafe_allow_html=True)
         if st.button("Generate Social Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
             post = generate_social_media_post(bet)
             st.code(post, language="markdown")
         st.markdown('</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-    # Additional details (retain existing expanders)
+    # Additional expandable details for further insights
     with st.expander("Detailed Insights", expanded=False):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
@@ -1153,9 +1172,7 @@ def scheduled_task():
     st.success("Scheduled task completed successfully.")
 
 def main():
-    st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
-    
-    # Custom Header Banner
+    # Custom Header Banner as per design guide
     st.markdown("""
     <div class="header-banner">
         <h1>🦊 FoxEdge</h1>
@@ -1163,7 +1180,7 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Onboarding Modal (shown only on first visit)
+    # Onboarding Modal/Walkthrough (only on first visit)
     if 'intro_shown' not in st.session_state:
         st.session_state.intro_shown = True
         with st.modal("Welcome to FoxEdge"):
@@ -1179,7 +1196,7 @@ def main():
             """)
             st.button("Get Started")
     
-    # Login / Signup
+    # Login / Signup Flow with Sidebar Navigation and account info
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if not st.session_state['logged_in']:
@@ -1209,7 +1226,7 @@ def main():
             logout_user()
             st.experimental_rerun()
     
-    # Sidebar Navigation with league icons
+    # Sidebar Navigation with League Selection (with icons)
     st.sidebar.header("Navigation")
     league_options = {"🏈 NFL": "NFL", "🏀 NBA": "NBA", "🎓 NCAAB": "NCAAB"}
     league_choice_display = st.sidebar.radio("Select League", list(league_options.keys()),
@@ -1231,7 +1248,7 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.experimental_get_query_params()
+    query_params = st.query_params()  # Updated to st.query_params
     if "trigger" in query_params:
         scheduled_task()
         st.write("Task triggered successfully.")
