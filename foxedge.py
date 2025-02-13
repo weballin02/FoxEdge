@@ -132,7 +132,6 @@ def round_half(number):
 def supports_early_stopping(model):
     """
     Checks if the model's fit method supports the 'early_stopping_rounds' parameter.
-    
     Returns:
         True if early_stopping_rounds is accepted, False otherwise.
     """
@@ -413,14 +412,15 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     confidence = max(1, min(99, confidence - penalty))
     winner = home_team if diff > 0 else away_team
     ou_threshold = 145
-    spread_value = -abs(round_half(diff))
+    spread_suggestion = f"Lean {winner} by {round_half(diff):.1f}"
+    ou_suggestion = f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
     return {
         'predicted_winner': winner,
         'diff': round_half(diff),
         'total_points': round_half(total_points),
         'confidence': confidence,
-        'spread_suggestion': f"Lean {winner} by {spread_value:.1f}",
-        'ou_suggestion': f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
+        'spread_suggestion': spread_suggestion,
+        'ou_suggestion': ou_suggestion
     }
 
 def find_top_bets(matchups, threshold=70.0):
@@ -554,15 +554,24 @@ def fetch_upcoming_nba_games(days_ahead=3):
     return upcoming
 
 ################################################################################
-# NCAAB HISTORICAL LOADER (UPDATED)
+# NCAAB HISTORICAL LOADER (UPDATED FROM SCRIPT 1)
 ################################################################################
-@st.cache_data(ttl=7200)
+@st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
+    """
+    Loads finished or in-progress NCAA MBB games for the given season
+    using cbbpy. Adds is_home=1 for home team, is_home=0 for away.
+    
+    Now also includes opponent score (opp_score) for defensive metric calculations.
+    """
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
         return pd.DataFrame()
+
+    # Convert "game_day" to datetime if needed
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
+
     home_df = info_df[['game_day', 'home_team', 'home_score', 'away_score']].rename(columns={
         "game_day": "gameday",
         "home_team": "team",
@@ -570,6 +579,7 @@ def load_ncaab_data_current_season(season=2025):
         "away_score": "opp_score"
     })
     home_df['is_home'] = 1
+
     away_df = info_df[['game_day', 'away_team', 'away_score', 'home_score']].rename(columns={
         "game_day": "gameday",
         "away_team": "team",
@@ -577,6 +587,7 @@ def load_ncaab_data_current_season(season=2025):
         "home_score": "opp_score"
     })
     away_df['is_home'] = 0
+
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
@@ -588,47 +599,65 @@ def load_ncaab_data_current_season(season=2025):
     data['game_index'] = data.groupby('team').cumcount()
     return data
 
+########################################
+# NCAAB UPCOMING: ESPN method (UPDATED FROM SCRIPT 1)
+########################################
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
+    """
+    Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
+    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
+
+    # Get current day and next day
     dates = [
-        current_time.strftime('%Y%m%d'),
-        (current_time + timedelta(days=1)).strftime('%Y%m%d')
+        current_time.strftime('%Y%m%d'),  # Today
+        (current_time + timedelta(days=1)).strftime('%Y%m%d')  # Tomorrow
     ]
+
     rows = []
     for date_str in dates:
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         params = {
             'dates': date_str,
-            'groups': '50',
+            'groups': '50',   # D1 men's
             'limit': '357'
         }
+
         response = requests.get(url, params=params)
         if response.status_code != 200:
             st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
             continue
+
         data = response.json()
         games = data.get('events', [])
         if not games:
             st.info(f"No upcoming NCAAB games for {date_str}.")
             continue
+
         for game in games:
-            game_time_str = game['date']
+            game_time_str = game['date']  # ISO8601
             game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
+
             competitors = game['competitions'][0]['competitors']
             home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
             away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
+
             if not home_comp or not away_comp:
                 continue
+
             home_team = home_comp['team']['displayName']
             away_team = away_comp['team']['displayName']
+
             rows.append({
                 'gameday': game_time,
                 'home_team': home_team,
                 'away_team': away_team
             })
+
     if not rows:
         return pd.DataFrame()
+
     df = pd.DataFrame(rows)
     df.sort_values('gameday', inplace=True)
     return df
@@ -643,34 +672,37 @@ def generate_writeup(bet, team_stats_global):
     away_pred = bet['away_pred']
     predicted_winner = bet['predicted_winner']
     confidence = bet['confidence']
+
     home_stats = team_stats_global.get(home_team, {})
     away_stats = team_stats_global.get(away_team, {})
+
     home_mean = home_stats.get('mean', 'N/A')
     home_std = home_stats.get('std', 'N/A')
     home_recent = home_stats.get('recent_form', 'N/A')
     away_mean = away_stats.get('mean', 'N/A')
     away_std = away_stats.get('std', 'N/A')
     away_recent = away_stats.get('recent_form', 'N/A')
+
     writeup = f"""
 **Detailed Analysis:**
 
 - **{home_team} Performance:**
   - **Average Score:** {home_mean}
-  - **Score Std Dev:** {home_std}
+  - **Score Standard Deviation:** {home_std}
   - **Recent Form (Last 5 Games):** {home_recent}
 
 - **{away_team} Performance:**
   - **Average Score:** {away_mean}
-  - **Score Std Dev:** {away_std}
+  - **Score Standard Deviation:** {away_std}
   - **Recent Form (Last 5 Games):** {away_recent}
 
 - **Prediction Insight:**
-  Based on recent performance, **{predicted_winner}** is predicted to win with **{confidence}%** confidence.
+  Based on the recent performance and statistical analysis, **{predicted_winner}** is predicted to win with a confidence level of **{confidence}%**.
   The projected score difference is **{bet['predicted_diff']} points**, leading to a spread suggestion of **{bet['spread_suggestion']}**.
-  The total predicted points for the game are **{bet['predicted_total']}** – suggesting a **{bet['ou_suggestion']}** bet.
+  Additionally, the total predicted points for the game are **{bet['predicted_total']}**, indicating a suggestion to **{bet['ou_suggestion']}**.
 
 - **Statistical Edge:**
-  The confidence reflects a robust edge derived from combined team metrics.
+  The confidence level reflects the statistical edge derived from the combined performance metrics.
 """
     return writeup
 
@@ -760,7 +792,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 unsafe_allow_html=True,
             )
         with col3:
-            tooltip_text = "Confidence indicates the statistical edge derived from the combined performance metrics of both teams."
+            tooltip_text = "Confidence indicates the statistical edge derived from the combined performance metrics."
             st.markdown(
                 f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
                 unsafe_allow_html=True,
@@ -819,9 +851,12 @@ def run_league_pipeline(league_choice):
             st.error("Unable to load NCAAB data.")
             return
         upcoming = fetch_upcoming_ncaab_games()
+
     if team_data.empty or upcoming.empty:
         st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
+
+    # Compute opponent defensive ratings for dynamic adjustments
     if league_choice == "NBA":
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
@@ -839,15 +874,20 @@ def run_league_pipeline(league_choice):
         bottom_10 = set([t for t, r in sorted_def[-10:]])
     else:
         top_10, bottom_10 = None, None
+
     with st.spinner("Analyzing recent performance data..."):
         stack_models, arima_models, team_stats = train_team_models(team_data)
         team_stats_global = team_stats
         results.clear()
+
         for _, row in upcoming.iterrows():
             home, away = row['home_team'], row['away_team']
             home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
             away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+
+            # --- Dynamic Adjustments for Each League ---
             row_gameday = to_naive(row['gameday'])
+
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
@@ -876,6 +916,7 @@ def run_league_pipeline(league_choice):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
+
             elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
@@ -904,7 +945,9 @@ def run_league_pipeline(league_choice):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
+
             elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
+                # --- Use Script1's NCAAB adjustments ---
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
                     last_game_home = to_naive(home_games['gameday'].max())
@@ -932,6 +975,7 @@ def run_league_pipeline(league_choice):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
+
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
                 results.append({
@@ -948,10 +992,17 @@ def run_league_pipeline(league_choice):
                     'spread_suggestion': outcome['spread_suggestion'],
                     'ou_suggestion': outcome['ou_suggestion']
                 })
+
     view_mode = st.radio("View Mode", ["🎯 Top Bets Only", "📊 All Games"], horizontal=True)
     if view_mode == "🎯 Top Bets Only":
-        conf_threshold = st.slider("Minimum Confidence Level", min_value=50.0, max_value=99.0, value=75.0, step=5.0,
-                                    help="Only show bets with confidence level above this threshold")
+        conf_threshold = st.slider(
+            "Minimum Confidence Level",
+            min_value=50.0,
+            max_value=99.0,
+            value=75.0,
+            step=5.0,
+            help="Only show bets with confidence level above this threshold"
+        )
         top_bets = find_top_bets(results, threshold=conf_threshold)
         if not top_bets.empty:
             st.markdown(f"### 🔥 Top {len(top_bets)} Bets for Today")
