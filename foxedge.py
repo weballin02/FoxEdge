@@ -3,7 +3,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="joblib")
 
 import streamlit as st
-# Set page configuration as the very first Streamlit command
+# Set page configuration as the very first Streamlit command in the script.
 st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
 
 import pandas as pd
@@ -136,15 +136,6 @@ st.markdown("""
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
 ################################################################################
 def to_naive(dt):
-    """
-    Converts a datetime object to tz-naive if it is tz-aware.
-    
-    Args:
-        dt: A datetime object.
-    
-    Returns:
-        A tz-naive datetime object.
-    """
     if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
         return dt.replace(tzinfo=None)
     return dt
@@ -173,7 +164,6 @@ except KeyError:
     st.warning("Firebase secrets not found or incomplete in st.secrets. Please verify your secrets.toml.")
 
 def login_with_rest(email, password):
-    """Login user using Firebase REST API."""
     try:
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
         payload = {"email": email, "password": password, "returnSecureToken": True}
@@ -188,7 +178,6 @@ def login_with_rest(email, password):
         return None
 
 def signup_user(email, password):
-    """Sign up a new user using Firebase."""
     try:
         user = auth.create_user(email=email, password=password)
         st.success(f"User {email} created successfully!")
@@ -197,7 +186,6 @@ def signup_user(email, password):
         st.error(f"Error: {e}")
 
 def logout_user():
-    """Logs out the current user."""
     for key in ['email', 'logged_in']:
         if key in st.session_state:
             del st.session_state[key]
@@ -208,7 +196,6 @@ def logout_user():
 CSV_FILE = "predictions.csv"
 
 def initialize_csv(csv_file=CSV_FILE):
-    """Initialize the CSV file if it doesn't exist."""
     if not Path(csv_file).exists():
         columns = [
             "date", "league", "home_team", "away_team", "home_pred", "away_pred",
@@ -218,7 +205,6 @@ def initialize_csv(csv_file=CSV_FILE):
         pd.DataFrame(columns=columns).to_csv(csv_file, index=False)
 
 def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
-    """Save predictions to a CSV file."""
     df = pd.DataFrame(predictions)
     if Path(csv_file).exists():
         existing_df = pd.read_csv(csv_file)
@@ -230,33 +216,17 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 # UTILITY
 ################################################################################
 def round_half(number):
-    """Rounds a number to the nearest 0.5."""
     return round(number * 2) / 2
 
 ################################################################################
 # BAYESIAN HYPERPARAMETER OPTIMIZATION VIA OPTUNA
 ################################################################################
 def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=False):
-    """
-    Tunes a given model using Bayesian hyperparameter optimization via Optuna.
-    
-    Args:
-        model: The estimator to tune.
-        param_grid: Dictionary of hyperparameter candidate values.
-        X_train: Training features.
-        y_train: Training target.
-        n_trials (int): Number of trials.
-        early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
-    
-    Returns:
-        The best estimator fitted on X_train and y_train.
-    """
     cv = TimeSeriesSplit(n_splits=3)
     
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
-            # Suggest one of the candidate values
             params[key] = trial.suggest_categorical(key, values)
         fit_params = {}
         X_train_used = X_train
@@ -294,20 +264,6 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
 # MODEL TUNING FUNCTION
 ################################################################################
 def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_stopping=False):
-    """
-    Tunes a given model using either GridSearchCV/RandomizedSearchCV or Bayesian optimization via Optuna.
-    
-    Args:
-        model: The estimator to tune.
-        param_grid: Hyperparameter grid or candidate values.
-        X_train: Training features.
-        y_train: Training target.
-        use_randomized (bool): If True, uses RandomizedSearchCV.
-        early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
-    
-    Returns:
-        The best estimator.
-    """
     if USE_OPTUNA_SEARCH:
         return optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=early_stopping)
     else:
@@ -337,20 +293,6 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
 # NESTED CROSS-VALIDATION EVALUATION
 ################################################################################
 def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_stopping=False):
-    """
-    Evaluates model performance using nested cross-validation.
-    
-    Args:
-        model: The estimator to tune.
-        param_grid: Hyperparameter grid.
-        X: Features.
-        y: Target.
-        use_randomized (bool): If True, uses RandomizedSearchCV for inner CV.
-        early_stopping (bool): If True, enables early stopping in inner search.
-    
-    Returns:
-        A list of scores from outer CV folds.
-    """
     from sklearn.model_selection import KFold
     outer_cv = KFold(n_splits=5, shuffle=False)
     scores = []
@@ -368,15 +310,6 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 ################################################################################
 @st.cache_data(ttl=3600)
 def train_team_models(team_data: pd.DataFrame):
-    """
-    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score using
-    time-series cross-validation and hyperparameter optimization.
-    
-    Returns:
-        stack_models: Dict of trained Stacking Regressors keyed by team.
-        arima_models: Dict of trained ARIMA models keyed by team.
-        team_stats: Dict containing statistical summaries (including MSE and bias) for each team.
-    """
     stack_models = {}
     arima_models = {}
     team_stats = {}
@@ -735,61 +668,46 @@ def load_ncaab_data_current_season(season=2025):
     return data
 
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
-    """
-    Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
-    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
-
-    # Get current day and next day
     dates = [
-        current_time.strftime('%Y%m%d'),  # Today
-        (current_time + timedelta(days=1)).strftime('%Y%m%d')  # Tomorrow
+        current_time.strftime('%Y%m%d'),
+        (current_time + timedelta(days=1)).strftime('%Y%m%d')
     ]
-
     rows = []
     for date_str in dates:
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         params = {
             'dates': date_str,
-            'groups': '50',   # D1 men's
+            'groups': '50',
             'limit': '357'
         }
-
         response = requests.get(url, params=params)
         if response.status_code != 200:
             st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
             continue
-
         data = response.json()
         games = data.get('events', [])
         if not games:
             st.info(f"No upcoming NCAAB games for {date_str}.")
             continue
-
         for game in games:
-            game_time_str = game['date']  # ISO8601
+            game_time_str = game['date']
             game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
-
             competitors = game['competitions'][0]['competitors']
             home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
             away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
-
             if not home_comp or not away_comp:
                 continue
-
             home_team = home_comp['team']['displayName']
             away_team = away_comp['team']['displayName']
-
             rows.append({
                 'gameday': game_time,
                 'home_team': home_team,
                 'away_team': away_team
             })
-
     if not rows:
         return pd.DataFrame()
-
     df = pd.DataFrame(rows)
     df.sort_values('gameday', inplace=True)
     return df
@@ -892,16 +810,13 @@ def generate_social_media_post(bet):
     return post
 
 def display_bet_card(bet, team_stats_global, team_data=None):
-    # New card design with three sections and custom CSS classes, with tooltips for key metrics
     with st.container():
         st.markdown(f'<div class="bet-card">', unsafe_allow_html=True)
-        # Top Section: Matchup header and game time (with icon tooltip)
         date_obj = bet['date']
         date_str = date_obj.strftime("%A, %B %d - %I:%M %p") if isinstance(date_obj, datetime) else str(date_obj)
         st.markdown(
             f'<div class="card-header"><h3>{bet["away_team"]} @ {bet["home_team"]}</h3>'
             f'<p title="Game time">{date_str}</p></div>', unsafe_allow_html=True)
-        # Middle Section: Key metrics with color-coded confidence badge and tooltips
         conf_color = "green" if bet['confidence'] >= 80 else "red" if bet['confidence'] < 60 else "orange"
         st.markdown('<div class="card-body">', unsafe_allow_html=True)
         st.markdown(
@@ -914,14 +829,12 @@ def display_bet_card(bet, team_stats_global, team_data=None):
             f'<p><span class="badge {conf_color}" title="Confidence indicates the statistical edge from combined team metrics">{bet["confidence"]:.1f}% Confidence</span></p>',
             unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-        # Bottom Section: Action buttons for social sharing
         st.markdown('<div class="card-footer">', unsafe_allow_html=True)
         if st.button("Generate Social Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
             post = generate_social_media_post(bet)
             st.code(post, language="markdown")
         st.markdown('</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-    # Additional expandable details for further insights
     with st.expander("Detailed Insights", expanded=False):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
@@ -1172,7 +1085,6 @@ def scheduled_task():
     st.success("Scheduled task completed successfully.")
 
 def main():
-    # Custom Header Banner as per design guide
     st.markdown("""
     <div class="header-banner">
         <h1>🦊 FoxEdge</h1>
@@ -1180,7 +1092,6 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Onboarding Modal/Walkthrough (only on first visit)
     if 'intro_shown' not in st.session_state:
         st.session_state.intro_shown = True
         with st.modal("Welcome to FoxEdge"):
@@ -1196,11 +1107,9 @@ def main():
             """)
             st.button("Get Started")
     
-    # Login / Signup Flow with Sidebar Navigation and account info
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if not st.session_state['logged_in']:
-        # Sidebar account info (with a placeholder avatar)
         st.sidebar.image("https://via.placeholder.com/100", width=100)
         st.sidebar.title("Account")
         email = st.text_input("Email")
@@ -1226,7 +1135,6 @@ def main():
             logout_user()
             st.experimental_rerun()
     
-    # Sidebar Navigation with League Selection (with icons)
     st.sidebar.header("Navigation")
     league_options = {"🏈 NFL": "NFL", "🏀 NBA": "NBA", "🎓 NCAAB": "NCAAB"}
     league_choice_display = st.sidebar.radio("Select League", list(league_options.keys()),
@@ -1248,7 +1156,7 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.query_params()  # Updated to st.query_params
+    query_params = st.query_params()
     if "trigger" in query_params:
         scheduled_task()
         st.write("Task triggered successfully.")
