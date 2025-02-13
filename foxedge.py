@@ -37,6 +37,89 @@ USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimi
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 
 ################################################################################
+# CUSTOM CSS & GLOBAL UI STYLING
+################################################################################
+st.markdown("""
+<style>
+/* Overall Typography */
+body {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Header Banner */
+.header-banner {
+    background: linear-gradient(90deg, #ff8c00, #ff0080);
+    padding: 20px;
+    border-radius: 8px;
+    text-align: center;
+    margin-bottom: 20px;
+}
+.header-banner h1 {
+    color: white;
+    margin: 0;
+    font-size: 2.5em;
+}
+.header-banner p {
+    color: white;
+    margin: 0;
+    font-size: 1.2em;
+}
+
+/* Bet Card Styling */
+.bet-card {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+    padding: 15px;
+    margin-bottom: 20px;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.bet-card:hover {
+    transform: scale(1.02);
+    box-shadow: 4px 4px 20px rgba(0,0,0,0.2);
+}
+.bet-card .card-header {
+    background: #f0f0f0;
+    padding: 10px;
+    border-radius: 5px;
+    margin-bottom: 10px;
+}
+.bet-card .card-body {
+    margin-bottom: 10px;
+}
+.bet-card .card-footer {
+    text-align: right;
+}
+
+/* Custom Buttons */
+.button-custom {
+    background-color: #ff0080;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+.button-custom:hover {
+    background-color: #e60073;
+}
+
+/* Confidence Badges */
+.badge {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 5px;
+    color: white;
+    font-weight: bold;
+}
+.badge.green { background-color: green; }
+.badge.orange { background-color: orange; }
+.badge.red { background-color: red; }
+</style>
+""", unsafe_allow_html=True)
+
+################################################################################
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
 ################################################################################
 def to_naive(dt):
@@ -798,38 +881,28 @@ def generate_social_media_post(bet):
     return post
 
 def display_bet_card(bet, team_stats_global, team_data=None):
-    conf = bet['confidence']
-    if conf >= 80:
-        confidence_color = "green"
-    elif conf < 60:
-        confidence_color = "red"
-    else:
-        confidence_color = "orange"
+    # New card design with three sections and custom CSS classes
     with st.container():
-        st.markdown("---")
-        col1, col2, col3 = st.columns([2, 2, 1])
-        with col1:
-            st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
-            date_obj = bet['date']
-            if isinstance(date_obj, datetime):
-                st.caption(date_obj.strftime("%A, %B %d - %I:%M %p"))
-        with col2:
-            if bet['confidence'] >= 80:
-                st.markdown("🔥 **High-Confidence Bet** 🔥")
-            st.markdown(
-                f"**<span title='Spread Suggestion is based on the predicted point difference'>Spread Suggestion:</span>** {bet['spread_suggestion']}",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"**<span title='Total Suggestion indicates the recommended bet on the combined score'>Total Suggestion:</span>** {bet['ou_suggestion']}",
-                unsafe_allow_html=True,
-            )
-        with col3:
-            tooltip_text = "Confidence indicates the statistical edge derived from the combined performance metrics of both teams."
-            st.markdown(
-                f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
-                unsafe_allow_html=True,
-            )
+        st.markdown(f'<div class="bet-card">', unsafe_allow_html=True)
+        # Top Section: Matchup header and game time
+        date_obj = bet['date']
+        date_str = date_obj.strftime("%A, %B %d - %I:%M %p") if isinstance(date_obj, datetime) else str(date_obj)
+        st.markdown(f'<div class="card-header"><h3>{bet["away_team"]} @ {bet["home_team"]}</h3><p>{date_str}</p></div>', unsafe_allow_html=True)
+        # Middle Section: Key metrics with color-coded confidence badge
+        conf_color = "green" if bet['confidence'] >= 80 else "red" if bet['confidence'] < 60 else "orange"
+        st.markdown('<div class="card-body">', unsafe_allow_html=True)
+        st.markdown(f'<p><strong>Spread Suggestion:</strong> {bet["spread_suggestion"]}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p><strong>Total Suggestion:</strong> {bet["ou_suggestion"]}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p><span class="badge {conf_color}">{bet["confidence"]:.1f}% Confidence</span></p>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        # Bottom Section: Action buttons (integrated social sharing)
+        st.markdown('<div class="card-footer">', unsafe_allow_html=True)
+        if st.button("Generate Social Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
+            post = generate_social_media_post(bet)
+            st.code(post, language="markdown")
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    # Additional details (retain existing expanders)
     with st.expander("Detailed Insights", expanded=False):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
@@ -849,10 +922,6 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
                 away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(away_scores)
-    with st.expander("Generate Social Media Post", expanded=False):
-        if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
-            post = generate_social_media_post(bet)
-            st.code(post, language="markdown")
 
 ################################################################################
 # GLOBALS
@@ -1085,10 +1154,38 @@ def scheduled_task():
 
 def main():
     st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
-    st.title("🦊 FoxEdge Sports Betting Insights")
+    
+    # Custom Header Banner
+    st.markdown("""
+    <div class="header-banner">
+        <h1>🦊 FoxEdge</h1>
+        <p>Your Edge in Sports Betting</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Onboarding Modal (shown only on first visit)
+    if 'intro_shown' not in st.session_state:
+        st.session_state.intro_shown = True
+        with st.modal("Welcome to FoxEdge"):
+            st.markdown("""
+            **Welcome to FoxEdge!**
+
+            Here are some key terms to get you started:
+            - **Spread Suggestion:** Indicates the predicted margin of victory.
+            - **Total Points:** Predicted combined score of both teams.
+            - **Confidence Levels:** Reflects the statistical edge of our prediction.
+
+            Hover over elements for more info. Enjoy exploring our insights!
+            """)
+            st.button("Get Started")
+    
+    # Login / Signup
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if not st.session_state['logged_in']:
+        # Sidebar account info (with a placeholder avatar)
+        st.sidebar.image("https://via.placeholder.com/100", width=100)
+        st.sidebar.title("Account")
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
         col1, col2 = st.columns(2)
@@ -1099,20 +1196,26 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.rerun()
+                    st.experimental_rerun()
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
         return
     else:
+        st.sidebar.image("https://via.placeholder.com/100", width=100)
         st.sidebar.title("Account")
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.rerun()
+            st.experimental_rerun()
+    
+    # Sidebar Navigation with league icons
     st.sidebar.header("Navigation")
-    league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
-                                     help="Choose which league's games you'd like to analyze")
+    league_options = {"🏈 NFL": "NFL", "🏀 NBA": "NBA", "🎓 NCAAB": "NCAAB"}
+    league_choice_display = st.sidebar.radio("Select League", list(league_options.keys()),
+                                             help="Choose which league's games you'd like to analyze")
+    league_choice = league_options.get(league_choice_display, league_choice_display)
+    
     run_league_pipeline(league_choice)
     st.sidebar.markdown(
         "### About FoxEdge\n"
