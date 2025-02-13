@@ -3,9 +3,6 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="joblib")
 
 import streamlit as st
-# Set page configuration as the very first Streamlit command in the script.
-st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
-
 import pandas as pd
 import numpy as np
 import pytz
@@ -34,204 +31,24 @@ import cbbpy.mens_scraper as cbb
 # Additional imports for hyperparameter tuning and time-series cross validation
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
-# NEW: Import TensorFlow/Keras for the LSTM neural network
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-
-################################################################################
-# GLOBAL FLAGS FOR MODEL TUNING (Optimal Setup)
-################################################################################
+# --- Global Flags for Model Tuning (Optimal Setup) ---
 USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (we rely on Bayesian search)
 USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimization
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 
 ################################################################################
-# OPTIONAL SPORTSBOOK ODDS INTEGRATION (Non-Critical)
-################################################################################
-try:
-    from pysbr import BestLines, CurrentLines, OpeningLines, LineHistory
-    pysbr_available = True
-except Exception as e:
-    pysbr_available = False
-    st.warning("PySBR not available; sportsbook odds integration will be skipped.")
-
-def generate_game_key(game_date, home_team, away_team):
-    """Creates a unique key for each game."""
-    return f"{game_date.strftime('%Y-%m-%d')}_{home_team}_{away_team}"
-
-def lookup_event_id(game):
-    """
-    Looks up the event_id for a given game.
-    In production, implement proper lookup logic.
-    Here, we return None so that no dummy data is provided.
-    """
-    return None
-
-def integrate_sportsbook_odds(games):
-    """
-    Fetches sportsbook odds for a list of games using PySBR.
-    If any error occurs, the function warns and returns an empty dictionary.
-    """
-    odds_data = {}
-    try:
-        for game in games:
-            game_key = generate_game_key(game["gameday"], game["home_team"], game["away_team"])
-            event_id = lookup_event_id(game)
-            if event_id:
-                best_lines = BestLines(event_id).records()
-                current_lines = CurrentLines(event_id).records()
-                opening_lines = OpeningLines(event_id).records()
-            else:
-                best_lines, current_lines, opening_lines = {}, {}, {}
-            odds_data[game_key] = {
-                "best_spread": best_lines.get("spread"),
-                "best_total": best_lines.get("total"),
-                "market_spread": current_lines.get("spread"),
-                "market_total": current_lines.get("total"),
-                "opening_spread": opening_lines.get("spread"),
-                "opening_total": opening_lines.get("total"),
-            }
-    except Exception as e:
-        st.warning(f"Error fetching sportsbook odds: {e}")
-    return odds_data
-
-def evaluate_odds_matchup(game, home_pred, away_pred, odds_data):
-    """
-    Compares model predictions against sportsbook lines.
-    Returns a dictionary containing prediction values,
-    sportsbook lines, and edge calculations.
-    """
-    game_key = generate_game_key(game["gameday"], game["home_team"], game["away_team"])
-    odds = odds_data.get(game_key, {})
-    diff = home_pred - away_pred
-    total_points = home_pred + away_pred
-    best_spread = odds.get("best_spread")
-    best_total = odds.get("best_total")
-    market_spread = odds.get("market_spread")
-    market_total = odds.get("market_total")
-    spread_edge = round(diff - market_spread, 1) if market_spread is not None else None
-    ou_edge = round(total_points - market_total, 1) if market_total is not None else None
-    return {
-        "home_team": game["home_team"],
-        "away_team": game["away_team"],
-        "predicted_winner": game["home_team"] if diff > 0 else game["away_team"],
-        "predicted_diff": round(diff, 1),
-        "predicted_total": round(total_points, 1),
-        "spread_edge": spread_edge,
-        "ou_edge": ou_edge,
-        "market_spread": market_spread,
-        "market_total": market_total,
-        "best_spread": best_spread,
-        "best_total": best_total,
-    }
-
-def display_odds_bet_card(bet):
-    """Displays game predictions vs. sportsbook odds in a styled bet card."""
-    with st.container():
-        st.markdown(f'<div class="bet-card">', unsafe_allow_html=True)
-        st.markdown(f"<h3>{bet['away_team']} @ {bet['home_team']}</h3>", unsafe_allow_html=True)
-        st.markdown('<div class="card-body">', unsafe_allow_html=True)
-        st.markdown(f"**Predicted Spread:** {bet['predicted_diff']} vs. **Market Spread:** {bet['market_spread']}", unsafe_allow_html=True)
-        st.markdown(f"**Spread Edge:** {bet['spread_edge']} pts", unsafe_allow_html=True)
-        st.markdown(f"**Predicted Total:** {bet['predicted_total']} vs. **Market Total:** {bet['market_total']}", unsafe_allow_html=True)
-        st.markdown(f"**O/U Edge:** {bet['ou_edge']} pts", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-################################################################################
-# CUSTOM CSS & GLOBAL UI STYLING (DARK MODE & Vibrant Accents)
-################################################################################
-st.markdown("""
-<style>
-  /* Global Background & Typography */
-  body {
-      font-family: 'Helvetica Neue', Arial, sans-serif;
-      background-color: #1e1e1e;
-      color: #eee;
-  }
-  /* Header Banner */
-  .header-banner {
-      background: linear-gradient(90deg, #ff8c00, #ff0080);
-      padding: 20px;
-      border-radius: 8px;
-      text-align: center;
-      margin-bottom: 20px;
-  }
-  .header-banner h1 {
-      color: white;
-      margin: 0;
-      font-size: 2.5em;
-  }
-  .header-banner p {
-      color: white;
-      margin: 0;
-      font-size: 1.2em;
-  }
-  /* Bet Card Styling */
-  .bet-card {
-      background-color: #2a2a2a;
-      border: 1px solid #444;
-      border-radius: 8px;
-      box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
-      padding: 15px;
-      margin-bottom: 20px;
-      transition: transform 0.2s, box-shadow 0.2s;
-  }
-  .bet-card:hover {
-      transform: scale(1.02);
-      box-shadow: 4px 4px 20px rgba(0,0,0,0.4);
-  }
-  .bet-card .card-header {
-      background: #3a3a3a;
-      padding: 10px;
-      border-radius: 5px;
-      margin-bottom: 10px;
-  }
-  .bet-card .card-header h3, .bet-card .card-header p {
-      margin: 0;
-      color: #eee;
-  }
-  .bet-card .card-body {
-      margin-bottom: 10px;
-  }
-  .bet-card .card-body p {
-      margin: 5px 0;
-  }
-  .bet-card .card-footer {
-      text-align: right;
-  }
-  /* Custom Buttons */
-  .button-custom {
-      background-color: #ff0080;
-      color: white;
-      border: none;
-      border-radius: 5px;
-      padding: 8px 16px;
-      cursor: pointer;
-      transition: background-color 0.2s;
-  }
-  .button-custom:hover {
-      background-color: #e60073;
-  }
-  /* Confidence Badges */
-  .badge {
-      display: inline-block;
-      padding: 5px 10px;
-      border-radius: 5px;
-      color: white;
-      font-weight: bold;
-  }
-  .badge.green { background-color: #28a745; }
-  .badge.orange { background-color: #fd7e14; }
-  .badge.red { background-color: #dc3545; }
-</style>
-""", unsafe_allow_html=True)
-
-################################################################################
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
 ################################################################################
 def to_naive(dt):
+    """
+    Converts a datetime object to tz-naive if it is tz-aware.
+    
+    Args:
+        dt: A datetime object.
+    
+    Returns:
+        A tz-naive datetime object.
+    """
     if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
         return dt.replace(tzinfo=None)
     return dt
@@ -260,6 +77,7 @@ except KeyError:
     st.warning("Firebase secrets not found or incomplete in st.secrets. Please verify your secrets.toml.")
 
 def login_with_rest(email, password):
+    """Login user using Firebase REST API."""
     try:
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
         payload = {"email": email, "password": password, "returnSecureToken": True}
@@ -274,6 +92,7 @@ def login_with_rest(email, password):
         return None
 
 def signup_user(email, password):
+    """Sign up a new user using Firebase."""
     try:
         user = auth.create_user(email=email, password=password)
         st.success(f"User {email} created successfully!")
@@ -282,6 +101,7 @@ def signup_user(email, password):
         st.error(f"Error: {e}")
 
 def logout_user():
+    """Logs out the current user."""
     for key in ['email', 'logged_in']:
         if key in st.session_state:
             del st.session_state[key]
@@ -292,6 +112,7 @@ def logout_user():
 CSV_FILE = "predictions.csv"
 
 def initialize_csv(csv_file=CSV_FILE):
+    """Initialize the CSV file if it doesn't exist."""
     if not Path(csv_file).exists():
         columns = [
             "date", "league", "home_team", "away_team", "home_pred", "away_pred",
@@ -301,6 +122,7 @@ def initialize_csv(csv_file=CSV_FILE):
         pd.DataFrame(columns=columns).to_csv(csv_file, index=False)
 
 def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
+    """Save predictions to a CSV file."""
     df = pd.DataFrame(predictions)
     if Path(csv_file).exists():
         existing_df = pd.read_csv(csv_file)
@@ -312,16 +134,33 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 # UTILITY
 ################################################################################
 def round_half(number):
+    """Rounds a number to the nearest 0.5."""
     return round(number * 2) / 2
 
 ################################################################################
 # BAYESIAN HYPERPARAMETER OPTIMIZATION VIA OPTUNA
 ################################################################################
 def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=False):
+    """
+    Tunes a given model using Bayesian hyperparameter optimization via Optuna.
+    
+    Args:
+        model: The estimator to tune.
+        param_grid: Dictionary of hyperparameter candidate values.
+        X_train: Training features.
+        y_train: Training target.
+        n_trials (int): Number of trials.
+        early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
+    
+    Returns:
+        The best estimator fitted on X_train and y_train.
+    """
     cv = TimeSeriesSplit(n_splits=3)
+    
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
+            # Suggest one of the candidate values
             params[key] = trial.suggest_categorical(key, values)
         fit_params = {}
         X_train_used = X_train
@@ -341,6 +180,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
             score = -mean_squared_error(y_val_cv, preds)
             scores.append(score)
         return np.mean(scores)
+    
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=n_trials)
     best_params = study.best_trial.params
@@ -358,6 +198,20 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
 # MODEL TUNING FUNCTION
 ################################################################################
 def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_stopping=False):
+    """
+    Tunes a given model using either GridSearchCV/RandomizedSearchCV or Bayesian optimization via Optuna.
+    
+    Args:
+        model: The estimator to tune.
+        param_grid: Hyperparameter grid or candidate values.
+        X_train: Training features.
+        y_train: Training target.
+        use_randomized (bool): If True, uses RandomizedSearchCV.
+        early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
+    
+    Returns:
+        The best estimator.
+    """
     if USE_OPTUNA_SEARCH:
         return optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=early_stopping)
     else:
@@ -387,6 +241,20 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
 # NESTED CROSS-VALIDATION EVALUATION
 ################################################################################
 def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_stopping=False):
+    """
+    Evaluates model performance using nested cross-validation.
+    
+    Args:
+        model: The estimator to tune.
+        param_grid: Hyperparameter grid.
+        X: Features.
+        y: Target.
+        use_randomized (bool): If True, uses RandomizedSearchCV for inner CV.
+        early_stopping (bool): If True, enables early stopping in inner search.
+    
+    Returns:
+        A list of scores from outer CV folds.
+    """
     from sklearn.model_selection import KFold
     outer_cv = KFold(n_splits=5, shuffle=False)
     scores = []
@@ -400,110 +268,24 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
     return scores
 
 ################################################################################
-# NEURAL NETWORK (LSTM) MODEL FOR SEQUENTIAL DATA
-################################################################################
-def create_lstm_model(input_shape):
-    """
-    Creates and compiles an LSTM neural network model.
-    
-    Args:
-        input_shape (tuple): Shape of the input data (timesteps, features)
-    
-    Returns:
-        model (tf.keras.Model): Compiled LSTM model.
-    """
-    model = Sequential()
-    model.add(LSTM(50, activation='relu', input_shape=input_shape, return_sequences=True))
-    model.add(Dropout(0.2))
-    model.add(LSTM(25, activation='relu'))
-    model.add(Dropout(0.2))
-    model.add(Dense(1))
-    model.compile(optimizer='adam', loss='mse')
-    return model
-
-def prepare_team_sequences(team_data, team, window_size=3):
-    """
-    Prepare sequential data for a given team by creating overlapping windows.
-    
-    Args:
-        team_data (pd.DataFrame): DataFrame containing game data with 'gameday' and 'score' columns.
-        team (str): The team name.
-        window_size (int): Number of past games to use as input.
-    
-    Returns:
-        X (np.ndarray): 2D array of input sequences.
-        y (np.ndarray): 1D array of target scores.
-    """
-    team_df = team_data[team_data['team'] == team].sort_values('gameday')
-    scores = team_df['score'].values
-    X, y = [], []
-    for i in range(len(scores) - window_size):
-        X.append(scores[i:i+window_size])
-        y.append(scores[i+window_size])
-    return np.array(X), np.array(y)
-
-def train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2):
-    """
-    Trains an LSTM model for each team using sequential data created from their game logs.
-    Displays progress as each team is processed.
-    
-    Args:
-        team_data (pd.DataFrame): DataFrame with team game data.
-        window_size (int): Number of past games to use as input.
-        epochs (int): Number of training epochs.
-        batch_size (int): Batch size for training.
-    
-    Returns:
-        dict: A dictionary mapping team names to a tuple (trained_model, window_size).
-    """
-    lstm_models = {}
-    teams = team_data['team'].unique()
-    total_teams = len(teams)
-    
-    progress_bar_lstm = st.progress(0)
-    status_text_lstm = st.empty()
-    metric_text_lstm = st.empty()
-    
-    for idx, team in enumerate(teams):
-        status_text_lstm.text(f"Training LSTM model for team: {team} ({idx+1}/{total_teams})")
-        X, y = prepare_team_sequences(team_data, team, window_size)
-        if len(X) < 5:
-            continue
-        X = X.reshape((X.shape[0], X.shape[1], 1))
-        model = create_lstm_model((X.shape[1], 1))
-        history = model.fit(X, y, epochs=epochs, batch_size=batch_size, verbose=0)
-        final_loss = history.history['loss'][-1]
-        metric_text_lstm.text(f"Team {team} - Final Loss: {final_loss:.4f}")
-        lstm_models[team] = (model, window_size)
-        progress_bar_lstm.progress((idx + 1) / total_teams)
-    
-    status_text_lstm.text("All LSTM models trained!")
-    metric_text_lstm.text("")
-    return lstm_models
-
-################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
-@st.cache_data(ttl=14400)
+@st.cache_data(ttl=3600)
 def train_team_models(team_data: pd.DataFrame):
     """
-    Trains stacking regressors and ARIMA models for each team.
-    Displays progress and status updates for each team.
+    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score using
+    time-series cross-validation and hyperparameter optimization.
     
     Returns:
-        tuple: (stack_models, arima_models, team_stats)
+        stack_models: Dict of trained Stacking Regressors keyed by team.
+        arima_models: Dict of trained ARIMA models keyed by team.
+        team_stats: Dict containing statistical summaries (including MSE and bias) for each team.
     """
     stack_models = {}
     arima_models = {}
     team_stats = {}
     all_teams = team_data['team'].unique()
-    total_teams = len(all_teams)
-    
-    progress_bar_stack = st.progress(0)
-    status_text_stack = st.empty()
-    
-    for idx, team in enumerate(all_teams):
-        status_text_stack.text(f"Training stacked & ARIMA models for team: {team} ({idx+1}/{total_teams})")
+    for team in all_teams:
         df_team = team_data[team_data['team'] == team].copy()
         df_team.sort_values('gameday', inplace=True)
         scores = df_team['score'].reset_index(drop=True)
@@ -599,32 +381,15 @@ def train_team_models(team_data: pd.DataFrame):
             except Exception as e:
                 print(f"Error training ARIMA for team {team}: {e}")
                 continue
-        progress_bar_stack.progress((idx + 1) / total_teams)
-    status_text_stack.text("All stacked & ARIMA models trained!")
     return stack_models, arima_models, team_stats
 
-def predict_team_score(team, stack_models, arima_models, lstm_models, team_stats, team_data):
-    """
-    Predicts a team's score using an ensemble of stacking, ARIMA, and LSTM predictions.
-    
-    Args:
-        team (str): Team name.
-        stack_models (dict): Trained stacking models per team.
-        arima_models (dict): Trained ARIMA models per team.
-        lstm_models (dict): Trained LSTM models per team.
-        team_stats (dict): Dictionary of team statistics.
-        team_data (pd.DataFrame): DataFrame with team game data.
-    
-    Returns:
-        tuple: (ensemble prediction, (confidence lower, confidence upper))
-    """
+def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     if team not in team_stats:
         return None, (None, None)
     df_team = team_data[team_data['team'] == team]
     data_len = len(df_team)
     stack_pred = None
     arima_pred = None
-    lstm_pred = None
     if data_len < 3:
         return None, (None, None)
     last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
@@ -642,24 +407,31 @@ def predict_team_score(team, stack_models, arima_models, lstm_models, team_stats
         except Exception as e:
             print(f"Error predicting with ARIMA for team {team}: {e}")
             arima_pred = None
-    if team in lstm_models:
+    ensemble = None
+    if stack_pred is not None and arima_pred is not None:
+        mse_stack = team_stats[team].get('mse', 1)
+        mse_arima = None
         try:
-            model, window_size = lstm_models[team]
-            team_df = df_team.sort_values('gameday')
-            scores = team_df['score'].values
-            if len(scores) >= window_size:
-                last_window = scores[-window_size:]
-                last_window = np.array(last_window).reshape((1, window_size, 1))
-                lstm_pred = float(model.predict(last_window)[0][0])
+            resid = arima_models[team].resid()
+            mse_arima = np.mean(np.square(resid))
         except Exception as e:
-            print(f"Error predicting with LSTM for team {team}: {e}")
-            lstm_pred = None
-
-    predictions = [p for p in [stack_pred, arima_pred, lstm_pred] if p is not None]
-    if not predictions:
-        return None, (None, None)
-    ensemble = np.mean(predictions)
+            mse_arima = None
+        eps = 1e-6
+        if mse_arima is not None and mse_arima > 0:
+            weight_stack = 1 / (mse_stack + eps)
+            weight_arima = 1 / (mse_arima + eps)
+            ensemble = (stack_pred * weight_stack + arima_pred * weight_arima) / (weight_stack + weight_arima)
+        else:
+            ensemble = (stack_pred + arima_pred) / 2
+    elif stack_pred is not None:
+        ensemble = stack_pred
+    elif arima_pred is not None:
+        ensemble = arima_pred
+    else:
+        ensemble = None
     if team_stats[team].get('mse', 0) > 150:
+        return None, (None, None)
+    if ensemble is None:
         return None, (None, None)
     bias = team_stats[team].get('bias', 0)
     ensemble_calibrated = ensemble + bias
@@ -747,7 +519,7 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ################################################################################
 # NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
-@st.cache_data(ttl=14400)
+@st.cache_data(ttl=3600)
 def load_nba_data():
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
@@ -834,7 +606,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 # NCAAB HISTORICAL LOADER (UPDATED)
 ################################################################################
-@st.cache_data(ttl=14400)
+@st.cache_data(ttl=7200)
 def load_ncaab_data_current_season(season=2025):
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
@@ -867,56 +639,73 @@ def load_ncaab_data_current_season(season=2025):
     return data
 
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
+    """
+    Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
+    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
+
+    # Get current day and next day
     dates = [
-        current_time.strftime('%Y%m%d'),
-        (current_time + timedelta(days=1)).strftime('%Y%m%d')
+        current_time.strftime('%Y%m%d'),  # Today
+        (current_time + timedelta(days=1)).strftime('%Y%m%d')  # Tomorrow
     ]
+
     rows = []
     for date_str in dates:
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         params = {
             'dates': date_str,
-            'groups': '50',
+            'groups': '50',   # D1 men's
             'limit': '357'
         }
+
         response = requests.get(url, params=params)
         if response.status_code != 200:
             st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
             continue
+
         data = response.json()
         games = data.get('events', [])
         if not games:
             st.info(f"No upcoming NCAAB games for {date_str}.")
             continue
+
         for game in games:
-            game_time_str = game['date']
+            game_time_str = game['date']  # ISO8601
             game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
+
             competitors = game['competitions'][0]['competitors']
             home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
             away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
+
             if not home_comp or not away_comp:
                 continue
+
             home_team = home_comp['team']['displayName']
             away_team = away_comp['team']['displayName']
+
             rows.append({
                 'gameday': game_time,
                 'home_team': home_team,
                 'away_team': away_team
             })
+
     if not rows:
         return pd.DataFrame()
+
     df = pd.DataFrame(rows)
     df.sort_values('gameday', inplace=True)
     return df
 
 ################################################################################
-# EXISTING UI COMPONENTS (Writeup, Bet Card, etc.)
+# UI COMPONENTS
 ################################################################################
 def generate_writeup(bet, team_stats_global):
     home_team = bet['home_team']
     away_team = bet['away_team']
+    home_pred = bet['home_pred']
+    away_pred = bet['away_pred']
     predicted_winner = bet['predicted_winner']
     confidence = bet['confidence']
     home_stats = team_stats_global.get(home_team, {})
@@ -1009,31 +798,38 @@ def generate_social_media_post(bet):
     return post
 
 def display_bet_card(bet, team_stats_global, team_data=None):
+    conf = bet['confidence']
+    if conf >= 80:
+        confidence_color = "green"
+    elif conf < 60:
+        confidence_color = "red"
+    else:
+        confidence_color = "orange"
     with st.container():
-        st.markdown(f'<div class="bet-card">', unsafe_allow_html=True)
-        date_obj = bet['date']
-        date_str = date_obj.strftime("%A, %B %d - %I:%M %p") if isinstance(date_obj, datetime) else str(date_obj)
-        st.markdown(
-            f'<div class="card-header"><h3>{bet["away_team"]} @ {bet["home_team"]}</h3>'
-            f'<p title="Game time">{date_str}</p></div>', unsafe_allow_html=True)
-        conf_color = "green" if bet['confidence'] >= 80 else "red" if bet['confidence'] < 60 else "orange"
-        st.markdown('<div class="card-body">', unsafe_allow_html=True)
-        st.markdown(
-            f'<p title="Spread Suggestion is based on the predicted margin">Spread Suggestion: {bet["spread_suggestion"]}</p>',
-            unsafe_allow_html=True)
-        st.markdown(
-            f'<p title="Total Suggestion is based on the combined score prediction">Total Suggestion: {bet["ou_suggestion"]}</p>',
-            unsafe_allow_html=True)
-        st.markdown(
-            f'<p><span class="badge {conf_color}" title="Confidence indicates the statistical edge from combined team metrics">{bet["confidence"]:.1f}% Confidence</span></p>',
-            unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.markdown('<div class="card-footer">', unsafe_allow_html=True)
-        if st.button("Generate Social Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
-            post = generate_social_media_post(bet)
-            st.code(post, language="markdown")
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("---")
+        col1, col2, col3 = st.columns([2, 2, 1])
+        with col1:
+            st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
+            date_obj = bet['date']
+            if isinstance(date_obj, datetime):
+                st.caption(date_obj.strftime("%A, %B %d - %I:%M %p"))
+        with col2:
+            if bet['confidence'] >= 80:
+                st.markdown("🔥 **High-Confidence Bet** 🔥")
+            st.markdown(
+                f"**<span title='Spread Suggestion is based on the predicted point difference'>Spread Suggestion:</span>** {bet['spread_suggestion']}",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"**<span title='Total Suggestion indicates the recommended bet on the combined score'>Total Suggestion:</span>** {bet['ou_suggestion']}",
+                unsafe_allow_html=True,
+            )
+        with col3:
+            tooltip_text = "Confidence indicates the statistical edge derived from the combined performance metrics of both teams."
+            st.markdown(
+                f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
+                unsafe_allow_html=True,
+            )
     with st.expander("Detailed Insights", expanded=False):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
@@ -1053,6 +849,10 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
                 away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(away_scores)
+    with st.expander("Generate Social Media Post", expanded=False):
+        if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
+            post = generate_social_media_post(bet)
+            st.code(post, language="markdown")
 
 ################################################################################
 # GLOBALS
@@ -1104,18 +904,14 @@ def run_league_pipeline(league_choice):
         bottom_10 = set([t for t, r in sorted_def[-10:]])
     else:
         top_10, bottom_10 = None, None
-    
-    with st.spinner("Training models... This may take a while."):
-        # Train stacking & ARIMA models with progress updates
+    with st.spinner("Analyzing recent performance data..."):
         stack_models, arima_models, team_stats = train_team_models(team_data)
-        # Train LSTM models with progress updates
-        lstm_models = train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2)
         team_stats_global = team_stats
         results.clear()
         for _, row in upcoming.iterrows():
             home, away = row['home_team'], row['away_team']
-            home_pred, _ = predict_team_score(home, stack_models, arima_models, lstm_models, team_stats, team_data)
-            away_pred, _ = predict_team_score(away, stack_models, arima_models, lstm_models, team_stats, team_data)
+            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
             row_gameday = to_naive(row['gameday'])
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
@@ -1253,36 +1049,9 @@ def run_league_pipeline(league_choice):
                 display_bet_card(bet, team_stats_global, team_data=team_data)
         else:
             st.info(f"No upcoming {league_choice} games found.")
-    
-    # Optional Sportsbook Odds Integration Section
-    if st.sidebar.checkbox("Show Sportsbook Odds Comparison (Optional)"):
-        if pysbr_available:
-            try:
-                games_for_odds = []
-                for res in results:
-                    games_for_odds.append({
-                        "gameday": res["date"],
-                        "home_team": res["home_team"],
-                        "away_team": res["away_team"]
-                    })
-                odds_data = integrate_sportsbook_odds(games_for_odds)
-                st.header("Sportsbook Odds Comparison")
-                for res in results:
-                    game_key = generate_game_key(res["date"], res["home_team"], res["away_team"])
-                    if odds_data.get(game_key, {}).get("market_spread") is not None:
-                        odds_bet = evaluate_odds_matchup(
-                            {"gameday": res["date"], "home_team": res["home_team"], "away_team": res["away_team"]},
-                            res["home_pred"],
-                            res["away_pred"],
-                            odds_data)
-                        display_odds_bet_card(odds_bet)
-            except Exception as e:
-                st.warning(f"Skipping sportsbook odds integration due to error: {e}")
-        else:
-            st.info("Sportsbook odds integration is not available.")
-    
+
 ################################################################################
-# SCHEDULED TASK (for updating predictions)
+# STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
 ################################################################################
 def scheduled_task():
     st.write("🕒 Scheduled task running: Fetching and updating predictions...")
@@ -1314,33 +1083,12 @@ def scheduled_task():
     st.success("✅ Scheduled task completed successfully!")
     st.success("Scheduled task completed successfully.")
 
-################################################################################
-# MAIN FUNCTION (with Homepage as First Page)
-################################################################################
 def main():
-    if 'homepage_done' not in st.session_state:
-        st.title("Welcome to FoxEdge Sports Betting Insights")
-        st.markdown("""
-FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games—helping you make informed betting decisions.  
-Explore predictions, view detailed analyses, and generate social posts to share your picks.
-""")
-        if st.button("Get Started"):
-            st.session_state.homepage_done = True
-            st.experimental_rerun()
-        st.stop()
-
-    st.markdown("""
-    <div class="header-banner">
-        <h1>🦊 FoxEdge</h1>
-        <p>Your Edge in Sports Betting</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
+    st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
+    st.title("🦊 FoxEdge Sports Betting Insights")
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if not st.session_state['logged_in']:
-        st.sidebar.image("https://via.placeholder.com/100", width=100)
-        st.sidebar.title("Account")
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
         col1, col2 = st.columns(2)
@@ -1351,25 +1099,20 @@ Explore predictions, view detailed analyses, and generate social posts to share 
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.experimental_rerun()
+                    st.rerun()
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
         return
     else:
-        st.sidebar.image("https://via.placeholder.com/100", width=100)
         st.sidebar.title("Account")
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.experimental_rerun()
-    
+            st.rerun()
     st.sidebar.header("Navigation")
-    league_options = {"🏈 NFL": "NFL", "🏀 NBA": "NBA", "🎓 NCAAB": "NCAAB"}
-    league_choice_display = st.sidebar.radio("Select League", list(league_options.keys()),
-                                             help="Choose which league's games you'd like to analyze")
-    league_choice = league_options.get(league_choice_display, league_choice_display)
-    
+    league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
+                                     help="Choose which league's games you'd like to analyze")
     run_league_pipeline(league_choice)
     st.sidebar.markdown(
         "### About FoxEdge\n"
@@ -1385,7 +1128,7 @@ Explore predictions, view detailed analyses, and generate social posts to share 
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.query_params
+    query_params = st.experimental_get_query_params()
     if "trigger" in query_params:
         scheduled_task()
         st.write("Task triggered successfully.")
