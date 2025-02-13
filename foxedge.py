@@ -1085,27 +1085,25 @@ def scheduled_task():
     st.success("Scheduled task completed successfully.")
 
 def main():
+    # Homepage: Show a welcome page if not already done
+    if 'homepage_done' not in st.session_state:
+        st.title("Welcome to FoxEdge Sports Betting Insights")
+        st.markdown("""
+FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games—helping you make informed betting decisions.  
+Explore predictions, view detailed analyses, and generate social posts to share your picks.
+""")
+        if st.button("Get Started"):
+            st.session_state.homepage_done = True
+            st.experimental_rerun()
+        st.stop()
+
+    # Once the homepage has been viewed, show the main app.
     st.markdown("""
     <div class="header-banner">
         <h1>🦊 FoxEdge</h1>
         <p>Your Edge in Sports Betting</p>
     </div>
     """, unsafe_allow_html=True)
-    
-    if 'intro_shown' not in st.session_state:
-    st.session_state.intro_shown = True
-    with st.expander("Welcome to FoxEdge", expanded=True):
-        st.markdown("""
-        **Welcome to FoxEdge!**
-
-        Here are some key terms to get you started:
-        - **Spread Suggestion:** Indicates the predicted margin of victory.
-        - **Total Points:** Predicted combined score of both teams.
-        - **Confidence Levels:** Reflects the statistical edge of our prediction.
-
-        Hover over elements for more info. Enjoy exploring our insights!
-        """)
-        st.button("Get Started")
     
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
