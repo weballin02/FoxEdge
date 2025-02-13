@@ -40,6 +40,99 @@ USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimi
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 
 ################################################################################
+# OPTIONAL SPORTSBOOK ODDS INTEGRATION (Non-Critical)
+################################################################################
+try:
+    from pysbr import BestLines, CurrentLines, OpeningLines, LineHistory
+    pysbr_available = True
+except Exception as e:
+    pysbr_available = False
+    st.warning("PySBR not available; sportsbook odds integration will be skipped.")
+
+def generate_game_key(game_date, home_team, away_team):
+    """Creates a unique key for each game."""
+    return f"{game_date.strftime('%Y-%m-%d')}_{home_team}_{away_team}"
+
+def lookup_event_id(game):
+    """
+    Looks up the event_id for a given game.
+    In production, implement proper lookup logic.
+    Here, we return None so that no dummy data is provided.
+    """
+    return None
+
+def integrate_sportsbook_odds(games):
+    """
+    Fetches sportsbook odds for a list of games using PySBR.
+    If any error occurs, the function warns and returns an empty dictionary.
+    """
+    odds_data = {}
+    try:
+        for game in games:
+            game_key = generate_game_key(game["gameday"], game["home_team"], game["away_team"])
+            event_id = lookup_event_id(game)
+            if event_id:
+                best_lines = BestLines(event_id).records()
+                current_lines = CurrentLines(event_id).records()
+                opening_lines = OpeningLines(event_id).records()
+            else:
+                best_lines, current_lines, opening_lines = {}, {}, {}
+            odds_data[game_key] = {
+                "best_spread": best_lines.get("spread"),
+                "best_total": best_lines.get("total"),
+                "market_spread": current_lines.get("spread"),
+                "market_total": current_lines.get("total"),
+                "opening_spread": opening_lines.get("spread"),
+                "opening_total": opening_lines.get("total"),
+            }
+    except Exception as e:
+        st.warning(f"Error fetching sportsbook odds: {e}")
+    return odds_data
+
+def evaluate_odds_matchup(game, home_pred, away_pred, odds_data):
+    """
+    Compares model predictions against sportsbook lines.
+    Returns a dictionary containing prediction values,
+    sportsbook lines, and edge calculations.
+    """
+    game_key = generate_game_key(game["gameday"], game["home_team"], game["away_team"])
+    odds = odds_data.get(game_key, {})
+    diff = home_pred - away_pred
+    total_points = home_pred + away_pred
+    best_spread = odds.get("best_spread")
+    best_total = odds.get("best_total")
+    market_spread = odds.get("market_spread")
+    market_total = odds.get("market_total")
+    spread_edge = round(diff - market_spread, 1) if market_spread is not None else None
+    ou_edge = round(total_points - market_total, 1) if market_total is not None else None
+    return {
+        "home_team": game["home_team"],
+        "away_team": game["away_team"],
+        "predicted_winner": game["home_team"] if diff > 0 else game["away_team"],
+        "predicted_diff": round(diff, 1),
+        "predicted_total": round(total_points, 1),
+        "spread_edge": spread_edge,
+        "ou_edge": ou_edge,
+        "market_spread": market_spread,
+        "market_total": market_total,
+        "best_spread": best_spread,
+        "best_total": best_total,
+    }
+
+def display_odds_bet_card(bet):
+    """Displays game predictions vs. sportsbook odds in a styled bet card."""
+    with st.container():
+        st.markdown(f'<div class="bet-card">', unsafe_allow_html=True)
+        st.markdown(f"<h3>{bet['away_team']} @ {bet['home_team']}</h3>", unsafe_allow_html=True)
+        st.markdown('<div class="card-body">', unsafe_allow_html=True)
+        st.markdown(f"**Predicted Spread:** {bet['predicted_diff']} vs. **Market Spread:** {bet['market_spread']}", unsafe_allow_html=True)
+        st.markdown(f"**Spread Edge:** {bet['spread_edge']} pts", unsafe_allow_html=True)
+        st.markdown(f"**Predicted Total:** {bet['predicted_total']} vs. **Market Total:** {bet['market_total']}", unsafe_allow_html=True)
+        st.markdown(f"**O/U Edge:** {bet['ou_edge']} pts", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+################################################################################
 # CUSTOM CSS & GLOBAL UI STYLING (DARK MODE & Vibrant Accents)
 ################################################################################
 st.markdown("""
@@ -50,7 +143,6 @@ st.markdown("""
       background-color: #1e1e1e;
       color: #eee;
   }
-
   /* Header Banner */
   .header-banner {
       background: linear-gradient(90deg, #ff8c00, #ff0080);
@@ -69,7 +161,6 @@ st.markdown("""
       margin: 0;
       font-size: 1.2em;
   }
-
   /* Bet Card Styling */
   .bet-card {
       background-color: #2a2a2a;
@@ -103,7 +194,6 @@ st.markdown("""
   .bet-card .card-footer {
       text-align: right;
   }
-
   /* Custom Buttons */
   .button-custom {
       background-color: #ff0080;
@@ -117,7 +207,6 @@ st.markdown("""
   .button-custom:hover {
       background-color: #e60073;
   }
-
   /* Confidence Badges */
   .badge {
       display: inline-block;
@@ -223,7 +312,6 @@ def round_half(number):
 ################################################################################
 def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=False):
     cv = TimeSeriesSplit(n_splits=3)
-    
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
@@ -246,7 +334,6 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
             score = -mean_squared_error(y_val_cv, preds)
             scores.append(score)
         return np.mean(scores)
-    
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=n_trials)
     best_params = study.best_trial.params
@@ -713,7 +800,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     return df
 
 ################################################################################
-# UI COMPONENTS
+# EXISTING UI COMPONENTS (Writeup, Bet Card, etc.)
 ################################################################################
 def generate_writeup(bet, team_stats_global):
     home_team = bet['home_team']
@@ -1050,9 +1137,38 @@ def run_league_pipeline(league_choice):
                 display_bet_card(bet, team_stats_global, team_data=team_data)
         else:
             st.info(f"No upcoming {league_choice} games found.")
-
+    
+    # Optional Sportsbook Odds Integration Section
+    if st.sidebar.checkbox("Show Sportsbook Odds Comparison (Optional)"):
+        if pysbr_available:
+            try:
+                # Build a list of games from our predictions results
+                games_for_odds = []
+                for res in results:
+                    games_for_odds.append({
+                        "gameday": res["date"],
+                        "home_team": res["home_team"],
+                        "away_team": res["away_team"]
+                    })
+                odds_data = integrate_sportsbook_odds(games_for_odds)
+                st.header("Sportsbook Odds Comparison")
+                for res in results:
+                    game_key = generate_game_key(res["date"], res["home_team"], res["away_team"])
+                    # Only display if market_spread is available
+                    if odds_data.get(game_key, {}).get("market_spread") is not None:
+                        odds_bet = evaluate_odds_matchup(
+                            {"gameday": res["date"], "home_team": res["home_team"], "away_team": res["away_team"]},
+                            res["home_pred"],
+                            res["away_pred"],
+                            odds_data)
+                        display_odds_bet_card(odds_bet)
+            except Exception as e:
+                st.warning(f"Skipping sportsbook odds integration due to error: {e}")
+        else:
+            st.info("Sportsbook odds integration is not available.")
+    
 ################################################################################
-# STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
+# SCHEDULED TASK (for updating predictions)
 ################################################################################
 def scheduled_task():
     st.write("🕒 Scheduled task running: Fetching and updating predictions...")
@@ -1084,8 +1200,11 @@ def scheduled_task():
     st.success("✅ Scheduled task completed successfully!")
     st.success("Scheduled task completed successfully.")
 
+################################################################################
+# MAIN FUNCTION (with Homepage as First Page)
+################################################################################
 def main():
-    # Homepage: Show a welcome page if not already done
+    # Homepage: Display a welcome page that must be seen first.
     if 'homepage_done' not in st.session_state:
         st.title("Welcome to FoxEdge Sports Betting Insights")
         st.markdown("""
@@ -1097,7 +1216,7 @@ Explore predictions, view detailed analyses, and generate social posts to share 
             st.experimental_rerun()
         st.stop()
 
-    # Once the homepage has been viewed, show the main app.
+    # Main App (after homepage)
     st.markdown("""
     <div class="header-banner">
         <h1>🦊 FoxEdge</h1>
@@ -1105,6 +1224,7 @@ Explore predictions, view detailed analyses, and generate social posts to share 
     </div>
     """, unsafe_allow_html=True)
     
+    # Login/Signup Flow
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if not st.session_state['logged_in']:
@@ -1154,6 +1274,7 @@ Explore predictions, view detailed analyses, and generate social posts to share 
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
+    # Use st.query_params (property, not a function)
     query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
