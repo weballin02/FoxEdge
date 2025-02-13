@@ -1093,19 +1093,19 @@ def main():
     """, unsafe_allow_html=True)
     
     if 'intro_shown' not in st.session_state:
-        st.session_state.intro_shown = True
-        with st.modal("Welcome to FoxEdge"):
-            st.markdown("""
-            **Welcome to FoxEdge!**
+    st.session_state.intro_shown = True
+    with st.expander("Welcome to FoxEdge", expanded=True):
+        st.markdown("""
+        **Welcome to FoxEdge!**
 
-            Here are some key terms to get you started:
-            - **Spread Suggestion:** Indicates the predicted margin of victory.
-            - **Total Points:** Predicted combined score of both teams.
-            - **Confidence Levels:** Reflects the statistical edge of our prediction.
+        Here are some key terms to get you started:
+        - **Spread Suggestion:** Indicates the predicted margin of victory.
+        - **Total Points:** Predicted combined score of both teams.
+        - **Confidence Levels:** Reflects the statistical edge of our prediction.
 
-            Hover over elements for more info. Enjoy exploring our insights!
-            """)
-            st.button("Get Started")
+        Hover over elements for more info. Enjoy exploring our insights!
+        """)
+        st.button("Get Started")
     
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
