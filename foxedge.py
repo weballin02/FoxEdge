@@ -24,6 +24,7 @@ from firebase_admin import credentials, auth
 import joblib
 import os
 import optuna  # For Bayesian hyperparameter optimization
+import inspect
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
@@ -40,15 +41,6 @@ ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
 ################################################################################
 def to_naive(dt):
-    """
-    Converts a datetime object to tz-naive if it is tz-aware.
-    
-    Args:
-        dt: A datetime object.
-    
-    Returns:
-        A tz-naive datetime object.
-    """
     if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
         return dt.replace(tzinfo=None)
     return dt
@@ -112,7 +104,6 @@ def logout_user():
 CSV_FILE = "predictions.csv"
 
 def initialize_csv(csv_file=CSV_FILE):
-    """Initialize the CSV file if it doesn't exist."""
     if not Path(csv_file).exists():
         columns = [
             "date", "league", "home_team", "away_team", "home_pred", "away_pred",
@@ -122,7 +113,6 @@ def initialize_csv(csv_file=CSV_FILE):
         pd.DataFrame(columns=columns).to_csv(csv_file, index=False)
 
 def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
-    """Save predictions to a CSV file."""
     df = pd.DataFrame(predictions)
     if Path(csv_file).exists():
         existing_df = pd.read_csv(csv_file)
@@ -134,38 +124,38 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
 # UTILITY
 ################################################################################
 def round_half(number):
-    """Rounds a number to the nearest 0.5."""
     return round(number * 2) / 2
+
+################################################################################
+# HELPER FUNCTION FOR EARLY STOPPING
+################################################################################
+def supports_early_stopping(model):
+    """
+    Checks if the model's fit method supports the 'early_stopping_rounds' parameter.
+    
+    Returns:
+        True if early_stopping_rounds is accepted, False otherwise.
+    """
+    try:
+        sig = inspect.signature(model.fit)
+        return 'early_stopping_rounds' in sig.parameters
+    except Exception:
+        return False
 
 ################################################################################
 # BAYESIAN HYPERPARAMETER OPTIMIZATION VIA OPTUNA
 ################################################################################
 def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=False):
-    """
-    Tunes a given model using Bayesian hyperparameter optimization via Optuna.
-    
-    Args:
-        model: The estimator to tune.
-        param_grid: Dictionary of hyperparameter candidate values.
-        X_train: Training features.
-        y_train: Training target.
-        n_trials (int): Number of trials.
-        early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
-    
-    Returns:
-        The best estimator fitted on X_train and y_train.
-    """
     cv = TimeSeriesSplit(n_splits=3)
     
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
-            # Suggest one of the candidate values
             params[key] = trial.suggest_categorical(key, values)
         fit_params = {}
         X_train_used = X_train
         y_train_used = y_train
-        if early_stopping and isinstance(model, LGBMRegressor):
+        if early_stopping and isinstance(model, LGBMRegressor) and supports_early_stopping(model):
             split = int(0.8 * len(X_train))
             X_train_used, X_val = X_train[:split], X_train[split:]
             y_train_used, y_val = y_train[:split], y_train[split:]
@@ -185,7 +175,7 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
     study.optimize(objective, n_trials=n_trials)
     best_params = study.best_trial.params
     best_model = model.__class__(**best_params, random_state=42)
-    if early_stopping and isinstance(best_model, LGBMRegressor):
+    if early_stopping and isinstance(best_model, LGBMRegressor) and supports_early_stopping(best_model):
         split = int(0.8 * len(X_train))
         best_model.fit(X_train[:split], y_train[:split],
                        early_stopping_rounds=10, eval_set=[(X_train[split:], y_train[split:])],
@@ -194,30 +184,13 @@ def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_st
         best_model.fit(X_train, y_train)
     return best_model
 
-################################################################################
-# MODEL TUNING FUNCTION
-################################################################################
 def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_stopping=False):
-    """
-    Tunes a given model using either GridSearchCV/RandomizedSearchCV or Bayesian optimization via Optuna.
-    
-    Args:
-        model: The estimator to tune.
-        param_grid: Hyperparameter grid or candidate values.
-        X_train: Training features.
-        y_train: Training target.
-        use_randomized (bool): If True, uses RandomizedSearchCV.
-        early_stopping (bool): If True and model is LGBMRegressor, uses early stopping.
-    
-    Returns:
-        The best estimator.
-    """
     if USE_OPTUNA_SEARCH:
         return optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=early_stopping)
     else:
         cv = TimeSeriesSplit(n_splits=3)
         fit_params = {}
-        if early_stopping and isinstance(model, LGBMRegressor):
+        if early_stopping and isinstance(model, LGBMRegressor) and supports_early_stopping(model):
             split = int(0.8 * len(X_train))
             X_train, X_val = X_train[:split], X_train[split:]
             y_train, y_val = y_train[:split], y_train[split:]
@@ -241,20 +214,6 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
 # NESTED CROSS-VALIDATION EVALUATION
 ################################################################################
 def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_stopping=False):
-    """
-    Evaluates model performance using nested cross-validation.
-    
-    Args:
-        model: The estimator to tune.
-        param_grid: Hyperparameter grid.
-        X: Features.
-        y: Target.
-        use_randomized (bool): If True, uses RandomizedSearchCV for inner CV.
-        early_stopping (bool): If True, enables early stopping in inner search.
-    
-    Returns:
-        A list of scores from outer CV folds.
-    """
     from sklearn.model_selection import KFold
     outer_cv = KFold(n_splits=5, shuffle=False)
     scores = []
@@ -272,15 +231,6 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 ################################################################################
 @st.cache_data(ttl=3600)
 def train_team_models(team_data: pd.DataFrame):
-    """
-    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each team's score using
-    time-series cross-validation and hyperparameter optimization.
-    
-    Returns:
-        stack_models: Dict of trained Stacking Regressors keyed by team.
-        arima_models: Dict of trained ARIMA models keyed by team.
-        team_stats: Dict containing statistical summaries (including MSE and bias) for each team.
-    """
     stack_models = {}
     arima_models = {}
     team_stats = {}
@@ -639,61 +589,46 @@ def load_ncaab_data_current_season(season=2025):
     return data
 
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
-    """
-    Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
-    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
-
-    # Get current day and next day
     dates = [
-        current_time.strftime('%Y%m%d'),  # Today
-        (current_time + timedelta(days=1)).strftime('%Y%m%d')  # Tomorrow
+        current_time.strftime('%Y%m%d'),
+        (current_time + timedelta(days=1)).strftime('%Y%m%d')
     ]
-
     rows = []
     for date_str in dates:
         url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         params = {
             'dates': date_str,
-            'groups': '50',   # D1 men's
+            'groups': '50',
             'limit': '357'
         }
-
         response = requests.get(url, params=params)
         if response.status_code != 200:
             st.warning(f"ESPN API request failed for date {date_str} with status code {response.status_code}")
             continue
-
         data = response.json()
         games = data.get('events', [])
         if not games:
             st.info(f"No upcoming NCAAB games for {date_str}.")
             continue
-
         for game in games:
-            game_time_str = game['date']  # ISO8601
+            game_time_str = game['date']
             game_time = datetime.fromisoformat(game_time_str[:-1]).astimezone(timezone)
-
             competitors = game['competitions'][0]['competitors']
             home_comp = next((c for c in competitors if c['homeAway'] == 'home'), None)
             away_comp = next((c for c in competitors if c['homeAway'] == 'away'), None)
-
             if not home_comp or not away_comp:
                 continue
-
             home_team = home_comp['team']['displayName']
             away_team = away_comp['team']['displayName']
-
             rows.append({
                 'gameday': game_time,
                 'home_team': home_team,
                 'away_team': away_team
             })
-
     if not rows:
         return pd.DataFrame()
-
     df = pd.DataFrame(rows)
     df.sort_values('gameday', inplace=True)
     return df
