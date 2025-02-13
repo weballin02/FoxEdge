@@ -40,7 +40,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 
 ################################################################################
-# GLOBAL FLAGS FOR MODEL TUNING (Optimal Setup) ---
+# GLOBAL FLAGS FOR MODEL TUNING (Optimal Setup)
 ################################################################################
 USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (we rely on Bayesian search)
 USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimization
@@ -445,6 +445,7 @@ def prepare_team_sequences(team_data, team, window_size=3):
 def train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2):
     """
     Trains an LSTM model for each team using sequential data created from their game logs.
+    Displays progress as each team is processed.
     
     Args:
         team_data (pd.DataFrame): DataFrame with team game data.
@@ -457,15 +458,27 @@ def train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2):
     """
     lstm_models = {}
     teams = team_data['team'].unique()
-    for team in teams:
+    total_teams = len(teams)
+    
+    progress_bar_lstm = st.progress(0)
+    status_text_lstm = st.empty()
+    metric_text_lstm = st.empty()
+    
+    for idx, team in enumerate(teams):
+        status_text_lstm.text(f"Training LSTM model for team: {team} ({idx+1}/{total_teams})")
         X, y = prepare_team_sequences(team_data, team, window_size)
         if len(X) < 5:
             continue
-        # Reshape X to [samples, timesteps, features]
         X = X.reshape((X.shape[0], X.shape[1], 1))
         model = create_lstm_model((X.shape[1], 1))
-        model.fit(X, y, epochs=epochs, batch_size=batch_size, verbose=0)
+        history = model.fit(X, y, epochs=epochs, batch_size=batch_size, verbose=0)
+        final_loss = history.history['loss'][-1]
+        metric_text_lstm.text(f"Team {team} - Final Loss: {final_loss:.4f}")
         lstm_models[team] = (model, window_size)
+        progress_bar_lstm.progress((idx + 1) / total_teams)
+    
+    status_text_lstm.text("All LSTM models trained!")
+    metric_text_lstm.text("")
     return lstm_models
 
 ################################################################################
@@ -473,11 +486,24 @@ def train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2):
 ################################################################################
 @st.cache_data(ttl=3600)
 def train_team_models(team_data: pd.DataFrame):
+    """
+    Trains stacking regressors and ARIMA models for each team.
+    Displays progress and status updates for each team.
+    
+    Returns:
+        tuple: (stack_models, arima_models, team_stats)
+    """
     stack_models = {}
     arima_models = {}
     team_stats = {}
     all_teams = team_data['team'].unique()
-    for team in all_teams:
+    total_teams = len(all_teams)
+    
+    progress_bar_stack = st.progress(0)
+    status_text_stack = st.empty()
+    
+    for idx, team in enumerate(all_teams):
+        status_text_stack.text(f"Training stacked & ARIMA models for team: {team} ({idx+1}/{total_teams})")
         df_team = team_data[team_data['team'] == team].copy()
         df_team.sort_values('gameday', inplace=True)
         scores = df_team['score'].reset_index(drop=True)
@@ -573,6 +599,8 @@ def train_team_models(team_data: pd.DataFrame):
             except Exception as e:
                 print(f"Error training ARIMA for team {team}: {e}")
                 continue
+        progress_bar_stack.progress((idx + 1) / total_teams)
+    status_text_stack.text("All stacked & ARIMA models trained!")
     return stack_models, arima_models, team_stats
 
 def predict_team_score(team, stack_models, arima_models, lstm_models, team_stats, team_data):
@@ -627,7 +655,6 @@ def predict_team_score(team, stack_models, arima_models, lstm_models, team_stats
             print(f"Error predicting with LSTM for team {team}: {e}")
             lstm_pred = None
 
-    # Ensemble: average all available predictions
     predictions = [p for p in [stack_pred, arima_pred, lstm_pred] if p is not None]
     if not predictions:
         return None, (None, None)
@@ -1077,15 +1104,16 @@ def run_league_pipeline(league_choice):
         bottom_10 = set([t for t, r in sorted_def[-10:]])
     else:
         top_10, bottom_10 = None, None
-    with st.spinner("Analyzing recent performance data..."):
+    
+    with st.spinner("Training models... This may take a while."):
+        # Train stacking & ARIMA models with progress updates
         stack_models, arima_models, team_stats = train_team_models(team_data)
-        # NEW: Train LSTM models from sequential team data
+        # Train LSTM models with progress updates
         lstm_models = train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2)
         team_stats_global = team_stats
         results.clear()
         for _, row in upcoming.iterrows():
             home, away = row['home_team'], row['away_team']
-            # Pass lstm_models into the prediction function
             home_pred, _ = predict_team_score(home, stack_models, arima_models, lstm_models, team_stats, team_data)
             away_pred, _ = predict_team_score(away, stack_models, arima_models, lstm_models, team_stats, team_data)
             row_gameday = to_naive(row['gameday'])
