@@ -484,7 +484,7 @@ def train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2):
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def train_team_models(team_data: pd.DataFrame):
     """
     Trains stacking regressors and ARIMA models for each team.
@@ -747,7 +747,7 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ################################################################################
 # NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def load_nba_data():
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
@@ -834,7 +834,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 # NCAAB HISTORICAL LOADER (UPDATED)
 ################################################################################
-@st.cache_data(ttl=7200)
+@st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
