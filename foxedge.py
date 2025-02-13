@@ -1156,7 +1156,7 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.query_params()
+    query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
         st.write("Task triggered successfully.")
