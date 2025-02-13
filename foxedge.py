@@ -34,7 +34,14 @@ import cbbpy.mens_scraper as cbb
 # Additional imports for hyperparameter tuning and time-series cross validation
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
-# --- Global Flags for Model Tuning (Optimal Setup) ---
+# NEW: Import TensorFlow/Keras for the LSTM neural network
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+
+################################################################################
+# GLOBAL FLAGS FOR MODEL TUNING (Optimal Setup) ---
+################################################################################
 USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (we rely on Bayesian search)
 USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimization
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
@@ -393,6 +400,75 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
     return scores
 
 ################################################################################
+# NEURAL NETWORK (LSTM) MODEL FOR SEQUENTIAL DATA
+################################################################################
+def create_lstm_model(input_shape):
+    """
+    Creates and compiles an LSTM neural network model.
+    
+    Args:
+        input_shape (tuple): Shape of the input data (timesteps, features)
+    
+    Returns:
+        model (tf.keras.Model): Compiled LSTM model.
+    """
+    model = Sequential()
+    model.add(LSTM(50, activation='relu', input_shape=input_shape, return_sequences=True))
+    model.add(Dropout(0.2))
+    model.add(LSTM(25, activation='relu'))
+    model.add(Dropout(0.2))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+def prepare_team_sequences(team_data, team, window_size=3):
+    """
+    Prepare sequential data for a given team by creating overlapping windows.
+    
+    Args:
+        team_data (pd.DataFrame): DataFrame containing game data with 'gameday' and 'score' columns.
+        team (str): The team name.
+        window_size (int): Number of past games to use as input.
+    
+    Returns:
+        X (np.ndarray): 2D array of input sequences.
+        y (np.ndarray): 1D array of target scores.
+    """
+    team_df = team_data[team_data['team'] == team].sort_values('gameday')
+    scores = team_df['score'].values
+    X, y = [], []
+    for i in range(len(scores) - window_size):
+        X.append(scores[i:i+window_size])
+        y.append(scores[i+window_size])
+    return np.array(X), np.array(y)
+
+def train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2):
+    """
+    Trains an LSTM model for each team using sequential data created from their game logs.
+    
+    Args:
+        team_data (pd.DataFrame): DataFrame with team game data.
+        window_size (int): Number of past games to use as input.
+        epochs (int): Number of training epochs.
+        batch_size (int): Batch size for training.
+    
+    Returns:
+        dict: A dictionary mapping team names to a tuple (trained_model, window_size).
+    """
+    lstm_models = {}
+    teams = team_data['team'].unique()
+    for team in teams:
+        X, y = prepare_team_sequences(team_data, team, window_size)
+        if len(X) < 5:
+            continue
+        # Reshape X to [samples, timesteps, features]
+        X = X.reshape((X.shape[0], X.shape[1], 1))
+        model = create_lstm_model((X.shape[1], 1))
+        model.fit(X, y, epochs=epochs, batch_size=batch_size, verbose=0)
+        lstm_models[team] = (model, window_size)
+    return lstm_models
+
+################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
 @st.cache_data(ttl=3600)
@@ -499,13 +575,28 @@ def train_team_models(team_data: pd.DataFrame):
                 continue
     return stack_models, arima_models, team_stats
 
-def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
+def predict_team_score(team, stack_models, arima_models, lstm_models, team_stats, team_data):
+    """
+    Predicts a team's score using an ensemble of stacking, ARIMA, and LSTM predictions.
+    
+    Args:
+        team (str): Team name.
+        stack_models (dict): Trained stacking models per team.
+        arima_models (dict): Trained ARIMA models per team.
+        lstm_models (dict): Trained LSTM models per team.
+        team_stats (dict): Dictionary of team statistics.
+        team_data (pd.DataFrame): DataFrame with team game data.
+    
+    Returns:
+        tuple: (ensemble prediction, (confidence lower, confidence upper))
+    """
     if team not in team_stats:
         return None, (None, None)
     df_team = team_data[team_data['team'] == team]
     data_len = len(df_team)
     stack_pred = None
     arima_pred = None
+    lstm_pred = None
     if data_len < 3:
         return None, (None, None)
     last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
@@ -523,31 +614,25 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
         except Exception as e:
             print(f"Error predicting with ARIMA for team {team}: {e}")
             arima_pred = None
-    ensemble = None
-    if stack_pred is not None and arima_pred is not None:
-        mse_stack = team_stats[team].get('mse', 1)
-        mse_arima = None
+    if team in lstm_models:
         try:
-            resid = arima_models[team].resid()
-            mse_arima = np.mean(np.square(resid))
+            model, window_size = lstm_models[team]
+            team_df = df_team.sort_values('gameday')
+            scores = team_df['score'].values
+            if len(scores) >= window_size:
+                last_window = scores[-window_size:]
+                last_window = np.array(last_window).reshape((1, window_size, 1))
+                lstm_pred = float(model.predict(last_window)[0][0])
         except Exception as e:
-            mse_arima = None
-        eps = 1e-6
-        if mse_arima is not None and mse_arima > 0:
-            weight_stack = 1 / (mse_stack + eps)
-            weight_arima = 1 / (mse_arima + eps)
-            ensemble = (stack_pred * weight_stack + arima_pred * weight_arima) / (weight_stack + weight_arima)
-        else:
-            ensemble = (stack_pred + arima_pred) / 2
-    elif stack_pred is not None:
-        ensemble = stack_pred
-    elif arima_pred is not None:
-        ensemble = arima_pred
-    else:
-        ensemble = None
-    if team_stats[team].get('mse', 0) > 150:
+            print(f"Error predicting with LSTM for team {team}: {e}")
+            lstm_pred = None
+
+    # Ensemble: average all available predictions
+    predictions = [p for p in [stack_pred, arima_pred, lstm_pred] if p is not None]
+    if not predictions:
         return None, (None, None)
-    if ensemble is None:
+    ensemble = np.mean(predictions)
+    if team_stats[team].get('mse', 0) > 150:
         return None, (None, None)
     bias = team_stats[team].get('bias', 0)
     ensemble_calibrated = ensemble + bias
@@ -994,12 +1079,15 @@ def run_league_pipeline(league_choice):
         top_10, bottom_10 = None, None
     with st.spinner("Analyzing recent performance data..."):
         stack_models, arima_models, team_stats = train_team_models(team_data)
+        # NEW: Train LSTM models from sequential team data
+        lstm_models = train_team_lstm_models(team_data, window_size=3, epochs=50, batch_size=2)
         team_stats_global = team_stats
         results.clear()
         for _, row in upcoming.iterrows():
             home, away = row['home_team'], row['away_team']
-            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
-            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+            # Pass lstm_models into the prediction function
+            home_pred, _ = predict_team_score(home, stack_models, arima_models, lstm_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, stack_models, arima_models, lstm_models, team_stats, team_data)
             row_gameday = to_naive(row['gameday'])
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
@@ -1142,7 +1230,6 @@ def run_league_pipeline(league_choice):
     if st.sidebar.checkbox("Show Sportsbook Odds Comparison (Optional)"):
         if pysbr_available:
             try:
-                # Build a list of games from our predictions results
                 games_for_odds = []
                 for res in results:
                     games_for_odds.append({
@@ -1154,7 +1241,6 @@ def run_league_pipeline(league_choice):
                 st.header("Sportsbook Odds Comparison")
                 for res in results:
                     game_key = generate_game_key(res["date"], res["home_team"], res["away_team"])
-                    # Only display if market_spread is available
                     if odds_data.get(game_key, {}).get("market_spread") is not None:
                         odds_bet = evaluate_odds_matchup(
                             {"gameday": res["date"], "home_team": res["home_team"], "away_team": res["away_team"]},
@@ -1204,7 +1290,6 @@ def scheduled_task():
 # MAIN FUNCTION (with Homepage as First Page)
 ################################################################################
 def main():
-    # Homepage: Display a welcome page that must be seen first.
     if 'homepage_done' not in st.session_state:
         st.title("Welcome to FoxEdge Sports Betting Insights")
         st.markdown("""
@@ -1216,7 +1301,6 @@ Explore predictions, view detailed analyses, and generate social posts to share 
             st.experimental_rerun()
         st.stop()
 
-    # Main App (after homepage)
     st.markdown("""
     <div class="header-banner">
         <h1>🦊 FoxEdge</h1>
@@ -1224,7 +1308,6 @@ Explore predictions, view detailed analyses, and generate social posts to share 
     </div>
     """, unsafe_allow_html=True)
     
-    # Login/Signup Flow
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if not st.session_state['logged_in']:
@@ -1274,7 +1357,6 @@ Explore predictions, view detailed analyses, and generate social posts to share 
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    # Use st.query_params (property, not a function)
     query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
