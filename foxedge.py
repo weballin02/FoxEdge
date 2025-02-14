@@ -872,8 +872,9 @@ def display_bet_card(bet, team_stats_global, team_data=None):
     with st.expander("Generate Social Media Post", expanded=False):
         if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
             post = generate_social_media_post(bet)
-            st.code(post, language="markdown")
-
+            # Use st.markdown to render the markdown formatting instead of showing the raw ** characters.
+            st.markdown(post)
+            
 ################################################################################
 # GLOBALS
 ################################################################################
