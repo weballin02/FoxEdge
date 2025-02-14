@@ -236,7 +236,7 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
-def _train_team(team, team_data, disable_tuning):
+def _train_team(team, team_data, disable_tuning, league_choice):
     df_team = team_data[team_data['team'] == team].copy()
     df_team.sort_values('gameday', inplace=True)
     df_team['gameday'] = pd.to_datetime(df_team['gameday'], errors='coerce')
@@ -355,14 +355,21 @@ def _train_team(team, team_data, disable_tuning):
     # Save the XGB model for feature importance analysis later
     team_xgb_models[team] = xgb_model
 
-    # ARIMA training is skipped in this configuration
-    arima_model = None
+    # ARIMA training: For NCAAB skip ARIMA; for NFL and NBA, train ARIMA on y.
+    if league_choice == "NCAAB":
+        arima_model = None
+    else:
+        try:
+            arima_model = auto_arima(y, seasonal=False, stepwise=True, error_action='ignore')
+        except Exception as e:
+            st.write(f"ARIMA training failed for team {team}: {e}")
+            arima_model = None
 
     team_stats['mse'] = mse
     team_stats['bias'] = bias
     return team, stack, arima_model, team_stats
 
-def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
+def train_team_models(team_data: pd.DataFrame, disable_tuning=False, league_choice=""):
     st.info("🔄 Initializing models and processing team data...")
     teams = team_data['team'].unique()
     total_teams = len(teams)
@@ -382,7 +389,7 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
         estimated_remaining = int((total_teams - (idx + 1)) * avg_time)
         eta_text.text(f"⏳ Estimated time remaining: ~{estimated_remaining} seconds")
         
-        team_name, model, arima_model, team_stats = _train_team(team, team_data, disable_tuning)
+        team_name, model, arima_model, team_stats = _train_team(team, team_data, disable_tuning, league_choice)
         if model is not None:
             results_dict[team] = model
             arima_dict[team] = arima_model
@@ -627,6 +634,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 def load_ncaab_data_current_season(season=2025):
     st.info("🔄 Loading current season NCAAB data...")
+    progress_placeholder = st.empty()  # Placeholder for dynamic progress updates
     start_time = time.time()
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
@@ -659,16 +667,17 @@ def load_ncaab_data_current_season(season=2025):
     data['game_index'] = data.groupby('team').cumcount()
     elapsed = time.time() - start_time
 
-    # Calculate progress using unique game days.
-    unique_days = data['gameday'].dt.date.unique()
-    days_scraped = len(unique_days)
-    total_days = (max(unique_days) - min(unique_days)).days + 1 if days_scraped > 0 else 1
-    progress_percent = (days_scraped / total_days) * 100
-    target_date = min(unique_days).strftime("%m/%d/%y") if days_scraped > 0 else "N/A"
-    progress_bar_str = f"{progress_percent:.0f}%|{'█' * int(progress_percent // 10):10}|"
-    progress_msg = (f"Scraping {len(data)} games on {target_date}:  {progress_bar_str} "
-                    f"{days_scraped} of {total_days} days scraped")
-    st.info(progress_msg)
+    # Dynamic progress: iterate over unique game days
+    unique_days = sorted(data['gameday'].dt.date.unique())
+    total_days = len(unique_days)
+    for i, day in enumerate(unique_days):
+        progress_percent = ((i + 1) / total_days) * 100
+        progress_bar_str = f"{progress_percent:.0f}%|{'█' * int(progress_percent // 10):10}|"
+        progress_msg = (f"Scraping {len(data)} games on {day.strftime('%m/%d/%y')}:  {progress_bar_str} "
+                        f"{i + 1} of {total_days} days scraped")
+        progress_placeholder.info(progress_msg)
+        time.sleep(0.1)
+    
     st.success("✅ NCAAB data loaded successfully.")
     return data
 
@@ -923,9 +932,9 @@ def run_league_pipeline(league_choice):
 
     with st.spinner("⏳ Analyzing recent performance data..."):
         if league_choice == "NCAAB" and DISABLE_TUNING_FOR_NCAAB:
-            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=True)
+            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=True, league_choice=league_choice)
         else:
-            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=False)
+            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=False, league_choice=league_choice)
         global team_stats_global
         team_stats_global = team_stats
         results.clear()
