@@ -262,7 +262,6 @@ def _train_team(team, team_data, disable_tuning, league_choice):
     }
     features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'last_5_weighted']].fillna(0)
     
-    # DEBUG: Output feature variability information
     st.write(f"DEBUG - Team {team} feature summary:")
     for col in features.columns:
         unique_values = features[col].unique()
@@ -278,7 +277,6 @@ def _train_team(team, team_data, disable_tuning, league_choice):
     X_train, X_test = X[:split_index], X[split_index:]
     y_train, y_test = y[:split_index], y[split_index:]
     
-    # Train XGB model
     st.info(f"Team {team}: Training XGB model...")
     if disable_tuning:
         xgb_model = XGBRegressor(n_estimators=100, max_depth=3, random_state=42)
@@ -293,7 +291,6 @@ def _train_team(team, team_data, disable_tuning, league_choice):
             st.write(f"Error training XGB for team {team}: {e}")
             xgb_model = XGBRegressor(n_estimators=100, random_state=42)
     
-    # Train LGBM model
     st.info(f"Team {team}: Training LGBM model...")
     if disable_tuning:
         lgbm_model = LGBMRegressor(n_estimators=100, max_depth=5, random_state=42)
@@ -315,7 +312,6 @@ def _train_team(team, team_data, disable_tuning, league_choice):
             st.write(f"Error training LGBM for team {team}: {e}")
             lgbm_model = LGBMRegressor(n_estimators=100, random_state=42)
     
-    # Train CatBoost model; if it fails, omit it from the ensemble.
     st.info(f"Team {team}: Training CatBoost model...")
     cat_model = None
     try:
@@ -331,7 +327,6 @@ def _train_team(team, team_data, disable_tuning, league_choice):
         st.write(f"Error training CatBoost for team {team}: {e}")
         cat_model = None
     
-    # Build list of estimators for stacking – include only successfully trained models.
     estimators = [('xgb', xgb_model), ('lgbm', lgbm_model)]
     if cat_model is not None:
         estimators.append(('cat', cat_model))
@@ -352,10 +347,8 @@ def _train_team(team, team_data, disable_tuning, league_choice):
         st.write(f"Error training Stacking Regressor for team {team}: {e}")
         return team, None, None, None
 
-    # Save the XGB model for feature importance analysis later
     team_xgb_models[team] = xgb_model
 
-    # ARIMA training: For NCAAB skip ARIMA; for NFL and NBA, train ARIMA on y.
     if league_choice == "NCAAB":
         arima_model = None
     else:
@@ -634,7 +627,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 def load_ncaab_data_current_season(season=2025):
     st.info("🔄 Loading current season NCAAB data...")
-    progress_placeholder = st.empty()  # Placeholder for dynamic progress updates
+    progress_placeholder = st.empty()
     start_time = time.time()
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
@@ -666,8 +659,6 @@ def load_ncaab_data_current_season(season=2025):
     data.sort_values(['team', 'gameday'], inplace=True)
     data['game_index'] = data.groupby('team').cumcount()
     elapsed = time.time() - start_time
-
-    # Dynamic progress: iterate over unique game days
     unique_days = sorted(data['gameday'].dt.date.unique())
     total_days = len(unique_days)
     for i, day in enumerate(unique_days):
@@ -677,7 +668,6 @@ def load_ncaab_data_current_season(season=2025):
                         f"{i + 1} of {total_days} days scraped")
         progress_placeholder.info(progress_msg)
         time.sleep(0.1)
-    
     st.success("✅ NCAAB data loaded successfully.")
     return data
 
@@ -723,6 +713,186 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     df.sort_values('gameday', inplace=True)
     st.success("✅ Upcoming NCAAB games fetched.")
     return df
+
+################################################################################
+# NCAAB-SPECIFIC FUNCTIONS (FROM PREVIOUS SCRIPT)
+################################################################################
+@st.cache_data(ttl=14400)
+def train_team_models_ncaab(team_data: pd.DataFrame) -> tuple:
+    """
+    Trains a hybrid model (Stacking Regressor + Auto-ARIMA) for each NCAA team
+    using a simpler feature set (rolling_avg, rolling_std, weighted_avg).
+    Returns:
+        stack_models: Dictionary of trained Stacking Regressors keyed by team.
+        arima_models: Dictionary of trained ARIMA models keyed by team.
+        team_stats: Dictionary containing team statistics (including MSE and bias).
+    """
+    stack_models = {}
+    arima_models = {}
+    team_stats = {}
+
+    all_teams = team_data['team'].unique()
+    for team in all_teams:
+        df_team = team_data[team_data['team'] == team].copy()
+        df_team.sort_values('gameday', inplace=True)
+        scores = df_team['score'].reset_index(drop=True)
+
+        if len(scores) < 3:
+            continue
+
+        # Feature Engineering
+        df_team['rolling_avg'] = df_team['score'].rolling(window=3, min_periods=1).mean()
+        df_team['rolling_std'] = df_team['score'].rolling(window=3, min_periods=1).std().fillna(0)
+        df_team['season_avg'] = df_team['score'].expanding().mean()
+        df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
+
+        team_stats[team] = {
+            'mean': round_half(scores.mean()),
+            'std': round_half(scores.std()),
+            'max': round_half(scores.max()),
+            'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
+        }
+
+        features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].fillna(0)
+        X = features.values
+        y = scores.values
+
+        n = len(X)
+        split_index = int(n * 0.8)
+        if split_index < 2 or n - split_index < 1:
+            continue
+        X_train, X_test = X[:split_index], X[split_index:]
+        y_train, y_test = y[:split_index], y[split_index:]
+
+        try:
+            xgb = XGBRegressor(random_state=42)
+            xgb_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5]}
+            xgb_best = tune_model(xgb, xgb_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning XGB for team {team}: {e}")
+            xgb_best = XGBRegressor(n_estimators=100, random_state=42)
+
+        try:
+            lgbm = LGBMRegressor(random_state=42)
+            lgbm_grid = {'n_estimators': [50, 100], 'max_depth': [None, 5]}
+            lgbm_best = tune_model(lgbm, lgbm_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning LGBM for team {team}: {e}")
+            lgbm_best = LGBMRegressor(n_estimators=100, random_state=42)
+
+        try:
+            cat = CatBoostRegressor(verbose=0, random_state=42)
+            cat_grid = {'iterations': [50, 100], 'learning_rate': [0.1, 0.05]}
+            cat_best = tune_model(cat, cat_grid, X_train, y_train)
+        except Exception as e:
+            print(f"Error tuning CatBoost for team {team}: {e}")
+            cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+
+        estimators = [
+            ('xgb', xgb_best),
+            ('lgbm', lgbm_best),
+            ('cat', cat_best)
+        ]
+
+        stack = StackingRegressor(
+            estimators=estimators,
+            final_estimator=LGBMRegressor(),
+            passthrough=False,
+            cv=3
+        )
+
+        try:
+            stack.fit(X_train, y_train)
+            preds = stack.predict(X_test)
+            mse = mean_squared_error(y_test, preds)
+            print(f"Team: {team}, Stacking Regressor MSE: {mse}")
+            stack_models[team] = stack
+            team_stats[team]['mse'] = mse
+            bias = np.mean(y_train - stack.predict(X_train))
+            team_stats[team]['bias'] = bias
+        except Exception as e:
+            print(f"Error training Stacking Regressor for team {team}: {e}")
+            continue
+
+        if len(scores) >= 7:
+            try:
+                arima_model = auto_arima(
+                    scores,
+                    seasonal=False,
+                    trace=False,
+                    error_action='ignore',
+                    suppress_warnings=True,
+                    max_p=3,
+                    max_q=3
+                )
+                arima_models[team] = arima_model
+            except Exception as e:
+                print(f"Error training ARIMA for team {team}: {e}")
+                continue
+
+    return stack_models, arima_models, team_stats
+
+def predict_team_score_ncaab(team, stack_models, arima_models, team_stats, team_data):
+    if team not in team_stats:
+        return None, (None, None)
+    df_team = team_data[team_data['team'] == team]
+    data_len = len(df_team)
+    stack_pred = None
+    arima_pred = None
+    if data_len < 3:
+        return None, (None, None)
+    last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
+    X_next = last_features.values
+    if team in stack_models:
+        try:
+            stack_pred = float(stack_models[team].predict(X_next)[0])
+        except Exception as e:
+            print(f"Error predicting with Stacking Regressor for team {team}: {e}")
+            stack_pred = None
+    if team in arima_models:
+        try:
+            forecast = arima_models[team].predict(n_periods=1)
+            arima_pred = float(forecast[0] if isinstance(forecast, (list, np.ndarray)) else forecast)
+        except Exception as e:
+            print(f"Error predicting with ARIMA for team {team}: {e}")
+            arima_pred = None
+    ensemble = None
+    if stack_pred is not None and arima_pred is not None:
+        mse_stack = team_stats[team].get('mse', 1)
+        mse_arima = None
+        try:
+            resid = arima_models[team].resid()
+            mse_arima = np.mean(np.square(resid))
+        except Exception as e:
+            mse_arima = None
+        eps = 1e-6
+        if mse_arima is not None and mse_arima > 0:
+            weight_stack = 1 / (mse_stack + eps)
+            weight_arima = 1 / (mse_arima + eps)
+            ensemble = (stack_pred * weight_stack + arima_pred * weight_arima) / (weight_stack + weight_arima)
+        else:
+            ensemble = (stack_pred + arima_pred) / 2
+    elif stack_pred is not None:
+        ensemble = stack_pred
+    elif arima_pred is not None:
+        ensemble = arima_pred
+    else:
+        ensemble = None
+    if team_stats[team].get('mse', 0) > 150:
+        return None, (None, None)
+    if ensemble is None:
+        return None, (None, None)
+    bias = team_stats[team].get('bias', 0)
+    ensemble_calibrated = ensemble + bias
+    mu = team_stats[team]['mean']
+    sigma = team_stats[team]['std']
+    if isinstance(mu, (pd.Series, pd.DataFrame, np.ndarray)):
+        mu = mu.item()
+    if isinstance(sigma, (pd.Series, pd.DataFrame, np.ndarray)):
+        sigma = sigma.item()
+    conf_low = round_half(mu - 1.96 * sigma)
+    conf_high = round_half(mu + 1.96 * sigma)
+    return round_half(ensemble_calibrated), (conf_low, conf_high)
 
 ################################################################################
 # UI COMPONENTS
@@ -931,10 +1101,11 @@ def run_league_pipeline(league_choice):
         top_10, bottom_10 = None, None
 
     with st.spinner("⏳ Analyzing recent performance data..."):
-        if league_choice == "NCAAB" and DISABLE_TUNING_FOR_NCAAB:
-            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=True, league_choice=league_choice)
+        if league_choice == "NCAAB":
+            # Use the NCAAB-specific training function
+            stack_models, arima_models, team_stats = train_team_models_ncaab(team_data)
         else:
-            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=False, league_choice=league_choice)
+            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=(DISABLE_TUNING_FOR_NCAAB if league_choice=="NCAAB" else False), league_choice=league_choice)
         global team_stats_global
         team_stats_global = team_stats
         results.clear()
@@ -949,23 +1120,14 @@ def run_league_pipeline(league_choice):
 
         for _, row in upcoming.iterrows():
             home, away = row['home_team'], row['away_team']
-            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
-            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+            if league_choice == "NCAAB":
+                home_pred, _ = predict_team_score_ncaab(home, stack_models, arima_models, team_stats, team_data)
+                away_pred, _ = predict_team_score_ncaab(away, stack_models, arima_models, team_stats, team_data)
+            else:
+                home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
+                away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
             row_gameday = to_naive(row['gameday'])
             
-            home_games = team_data[team_data['team'] == home]
-            if not home_games.empty:
-                last_game_home = to_naive(home_games['gameday'].max())
-                rest_days_home = (row_gameday - last_game_home).days
-                home_rest_adj = team_stats.get(home, {}).get('rest_effect', {}).get(rest_days_home, 0)
-                home_pred = (home_pred or 0) + home_rest_adj
-            away_games = team_data[team_data['team'] == away]
-            if not away_games.empty:
-                last_game_away = to_naive(away_games['gameday'].max())
-                rest_days_away = (row_gameday - last_game_away).days
-                away_rest_adj = team_stats.get(away, {}).get('rest_effect', {}).get(rest_days_away, 0)
-                away_pred = (away_pred or 0) + away_rest_adj
-
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 home_pred += 1
                 away_pred -= 1
@@ -991,6 +1153,22 @@ def run_league_pipeline(league_choice):
                     elif home in bottom_10:
                         away_pred += 2
             elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
                 home_pred += 1
                 away_pred -= 1
                 if top_10 and bottom_10:
@@ -1141,7 +1319,7 @@ def main():
             st.warning("No predictions to save.")
 
 if __name__ == "__main__":
-    query_params = st.query_params  # Use the property, not a callable.
+    query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
         st.write("Task triggered successfully.")
