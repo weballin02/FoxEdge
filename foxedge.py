@@ -1290,7 +1290,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.experimental_rerun()
+                    st.rerun()
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1300,7 +1300,7 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.experimental_rerun()
+            st.rerun()
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
                                      help="Choose which league's games you'd like to analyze")
