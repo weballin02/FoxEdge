@@ -27,7 +27,6 @@ import os
 import optuna  # For Bayesian hyperparameter optimization
 import inspect
 import matplotlib.pyplot as plt
-from concurrent.futures import ProcessPoolExecutor
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
@@ -41,7 +40,6 @@ USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimi
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 
 # --- NEW FLAG: disable hyperparameter tuning & ARIMA for NCAAB to speed things up ---
-# When True the pipeline will use default model parameters and skip ARIMA training.
 DISABLE_TUNING_FOR_NCAAB = True
 
 # Global container to store each team’s XGB model for feature importance analysis
@@ -59,9 +57,6 @@ def to_naive(dt):
 # FEATURE IMPORTANCE PLOTTING (USING STREAMLIT)
 ################################################################################
 def plot_feature_importance(model, feature_names):
-    """
-    Plots feature importance for a model that supports feature_importances_.
-    """
     try:
         importance = model.feature_importances_
     except AttributeError:
@@ -99,7 +94,6 @@ except KeyError:
     st.warning("Firebase secrets not found or incomplete in st.secrets. Please verify your secrets.toml.")
 
 def login_with_rest(email, password):
-    """Login user using Firebase REST API."""
     try:
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
         payload = {"email": email, "password": password, "returnSecureToken": True}
@@ -114,7 +108,6 @@ def login_with_rest(email, password):
         return None
 
 def signup_user(email, password):
-    """Sign up a new user using Firebase."""
     try:
         user = auth.create_user(email=email, password=password)
         st.success(f"User {email} created successfully!")
@@ -123,7 +116,6 @@ def signup_user(email, password):
         st.error(f"Error: {e}")
 
 def logout_user():
-    """Logs out the current user."""
     for key in ['email', 'logged_in']:
         if key in st.session_state:
             del st.session_state[key]
@@ -157,12 +149,6 @@ def round_half(number):
     return round(number * 2) / 2
 
 def supports_early_stopping(model):
-    """
-    Checks if the model's fit method supports the 'early_stopping_rounds' parameter.
-    
-    Returns:
-        True if early_stopping_rounds is accepted, False otherwise.
-    """
     try:
         sig = inspect.signature(model.fit)
         return 'early_stopping_rounds' in sig.parameters
@@ -250,6 +236,7 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
+# Sequentially train each team's models and update UI with which model is currently being trained.
 def _train_team(team, team_data, disable_tuning):
     df_team = team_data[team_data['team'] == team].copy()
     df_team.sort_values('gameday', inplace=True)
@@ -257,7 +244,7 @@ def _train_team(team, team_data, disable_tuning):
     scores = df_team['score'].reset_index(drop=True)
     if len(scores) < 3:
         return team, None, None, None
-    # Compute rolling and recent performance features
+    # Compute features
     df_team['rolling_avg'] = df_team['score'].rolling(window=3, min_periods=1).mean()
     df_team['rolling_std'] = df_team['score'].rolling(window=3, min_periods=1).std().fillna(0)
     df_team['season_avg'] = df_team['score'].expanding().mean()
@@ -283,10 +270,12 @@ def _train_team(team, team_data, disable_tuning):
         return team, None, None, None
     X_train, X_test = X[:split_index], X[split_index:]
     y_train, y_test = y[:split_index], y[split_index:]
+    
+    # Train XGB model
+    st.info(f"Team {team}: Training XGB model...")
     if disable_tuning:
         xgb_model = XGBRegressor(n_estimators=100, max_depth=3, random_state=42)
-        lgbm_model = LGBMRegressor(n_estimators=100, max_depth=5, random_state=42)
-        cat_model = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+        xgb_model.fit(X_train, y_train)
     else:
         try:
             xgb = XGBRegressor(random_state=42)
@@ -294,8 +283,15 @@ def _train_team(team, team_data, disable_tuning):
             xgb_model = tune_model(xgb, xgb_grid, X_train, y_train,
                                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
         except Exception as e:
-            print(f"Error tuning XGB for team {team}: {e}")
+            st.write(f"Error training XGB for team {team}: {e}")
             xgb_model = XGBRegressor(n_estimators=100, random_state=42)
+    
+    # Train LGBM model
+    st.info(f"Team {team}: Training LGBM model...")
+    if disable_tuning:
+        lgbm_model = LGBMRegressor(n_estimators=100, max_depth=5, random_state=42)
+        lgbm_model.fit(X_train, y_train)
+    else:
         try:
             lgbm = LGBMRegressor(random_state=42)
             lgbm_grid = {
@@ -309,17 +305,26 @@ def _train_team(team, team_data, disable_tuning):
             lgbm_model = tune_model(lgbm, lgbm_grid, X_train, y_train,
                                     use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=ENABLE_EARLY_STOPPING)
         except Exception as e:
-            print(f"Error tuning LGBM for team {team}: {e}")
+            st.write(f"Error training LGBM for team {team}: {e}")
             lgbm_model = LGBMRegressor(n_estimators=100, random_state=42)
+    
+    # Train CatBoost model
+    st.info(f"Team {team}: Training CatBoost model...")
+    if disable_tuning:
+        cat_model = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+        cat_model.fit(X_train, y_train)
+    else:
         try:
             cat = CatBoostRegressor(verbose=0, random_state=42)
             cat_grid = {'iterations': [50, 100, 150], 'learning_rate': [0.1, 0.05, 0.01]}
             cat_model = tune_model(cat, cat_grid, X_train, y_train,
                                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
         except Exception as e:
-            print(f"Error tuning CatBoost for team {team}: {e}")
+            st.write(f"Error training CatBoost for team {team}: {e}")
             cat_model = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
     
+    # Combine models into a stacking regressor
+    st.info(f"Team {team}: Creating and training Stacking Regressor...")
     estimators = [('xgb', xgb_model), ('lgbm', lgbm_model), ('cat', cat_model)]
     stack = StackingRegressor(
         estimators=estimators,
@@ -333,17 +338,15 @@ def _train_team(team, team_data, disable_tuning):
         mse = mean_squared_error(y_test, preds)
         bias = np.mean(y_train - stack.predict(X_train))
     except Exception as e:
+        st.write(f"Error training Stacking Regressor for team {team}: {e}")
         return team, None, None, None
+
+    # Save the XGB model for feature importance analysis later
     team_xgb_models[team] = xgb_model
-    if not disable_tuning and len(scores) >= 7:
-        try:
-            arima_model = auto_arima(scores, seasonal=False, trace=False,
-                                     error_action='ignore', suppress_warnings=True,
-                                     max_p=3, max_q=3)
-        except Exception as e:
-            arima_model = None
-    else:
-        arima_model = None
+
+    # ARIMA training is skipped in this configuration
+    arima_model = None
+
     team_stats['mse'] = mse
     team_stats['bias'] = bias
     return team, stack, arima_model, team_stats
@@ -362,8 +365,8 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
     
     for idx, team in enumerate(teams):
         team_start_time = time.time()
-        # Update status to include which models are being trained
-        status_text.text(f"🔍 Training XGB, LGBM, and CatBoost models for team: {team}... (Team {idx+1} of {total_teams})")
+        # Update status message for the team
+        status_text.text(f"🔍 Training models for team: {team}... (Team {idx+1} of {total_teams})")
         elapsed = time.time() - start_time
         avg_time = elapsed / (idx + 1) if idx > 0 else 0
         estimated_remaining = int((total_teams - (idx + 1)) * avg_time)
@@ -613,12 +616,6 @@ def fetch_upcoming_nba_games(days_ahead=3):
 # NCAAB HISTORICAL LOADER (FROM SCRIPT 1)
 ################################################################################
 def load_ncaab_data_current_season(season=2025):
-    """
-    Loads finished or in-progress NCAA MBB games for the given season
-    using cbbpy. Adds is_home=1 for home team, is_home=0 for away.
-    
-    Now also includes opponent score (opp_score) for defensive metric calculations.
-    """
     st.info("🔄 Loading current season NCAAB data...")
     start_time = time.time()
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
@@ -655,10 +652,7 @@ def load_ncaab_data_current_season(season=2025):
     # Calculate progress using unique game days.
     unique_days = data['gameday'].dt.date.unique()
     days_scraped = len(unique_days)
-    if days_scraped > 0:
-        total_days = (max(unique_days) - min(unique_days)).days + 1
-    else:
-        total_days = 1
+    total_days = (max(unique_days) - min(unique_days)).days + 1 if days_scraped > 0 else 1
     progress_percent = (days_scraped / total_days) * 100
     target_date = min(unique_days).strftime("%m/%d/%y") if days_scraped > 0 else "N/A"
     progress_bar_str = f"{progress_percent:.0f}%|{'█' * int(progress_percent // 10):10}|"
