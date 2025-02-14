@@ -262,6 +262,14 @@ def _train_team(team, team_data, disable_tuning):
         'rest_effect': rest_effect_dict
     }
     features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'last_5_weighted']].fillna(0)
+    
+    # DEBUG: Output feature variability information
+    st.write(f"DEBUG - Team {team} feature summary:")
+    for col in features.columns:
+        unique_values = features[col].unique()
+        variance = features[col].var()
+        st.write(f"{col}: Unique values = {unique_values}, Variance = {variance}")
+
     X = features.values
     y = scores.values
     n = len(X)
@@ -308,8 +316,9 @@ def _train_team(team, team_data, disable_tuning):
             st.write(f"Error training LGBM for team {team}: {e}")
             lgbm_model = LGBMRegressor(n_estimators=100, random_state=42)
     
-    # Train CatBoost model with fallback in case of failure.
+    # Train CatBoost model; if it fails, omit it from the ensemble.
     st.info(f"Team {team}: Training CatBoost model...")
+    cat_model = None
     try:
         if disable_tuning:
             cat_model = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
@@ -321,19 +330,15 @@ def _train_team(team, team_data, disable_tuning):
                                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
     except Exception as e:
         st.write(f"Error training CatBoost for team {team}: {e}")
-        # Fallback: use a DummyRegressor that predicts the mean of y_train
-        class DummyRegressor:
-            def fit(self, X, y):
-                self.mean_ = np.mean(y)
-            def predict(self, X):
-                return np.full((len(X),), self.mean_)
-        fallback_model = DummyRegressor()
-        fallback_model.fit(X_train, y_train)
-        cat_model = fallback_model
+        # Instead of using a dummy regressor, we simply omit CatBoost from the ensemble.
+        cat_model = None
     
-    # Combine models into a stacking regressor
+    # Build list of estimators for stacking – include only the models that successfully trained.
+    estimators = [('xgb', xgb_model), ('lgbm', lgbm_model)]
+    if cat_model is not None:
+        estimators.append(('cat', cat_model))
+    
     st.info(f"Team {team}: Creating and training Stacking Regressor...")
-    estimators = [('xgb', xgb_model), ('lgbm', lgbm_model), ('cat', cat_model)]
     stack = StackingRegressor(
         estimators=estimators,
         final_estimator=LGBMRegressor(),
