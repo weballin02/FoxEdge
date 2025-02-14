@@ -236,7 +236,6 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
-# Sequentially train each team's models and update UI with which model is currently being trained.
 def _train_team(team, team_data, disable_tuning):
     df_team = team_data[team_data['team'] == team].copy()
     df_team.sort_values('gameday', inplace=True)
@@ -330,10 +329,9 @@ def _train_team(team, team_data, disable_tuning):
                                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
     except Exception as e:
         st.write(f"Error training CatBoost for team {team}: {e}")
-        # Instead of using a dummy regressor, we simply omit CatBoost from the ensemble.
         cat_model = None
     
-    # Build list of estimators for stacking – include only the models that successfully trained.
+    # Build list of estimators for stacking – include only successfully trained models.
     estimators = [('xgb', xgb_model), ('lgbm', lgbm_model)]
     if cat_model is not None:
         estimators.append(('cat', cat_model))
@@ -378,7 +376,6 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
     
     for idx, team in enumerate(teams):
         team_start_time = time.time()
-        # Update status message for the team
         status_text.text(f"🔍 Training models for team: {team}... (Team {idx+1} of {total_teams})")
         elapsed = time.time() - start_time
         avg_time = elapsed / (idx + 1) if idx > 0 else 0
@@ -670,7 +667,7 @@ def load_ncaab_data_current_season(season=2025):
     target_date = min(unique_days).strftime("%m/%d/%y") if days_scraped > 0 else "N/A"
     progress_bar_str = f"{progress_percent:.0f}%|{'█' * int(progress_percent // 10):10}|"
     progress_msg = (f"Scraping {len(data)} games on {target_date}:  {progress_bar_str} "
-                    f"{days_scraped} of {total_days} days scraped in {elapsed:.1f} sec")
+                    f"{days_scraped} of {total_days} days scraped")
     st.info(progress_msg)
     st.success("✅ NCAAB data loaded successfully.")
     return data
