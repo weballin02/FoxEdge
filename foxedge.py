@@ -269,7 +269,7 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
         arima_models: Dictionary of trained ARIMA models keyed by team (empty if tuning is disabled).
         team_stats: Dictionary of team statistics including dynamic rest effects.
     """
-    st.info("Initializing models and processing team data...")
+    st.info("🔄 Initializing models and processing team data...")
     stack_models = {}
     arima_models = {}
     team_stats = {}
@@ -285,11 +285,11 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
     for idx, team in enumerate(all_teams):
         team_start_time = time.time()
         # Update status for current team/model processing
-        status_text.text(f"Training models for team: {team}... (Team {idx+1} of {total_teams})")
+        status_text.text(f"🔍 Training models for team: {team}... (Team {idx+1} of {total_teams})")
         elapsed = time.time() - start_time
         avg_time = elapsed / (idx + 1) if idx > 0 else 0
         estimated_remaining = int((total_teams - (idx + 1)) * avg_time)
-        eta_text.text(f"Estimated time remaining: ~{estimated_remaining} seconds")
+        eta_text.text(f"⏳ Estimated time remaining: ~{estimated_remaining} seconds")
         
         df_team = team_data[team_data['team'] == team].copy()
         df_team.sort_values('gameday', inplace=True)
@@ -394,7 +394,7 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
             bias = np.mean(y_train - stack.predict(X_train))
             team_stats[team]['bias'] = bias
             # Display intermediate training metric
-            st.write(f"Team {team}: Stacking Regressor MSE = {mse:.3f}")
+            st.write(f"✅ Team {team}: Stacking Regressor MSE = {mse:.3f}")
         except Exception as e:
             print(f"Error training Stacking Regressor for team {team}: {e}")
             continue
@@ -422,13 +422,13 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
 
         # Display summary message for team training completion
         team_duration = int(time.time() - team_start_time)
-        st.success(f"Team {team} model trained successfully in {team_duration} seconds.")
+        st.success(f"🎉 Team {team} model trained successfully in {team_duration} seconds.")
         
         # Update progress bar
         progress_bar.progress((idx + 1) / total_teams)
 
     progress_bar.progress(1.0)
-    st.success("All team models processed successfully!")
+    st.success("✅ All team models processed successfully!")
     return stack_models, arima_models, team_stats
 
 def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
@@ -537,12 +537,14 @@ def find_top_bets(matchups, threshold=70.0):
 # NFL DATA LOADING
 ################################################################################
 def load_nfl_schedule():
+    st.info("🔄 Loading current NFL schedule...")
     current_year = datetime.now().year
     years = [current_year - i for i in range(12)]
     schedule = nfl.import_schedules(years)
     schedule['gameday'] = pd.to_datetime(schedule['gameday'], errors='coerce')
     if pd.api.types.is_datetime64tz_dtype(schedule['gameday']):
         schedule['gameday'] = schedule['gameday'].dt.tz_convert(None)
+    st.success("✅ NFL schedule loaded.")
     return schedule
 
 def preprocess_nfl_data(schedule):
@@ -562,17 +564,20 @@ def preprocess_nfl_data(schedule):
     return data
 
 def fetch_upcoming_nfl_games(schedule, days_ahead=7):
-    upcoming = schedule[schedule['home_score'].isna() & schedule['away_score'].isna()].copy()
+    st.info("✅ Fetching upcoming NFL games...")
     now = datetime.now()
     filter_date = now + timedelta(days=days_ahead)
+    upcoming = schedule[schedule['home_score'].isna() & schedule['away_score'].isna()].copy()
     upcoming = upcoming[upcoming['gameday'] <= filter_date].copy()
     upcoming.sort_values('gameday', inplace=True)
+    st.success("✅ Upcoming NFL games fetched.")
     return upcoming[['gameday', 'home_team', 'away_team']]
 
 ################################################################################
 # NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
 def load_nba_data():
+    st.info("🔄 Loading NBA data...")
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
     all_rows = []
@@ -627,9 +632,11 @@ def load_nba_data():
     df.sort_values('gameday', inplace=True)
     for col in ['off_rating', 'def_rating', 'pace']:
         df[col].fillna(df[col].mean(), inplace=True)
+    st.success("✅ NBA data loaded successfully.")
     return df
 
 def fetch_upcoming_nba_games(days_ahead=3):
+    st.info("✅ Fetching upcoming NBA games...")
     now = datetime.now()
     upcoming_rows = []
     for offset in range(days_ahead + 1):
@@ -653,6 +660,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
         return pd.DataFrame()
     upcoming = pd.DataFrame(upcoming_rows)
     upcoming.sort_values('gameday', inplace=True)
+    st.success("✅ Upcoming NBA games fetched.")
     return upcoming
 
 ################################################################################
@@ -665,8 +673,10 @@ def load_ncaab_data_current_season(season=2025):
     
     Now also includes opponent score (opp_score) for defensive metric calculations.
     """
+    st.info("🔄 Loading current season NCAAB data...")
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
+        st.error("No NCAAB data found for season {}".format(season))
         return pd.DataFrame()
 
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
@@ -697,6 +707,7 @@ def load_ncaab_data_current_season(season=2025):
     data['weighted_avg'] = (data['rolling_avg'] * 0.6) + (data['season_avg'] * 0.4)
     data.sort_values(['team', 'gameday'], inplace=True)
     data['game_index'] = data.groupby('team').cumcount()
+    st.success("✅ NCAAB data loaded successfully.")
     return data
 
 ########################################
@@ -706,6 +717,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     """
     Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
     """
+    st.info("✅ Fetching upcoming NCAAB games...")
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
     dates = [
@@ -748,6 +760,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
     df.sort_values('gameday', inplace=True)
+    st.success("✅ Upcoming NCAAB games fetched.")
     return df
 
 ################################################################################
@@ -807,7 +820,6 @@ def generate_social_media_post(bet):
         f"• **Spread:** {bet['spread_suggestion']}\n"
         f"• **Total Points:** {bet['predicted_total']}\n"
         f"• **Confidence:** {bet['confidence']:.1f}%\n\n"
-        f"{tone}\n\n"
         f"💬 **Testimonial:** “I turned a $10 bet into $50 thanks to FoxEdge – total game changer!” – Alex\n\n"
         f"👉 **CTA:** {{cta}}\n\n"
         f"💡 **Did You Know?** Our model analyzes recent form and key metrics to give you the edge!\n\n"
@@ -820,7 +832,6 @@ def generate_social_media_post(bet):
         f"• **Spread:** {bet['spread_suggestion']}\n"
         f"• **Total:** {bet['predicted_total']}\n"
         f"• **Confidence:** {bet['confidence']:.1f}%\n\n"
-        f"{tone}\n\n"
         f"💡 **FYI:** Our predictions leverage advanced analytics for an unbeatable edge.\n\n"
         f"👉 **CTA:** {{cta}}\n\n"
         f"🏷️ {{hashtags}}",
@@ -831,7 +842,6 @@ def generate_social_media_post(bet):
         f"Spread: {bet['spread_suggestion']}\n"
         f"Total Points: {bet['predicted_total']}\n"
         f"Confidence: {bet['confidence']:.1f}%\n\n"
-        f"{tone}\n\n"
         f"👉 **CTA:** {{cta}}\n\n"
         f"💡 **Did You Know?** Our system uses key metrics for that extra edge!\n\n"
         f"{{hashtags}}"
@@ -959,7 +969,7 @@ def run_league_pipeline(league_choice):
     else:
         top_10, bottom_10 = None, None
 
-    with st.spinner("Analyzing recent performance data..."):
+    with st.spinner("⏳ Analyzing recent performance data..."):
         if league_choice == "NCAAB" and DISABLE_TUNING_FOR_NCAAB:
             stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=True)
         else:
