@@ -25,6 +25,7 @@ import joblib
 import os
 import optuna  # For Bayesian hyperparameter optimization
 import inspect
+import matplotlib.pyplot as plt
 
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
@@ -41,6 +42,9 @@ ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 # When True the pipeline will use default model parameters and skip ARIMA training.
 DISABLE_TUNING_FOR_NCAAB = True
 
+# Global container to store each team’s XGB model for feature importance analysis
+team_xgb_models = {}
+
 ################################################################################
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
 ################################################################################
@@ -48,6 +52,27 @@ def to_naive(dt):
     if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
         return dt.replace(tzinfo=None)
     return dt
+
+################################################################################
+# FEATURE IMPORTANCE PLOTTING (USING STREAMLIT)
+################################################################################
+def plot_feature_importance(model, feature_names):
+    """
+    Plots feature importance for a model that supports feature_importances_.
+    """
+    try:
+        importance = model.feature_importances_
+    except AttributeError:
+        st.write("The provided model does not support feature_importances_.")
+        return
+
+    sorted_idx = np.argsort(importance)[::-1]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.bar(range(len(sorted_idx)), importance[sorted_idx], align="center")
+    ax.set_xticks(range(len(sorted_idx)))
+    ax.set_xticklabels(np.array(feature_names)[sorted_idx], rotation=45, ha="right")
+    ax.set_title("XGB Feature Importance")
+    st.pyplot(fig)
 
 ################################################################################
 # FIREBASE CONFIGURATION
@@ -125,14 +150,11 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
     st.success("Predictions have been saved to CSV!")
 
 ################################################################################
-# UTILITY
+# UTILITY FUNCTIONS
 ################################################################################
 def round_half(number):
     return round(number * 2) / 2
 
-################################################################################
-# HELPER FUNCTION FOR EARLY STOPPING
-################################################################################
 def supports_early_stopping(model):
     """
     Checks if the model's fit method supports the 'early_stopping_rounds' parameter.
@@ -206,7 +228,6 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
                 scoring='neg_mean_squared_error', n_jobs=-1, n_iter=20, random_state=42
             )
         else:
-            from sklearn.model_selection import GridSearchCV
             search = GridSearchCV(
                 model, param_grid=param_grid, cv=cv,
                 scoring='neg_mean_squared_error', n_jobs=-1
@@ -214,9 +235,6 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
         search.fit(X_train, y_train, **fit_params)
         return search.best_estimator_
 
-################################################################################
-# NESTED CROSS-VALIDATION EVALUATION
-################################################################################
 def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_stopping=False):
     from sklearn.model_selection import KFold
     outer_cv = KFold(n_splits=5, shuffle=False)
@@ -237,34 +255,54 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
     """
     Trains a hybrid model (Stacking Regressor [+ ARIMA]) for each team.
-    When disable_tuning is True (for NCAAB), default model parameters are used and ARIMA training is skipped.
+    Also computes additional momentum features and dynamic rest-day effects.
     
     Returns:
         stack_models: Dictionary of trained Stacking Regressors keyed by team.
         arima_models: Dictionary of trained ARIMA models keyed by team (empty if tuning is disabled).
-        team_stats: Dictionary of team statistics.
+        team_stats: Dictionary of team statistics including dynamic rest effects.
     """
     stack_models = {}
     arima_models = {}
     team_stats = {}
     all_teams = team_data['team'].unique()
+    
     for team in all_teams:
         df_team = team_data[team_data['team'] == team].copy()
         df_team.sort_values('gameday', inplace=True)
+        # Ensure gameday is datetime
+        df_team['gameday'] = pd.to_datetime(df_team['gameday'], errors='coerce')
+        
         scores = df_team['score'].reset_index(drop=True)
         if len(scores) < 3:
             continue
+        
+        # Existing rolling features
         df_team['rolling_avg'] = df_team['score'].rolling(window=3, min_periods=1).mean()
         df_team['rolling_std'] = df_team['score'].rolling(window=3, min_periods=1).std().fillna(0)
         df_team['season_avg'] = df_team['score'].expanding().mean()
         df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
+        # New recent performance features (last 5 games)
+        df_team['last_5_avg'] = df_team['score'].rolling(window=5, min_periods=1).mean()
+        df_team['last_5_weighted'] = (df_team['last_5_avg'] * 0.7) + (df_team['season_avg'] * 0.3)
+        
+        # Compute dynamic rest-day adjustments
+        # Calculate the number of rest days between games
+        df_team['rest_days'] = (df_team['gameday'] - df_team['gameday'].shift(1)).dt.days.fillna(0)
+        overall_avg = df_team['score'].mean()
+        # For each unique rest_days value, compute the difference from overall average
+        rest_effect_dict = df_team.groupby('rest_days').apply(lambda g: g['score'].mean() - overall_avg).to_dict()
+        
         team_stats[team] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
             'max': round_half(scores.max()),
-            'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
+            'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean()),
+            'rest_effect': rest_effect_dict  # dynamic rest-day effect dictionary
         }
-        features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].fillna(0)
+        
+        # Use four features including our new momentum metric.
+        features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'last_5_weighted']].fillna(0)
         X = features.values
         y = scores.values
         n = len(X)
@@ -276,8 +314,8 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
         y_train = y[:split_index]
         y_test = y[split_index:]
         
+        # Automated model selection per league via disable_tuning flag
         if disable_tuning:
-            # Use fixed default parameters for speed.
             xgb_best = XGBRegressor(n_estimators=100, max_depth=3, random_state=42)
             lgbm_best = LGBMRegressor(n_estimators=100, max_depth=5, random_state=42)
             cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
@@ -338,6 +376,9 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
             print(f"Error training Stacking Regressor for team {team}: {e}")
             continue
 
+        # Save the XGB model for feature importance analysis later
+        team_xgb_models[team] = xgb_best
+
         if not disable_tuning and len(scores) >= 7:
             try:
                 arima = auto_arima(
@@ -352,7 +393,7 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
                 arima_models[team] = arima
             except Exception as e:
                 print(f"Error training ARIMA for team {team}: {e}")
-                continue
+                arima_models[team] = None
         else:
             # When tuning is disabled (NCAAB), skip ARIMA for speed.
             arima_models[team] = None
@@ -368,7 +409,7 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     arima_pred = None
     if data_len < 3:
         return None, (None, None)
-    last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
+    last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg', 'last_5_weighted']].tail(1)
     X_next = last_features.values
     if team in stack_models:
         try:
@@ -891,31 +932,44 @@ def run_league_pipeline(league_choice):
             stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=True)
         else:
             stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=False)
+        global team_stats_global
         team_stats_global = team_stats
         results.clear()
+
+        # Optionally show feature importance analysis
+        with st.expander("Feature Importance Analysis", expanded=False):
+            if team_xgb_models:
+                selected_team = st.selectbox("Select team to view XGB feature importance", list(team_xgb_models.keys()))
+                # The feature names used in training:
+                feature_names = ['rolling_avg', 'rolling_std', 'weighted_avg', 'last_5_weighted']
+                plot_feature_importance(team_xgb_models[selected_team], feature_names)
+            else:
+                st.info("No XGB models available yet for feature importance analysis.")
 
         for _, row in upcoming.iterrows():
             home, away = row['home_team'], row['away_team']
             home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
             away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
             row_gameday = to_naive(row['gameday'])
+            
+            # --- Dynamic Rest Day Adjustments ---
+            # For home team:
+            home_games = team_data[team_data['team'] == home]
+            if not home_games.empty:
+                last_game_home = to_naive(home_games['gameday'].max())
+                rest_days_home = (row_gameday - last_game_home).days
+                home_rest_adj = team_stats.get(home, {}).get('rest_effect', {}).get(rest_days_home, 0)
+                home_pred = (home_pred or 0) + home_rest_adj
+            # For away team:
+            away_games = team_data[team_data['team'] == away]
+            if not away_games.empty:
+                last_game_away = to_naive(away_games['gameday'].max())
+                rest_days_away = (row_gameday - last_game_away).days
+                away_rest_adj = team_stats.get(away, {}).get('rest_effect', {}).get(rest_days_away, 0)
+                away_pred = (away_pred or 0) + away_rest_adj
+
+            # Additional league-specific adjustments remain:
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
-                home_games = team_data[team_data['team'] == home]
-                if not home_games.empty:
-                    last_game_home = to_naive(home_games['gameday'].max())
-                    rest_days_home = (row_gameday - last_game_home).days
-                    if rest_days_home == 0:
-                        home_pred -= 3
-                    elif rest_days_home >= 3:
-                        home_pred += 2
-                away_games = team_data[team_data['team'] == away]
-                if not away_games.empty:
-                    last_game_away = to_naive(away_games['gameday'].max())
-                    rest_days_away = (row_gameday - last_game_away).days
-                    if rest_days_away == 0:
-                        away_pred -= 3
-                    elif rest_days_away >= 3:
-                        away_pred += 2
                 home_pred += 1
                 away_pred -= 1
                 if top_10 and bottom_10:
@@ -929,22 +983,6 @@ def run_league_pipeline(league_choice):
                         away_pred += 2
 
             elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
-                home_games = team_data[team_data['team'] == home]
-                if not home_games.empty:
-                    last_game_home = to_naive(home_games['gameday'].max())
-                    rest_days_home = (row_gameday - last_game_home).days
-                    if rest_days_home == 0:
-                        home_pred -= 2
-                    elif rest_days_home >= 3:
-                        home_pred += 1
-                away_games = team_data[team_data['team'] == away]
-                if not away_games.empty:
-                    last_game_away = to_naive(away_games['gameday'].max())
-                    rest_days_away = (row_gameday - last_game_away).days
-                    if rest_days_away == 0:
-                        away_pred -= 2
-                    elif rest_days_away >= 3:
-                        away_pred += 1
                 home_pred += 1
                 away_pred -= 1
                 if top_10 and bottom_10:
@@ -958,23 +996,6 @@ def run_league_pipeline(league_choice):
                         away_pred += 2
 
             elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
-                # Use Script 1's NCAAB adjustments
-                home_games = team_data[team_data['team'] == home]
-                if not home_games.empty:
-                    last_game_home = to_naive(home_games['gameday'].max())
-                    rest_days_home = (row_gameday - last_game_home).days
-                    if rest_days_home == 0:
-                        home_pred -= 3
-                    elif rest_days_home >= 3:
-                        home_pred += 2
-                away_games = team_data[team_data['team'] == away]
-                if not away_games.empty:
-                    last_game_away = to_naive(away_games['gameday'].max())
-                    rest_days_away = (row_gameday - last_game_away).days
-                    if rest_days_away == 0:
-                        away_pred -= 3
-                    elif rest_days_away >= 3:
-                        away_pred += 2
                 home_pred += 1
                 away_pred -= 1
                 if top_10 and bottom_10:
@@ -1096,7 +1117,7 @@ def main():
                     st.session_state['logged_in'] = True
                     st.session_state['email'] = user_data['email']
                     st.success(f"Welcome, {user_data['email']}!")
-                    st.rerun()
+                    st.experimental_rerun()
         with col2:
             if st.button("Sign Up"):
                 signup_user(email, password)
@@ -1106,7 +1127,7 @@ def main():
         st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
         if st.sidebar.button("Logout"):
             logout_user()
-            st.rerun()
+            st.experimental_rerun()
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
                                      help="Choose which league's games you'd like to analyze")
