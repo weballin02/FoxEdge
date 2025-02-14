@@ -308,20 +308,28 @@ def _train_team(team, team_data, disable_tuning):
             st.write(f"Error training LGBM for team {team}: {e}")
             lgbm_model = LGBMRegressor(n_estimators=100, random_state=42)
     
-    # Train CatBoost model
+    # Train CatBoost model with fallback in case of failure.
     st.info(f"Team {team}: Training CatBoost model...")
-    if disable_tuning:
-        cat_model = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
-        cat_model.fit(X_train, y_train)
-    else:
-        try:
+    try:
+        if disable_tuning:
+            cat_model = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+            cat_model.fit(X_train, y_train)
+        else:
             cat = CatBoostRegressor(verbose=0, random_state=42)
             cat_grid = {'iterations': [50, 100, 150], 'learning_rate': [0.1, 0.05, 0.01]}
             cat_model = tune_model(cat, cat_grid, X_train, y_train,
                                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
-        except Exception as e:
-            st.write(f"Error training CatBoost for team {team}: {e}")
-            cat_model = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
+    except Exception as e:
+        st.write(f"Error training CatBoost for team {team}: {e}")
+        # Fallback: use a DummyRegressor that predicts the mean of y_train
+        class DummyRegressor:
+            def fit(self, X, y):
+                self.mean_ = np.mean(y)
+            def predict(self, X):
+                return np.full((len(X),), self.mean_)
+        fallback_model = DummyRegressor()
+        fallback_model.fit(X_train, y_train)
+        cat_model = fallback_model
     
     # Combine models into a stacking regressor
     st.info(f"Team {team}: Creating and training Stacking Regressor...")
