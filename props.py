@@ -21,11 +21,16 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
 from tensorflow.keras import backend as K  # For clearing Keras sessions
 
-################################################################################
-# 1) CSV CONFIG & LOADING
-################################################################################
+###############################################################################
+# 0) SET PAGE CONFIG IMMEDIATELY
+###############################################################################
+st.set_page_config(page_title="NBA Player Props Predictor", page_icon="🏀", layout="wide")
 
-USE_NBA_CSV_DATA = True  # Toggle True to load from CSV first, fallback to API if missing
+###############################################################################
+# 1) CSV CONFIG & LOADING
+###############################################################################
+
+USE_NBA_CSV_DATA = True  # Toggle True to load from CSV first; fallback to API if missing
 
 def load_csv_data_safe(file_path: str) -> pd.DataFrame:
     """Return a DataFrame from CSV, or an empty DataFrame on error."""
@@ -69,9 +74,9 @@ def load_nba_players_csv() -> pd.DataFrame:
         df.sort_values(["player_id","game_date"], inplace=True)
     return df
 
-################################################################################
+###############################################################################
 # 2) UTILITY FUNCTIONS
-################################################################################
+###############################################################################
 
 def calculate_rolling_averages(df, columns, windows):
     """Calculate rolling averages for specified columns and windows."""
@@ -91,9 +96,9 @@ def format_prediction_output(predictions):
         'Blocks': f"{predictions.get('BLK', 0):.1f}"
     }
 
-################################################################################
+###############################################################################
 # 3) DAY-BY-DAY SEARCH FOR NEXT GAME
-################################################################################
+###############################################################################
 
 def find_next_gameday_with_games(start_date=None, max_days_ahead=14):
     """
@@ -114,9 +119,9 @@ def find_next_gameday_with_games(start_date=None, max_days_ahead=14):
             return date_str
     return None
 
-################################################################################
+###############################################################################
 # 4) UI COMPONENTS (Player Prop Cards & Social Posts)
-################################################################################
+###############################################################################
 
 def generate_social_media_post(bet):
     """
@@ -177,7 +182,7 @@ def generate_social_media_post(bet):
 
 def display_prop_card(bet):
     """
-    Display a player prop card. Expects a bet dictionary with:
+    Display a player prop card. Expects a bet dict with:
       - 'player_name', 'team', 'predictions' dict, 'value_bets' list, 'confidence' float.
     """
     confidence = bet.get('confidence', 0)
@@ -221,9 +226,9 @@ def display_prop_card(bet):
             post = generate_social_media_post(bet)
             st.code(post, language="markdown")
 
-################################################################################
+###############################################################################
 # 5) HELPER: Projected Starting Lineups
-################################################################################
+###############################################################################
 
 def get_projected_starting_players(players_df, data_fetcher, games=3, n=5):
     """
@@ -253,9 +258,9 @@ def get_projected_starting_players(players_df, data_fetcher, games=3, n=5):
         df = df.sort_values(by='avg_min', ascending=False)
     return df.head(n)
 
-################################################################################
+###############################################################################
 # 6) DATA PROCESSOR & FETCHER
-################################################################################
+###############################################################################
 
 class DataProcessor:
     def __init__(self):
@@ -353,9 +358,9 @@ class NBADataFetcher:
             return pd.DataFrame(columns=['GAME_DATE','MIN','PTS','AST','REB','STL','BLK'])
 
 
-################################################################################
+###############################################################################
 # 7) PROP PREDICTOR (Ensemble, Value Bets, etc.)
-################################################################################
+###############################################################################
 
 class PropPredictor:
     def __init__(self):
@@ -530,9 +535,9 @@ class PropPredictor:
         y_train_dict = {t: training_df[t] for t in target_cols}
         return X, y_train_dict
 
-################################################################################
+###############################################################################
 # 8) PROCESS A SINGLE GAME
-################################################################################
+###############################################################################
 
 def process_game(game_data, data_fetcher, processor, predictor, only_starting):
     """
@@ -576,12 +581,11 @@ def process_game(game_data, data_fetcher, processor, predictor, only_starting):
         bets.append(bet)
     return bets
 
-################################################################################
+###############################################################################
 # 9) MAIN STREAMLIT APP
-################################################################################
+###############################################################################
 
 def main():
-    st.set_page_config(page_title="NBA Player Props Predictor", page_icon="🏀", layout="wide")
     st.title("🏀 NBA Player Props Predictor")
 
     # 1) Find next date with NBA games (up to 14 days from now):
