@@ -32,12 +32,12 @@ import cbbpy.mens_scraper as cbb
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 # --- Global Flags for Model Tuning ---
-USE_RANDOMIZED_SEARCH = True
+USE_RANDOMIZED_SEARCH = False
 USE_OPTUNA_SEARCH = True
 ENABLE_EARLY_STOPPING = True
 
 # --- NEW FLAG: disable tuning & ARIMA for NCAAB to speed things up ---
-DISABLE_TUNING_FOR_NCAAB = False
+DISABLE_TUNING_FOR_NCAAB = True
 
 ################################################################################
 # ---------------------- [ Step 2: NEW CSV CONFIG & FUNCTION ] -----------------
