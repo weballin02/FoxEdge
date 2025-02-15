@@ -40,6 +40,25 @@ ENABLE_EARLY_STOPPING = True
 DISABLE_TUNING_FOR_NCAAB = True
 
 ################################################################################
+# ---------------------- [ Step 2: NEW CSV CONFIG & FUNCTION ] -----------------
+################################################################################
+# Config flag to toggle CSV data integration
+USE_NBA_CSV_DATA = True  # Set to False to disable
+
+def load_csv_data_safe(file_path, default_df=None):
+    """
+    Safely load a CSV file into a DataFrame.
+    Returns default_df or an empty DataFrame on failure.
+    """
+    try:
+        file = Path(file_path)
+        if file.exists():
+            return pd.read_csv(file)
+    except Exception as e:
+        print(f"Warning: Failed to load {file_path}. Error: {e}")
+    return default_df if default_df is not None else pd.DataFrame()
+
+################################################################################
 # FETCH_ODDS FUNCTION
 ################################################################################
 def fetch_odds(api_key, sport_key, market, region='us'):
@@ -253,9 +272,23 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
     """
     Trains a hybrid model (Stacking Regressor [+ ARIMA]) for each team.
     """
+    # --------------------------------------------------------------------------
+    # STEP 3: (Optionally) Include Additional CSV-Only Columns Before Training
+    # --------------------------------------------------------------------------
+    if USE_NBA_CSV_DATA and not team_data.empty:
+        # Example: If your CSV includes 'spread1', 'spread2', or additional columns:
+        if 'spread1' in team_data.columns and 'spread2' in team_data.columns:
+            team_data['spread_diff'] = abs(team_data['spread1'] - team_data['spread2'])
+        # Also ensure your existing rolling averages exist if CSV didn't have them:
+        if 'rolling_avg' not in team_data.columns:
+            team_data['rolling_avg'] = team_data.groupby('team')['score'].transform(
+                lambda x: x.rolling(3, min_periods=1).mean()
+            )
+
     stack_models = {}
     arima_models = {}
     team_stats = {}
+
     all_teams = team_data['team'].unique()
     for team in all_teams:
         df_team = team_data[team_data['team'] == team].copy()
@@ -263,28 +296,37 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
         scores = df_team['score'].reset_index(drop=True)
         if len(scores) < 3:
             continue
+
+        # Basic feature engineering:
         df_team['rolling_avg'] = df_team['score'].rolling(window=3, min_periods=1).mean()
         df_team['rolling_std'] = df_team['score'].rolling(window=3, min_periods=1).std().fillna(0)
         df_team['season_avg'] = df_team['score'].expanding().mean()
         df_team['weighted_avg'] = (df_team['rolling_avg'] * 0.6) + (df_team['season_avg'] * 0.4)
+
         team_stats[team] = {
             'mean': round_half(scores.mean()),
             'std': round_half(scores.std()),
             'max': round_half(scores.max()),
             'recent_form': round_half(scores.tail(5).mean() if len(scores) >= 5 else scores.mean())
         }
+
         features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].fillna(0)
         X = features.values
         y = scores.values
+
         n = len(X)
         split_index = int(n * 0.8)
         if split_index < 2 or n - split_index < 1:
             continue
+
         X_train = X[:split_index]
         X_test = X[split_index:]
         y_train = y[:split_index]
         y_test = y[split_index:]
-        
+
+        # ---------------------------
+        # Hyperparameter Tuning
+        # ---------------------------
         if disable_tuning:
             xgb_best = XGBRegressor(n_estimators=100, max_depth=3, random_state=42)
             lgbm_best = LGBMRegressor(n_estimators=100, max_depth=5, random_state=42)
@@ -293,11 +335,14 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
             try:
                 xgb = XGBRegressor(random_state=42)
                 xgb_grid = {'n_estimators': [50, 100, 150], 'max_depth': [3, 5, 7]}
-                xgb_best = tune_model(xgb, xgb_grid, X_train, y_train,
-                                      use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
+                xgb_best = tune_model(
+                    xgb, xgb_grid, X_train, y_train,
+                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False
+                )
             except Exception as e:
                 print(f"Error tuning XGB for team {team}: {e}")
                 xgb_best = XGBRegressor(n_estimators=100, random_state=42)
+
             try:
                 lgbm = LGBMRegressor(random_state=42)
                 lgbm_grid = {
@@ -308,20 +353,25 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
                     'reg_alpha': [0, 0.1, 0.5],
                     'reg_lambda': [0, 0.1, 0.5]
                 }
-                lgbm_best = tune_model(lgbm, lgbm_grid, X_train, y_train,
-                                       use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=ENABLE_EARLY_STOPPING)
+                lgbm_best = tune_model(
+                    lgbm, lgbm_grid, X_train, y_train,
+                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=ENABLE_EARLY_STOPPING
+                )
             except Exception as e:
                 print(f"Error tuning LGBM for team {team}: {e}")
                 lgbm_best = LGBMRegressor(n_estimators=100, random_state=42)
+
             try:
                 cat = CatBoostRegressor(verbose=0, random_state=42)
                 cat_grid = {'iterations': [50, 100, 150], 'learning_rate': [0.1, 0.05, 0.01]}
-                cat_best = tune_model(cat, cat_grid, X_train, y_train,
-                                      use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False)
+                cat_best = tune_model(
+                    cat, cat_grid, X_train, y_train,
+                    use_randomized=USE_RANDOMIZED_SEARCH, early_stopping=False
+                )
             except Exception as e:
                 print(f"Error tuning CatBoost for team {team}: {e}")
                 cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
-        
+
         estimators = [
             ('xgb', xgb_best),
             ('lgbm', lgbm_best),
@@ -346,6 +396,7 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
             print(f"Error training Stacking Regressor for team {team}: {e}")
             continue
 
+        # ARIMA component (if enough samples and not disabled):
         if not disable_tuning and len(scores) >= 7:
             try:
                 arima = auto_arima(
@@ -377,12 +428,14 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
         return None, (None, None)
     last_features = df_team[['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
     X_next = last_features.values
+
     if team in stack_models:
         try:
             stack_pred = float(stack_models[team].predict(X_next)[0])
         except Exception as e:
             print(f"Error predicting with Stacking Regressor for team {team}: {e}")
             stack_pred = None
+
     if team in arima_models and arima_models[team] is not None:
         try:
             forecast = arima_models[team].predict(n_periods=1)
@@ -394,7 +447,6 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     ensemble = None
     if stack_pred is not None and arima_pred is not None:
         mse_stack = team_stats[team].get('mse', 1)
-        mse_arima = None
         try:
             resid = arima_models[team].resid()
             mse_arima = np.mean(np.square(resid))
@@ -413,18 +465,23 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
         ensemble = arima_pred
     else:
         ensemble = None
+
+    # Basic MSE check to ensure the model is not wildly inaccurate
     if team_stats[team].get('mse', 0) > 150:
         return None, (None, None)
     if ensemble is None:
         return None, (None, None)
+
     bias = team_stats[team].get('bias', 0)
     ensemble_calibrated = ensemble + bias
+
     mu = team_stats[team]['mean']
     sigma = team_stats[team]['std']
     if isinstance(mu, (pd.Series, pd.DataFrame, np.ndarray)):
         mu = mu.item()
     if isinstance(sigma, (pd.Series, pd.DataFrame, np.ndarray)):
         sigma = sigma.item()
+
     conf_low = round_half(mu - 1.96 * sigma)
     conf_high = round_half(mu + 1.96 * sigma)
     return round_half(ensemble_calibrated), (conf_low, conf_high)
@@ -434,21 +491,26 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
         return None
     diff = home_pred - away_pred
     total_points = home_pred + away_pred
+
     home_std = team_stats.get(home_team, {}).get('std', 5)
     away_std = team_stats.get(away_team, {}).get('std', 5)
     combined_std = max(1.0, (home_std + away_std) / 2)
     raw_conf = abs(diff) / combined_std
     confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
+
     penalty = 0
     if team_stats.get(home_team, {}).get('mse', 0) > 120:
         penalty += 10
     if team_stats.get(away_team, {}).get('mse', 0) > 120:
         penalty += 10
     confidence = max(1, min(99, confidence - penalty))
+
     winner = home_team if diff > 0 else away_team
     ou_threshold = 145
+
     spread_suggestion = f"Lean {winner} by {round_half(diff):.1f}"
     ou_suggestion = f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
+
     return {
         'predicted_winner': winner,
         'diff': round_half(diff),
@@ -504,13 +566,83 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
     return upcoming[['gameday', 'home_team', 'away_team']]
 
 ################################################################################
-# NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
+# ------------------ [ Step 2 & 4: NBA DATA LOADING with CSV Fallback ] -------
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
-    nba_teams_list = nba_teams.get_teams()
-    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
+    """
+    Attempt to load NBA data from CSV if USE_NBA_CSV_DATA = True.
+    Fallback to NBA API if CSV data is missing or empty.
+    """
     all_rows = []
+
+    # ----------------------- Attempt CSV Loading ------------------------------
+    if USE_NBA_CSV_DATA:
+        try:
+            games_csv = load_csv_data_safe("data/nba_games_all.csv")
+            teams_csv = load_csv_data_safe("data/nba_teams_all.csv")
+            spreads_csv = load_csv_data_safe("data/nba_betting_spread.csv")
+
+            # If we successfully load non-empty CSV, integrate them:
+            if not games_csv.empty:
+                print("Successfully loaded NBA games CSV.")
+                # Example transformations for 'games_csv'
+                games_csv['game_date'] = pd.to_datetime(games_csv['game_date'])
+                games_csv.sort_values('game_date', inplace=True)
+                # Just as an example, add rolling averages if not present
+                if 'pts' in games_csv.columns:
+                    games_csv['rolling_avg'] = games_csv.groupby('team_id')['pts'].transform(
+                        lambda x: x.rolling(3, min_periods=1).mean()
+                    )
+                    # Weighted average example
+                    games_csv['weighted_avg'] = (
+                        games_csv['rolling_avg'] * 0.6
+                        + games_csv.groupby('team_id')['pts'].transform('mean') * 0.4
+                    )
+                # Convert to a final, consistent record format
+                all_rows.extend(games_csv.to_dict('records'))
+
+            if not spreads_csv.empty:
+                print("Successfully loaded NBA betting spreads CSV.")
+                # Integrate historical spreads, if needed:
+                # e.g. merges, new columns, etc.
+
+            # If CSV loaded successfully, convert to DataFrame and return
+            if all_rows:
+                df_csv = pd.DataFrame(all_rows)
+                # Basic rename if needed:
+                # e.g. rename 'game_date' -> 'gameday', 'team_id' -> 'team', etc.
+                if 'game_date' in df_csv.columns:
+                    df_csv.rename(columns={'game_date': 'gameday'}, inplace=True)
+                if 'team_id' in df_csv.columns:
+                    # You might have a mapping from team_id to some abbreviation
+                    df_csv.rename(columns={'team_id': 'team'}, inplace=True)
+                # Ensure sorting
+                df_csv.dropna(subset=['pts'], inplace=True)
+                df_csv.sort_values('gameday', inplace=True)
+                # Convert 'score' to standard column name
+                df_csv['score'] = df_csv['pts'] if 'pts' in df_csv.columns else np.nan
+                df_csv['score'].fillna(0, inplace=True)
+                
+                # Handle missing rolling_avg, weighted_avg if not from CSV
+                if 'rolling_avg' not in df_csv.columns:
+                    df_csv['rolling_avg'] = df_csv.groupby('team')['score'].transform(
+                        lambda x: x.rolling(3, min_periods=1).mean()
+                    )
+                if 'weighted_avg' not in df_csv.columns:
+                    df_csv['weighted_avg'] = (df_csv['rolling_avg'] * 0.6) + df_csv.groupby('team')['score'].transform('mean') * 0.4
+
+                return df_csv
+        except Exception as e:
+            print(f"Error loading NBA data from CSV: {e}")
+
+    # -------------------- Fallback to Original NBA API Logic -----------------
+    print("Falling back to NBA API data...")
+    nba_teams_list = nba_teams.get_teams()
+    seasons = [
+        '2017-18', '2018-19', '2019-20', '2020-21',
+        '2021-22', '2022-23', '2023-24', '2024-25'
+    ]
     for season in seasons:
         for team in nba_teams_list:
             team_id = team['id']
@@ -526,6 +658,7 @@ def load_nba_data():
                     if c not in gl.columns:
                         gl[c] = 0
                     gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
+
                 gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
                 gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
                 gl['OFF_RATING'] = np.where(
@@ -543,6 +676,7 @@ def load_nba_data():
                 gl['rolling_std'] = gl['PTS'].rolling(window=3, min_periods=1).std().fillna(0)
                 gl['season_avg'] = gl['PTS'].expanding().mean()
                 gl['weighted_avg'] = (gl['rolling_avg'] * 0.6) + (gl['season_avg'] * 0.4)
+
                 for idx, row_ in gl.iterrows():
                     try:
                         all_rows.append({
@@ -563,6 +697,7 @@ def load_nba_data():
             except Exception as e:
                 print(f"Error processing team {team_abbrev} for season {season}: {str(e)}")
                 continue
+
     if not all_rows:
         return pd.DataFrame()
     df = pd.DataFrame(all_rows)
@@ -599,7 +734,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
     return upcoming
 
 ################################################################################
-# NCAAB HISTORICAL LOADER (FROM SCRIPT 1)
+# NCAAB HISTORICAL LOADER
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
@@ -679,7 +814,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     return df
 
 ################################################################################
-# NEW FUNCTION: COMPARE PREDICTIONS WITH BOOKMAKER ODDS (PER-GAME MANUAL UPDATE)
+# COMPARE PREDICTIONS WITH BOOKMAKER ODDS
 ################################################################################
 def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
     """
@@ -963,6 +1098,7 @@ team_stats_global = {}
 ################################################################################
 def run_league_pipeline(league_choice, odds_api_key):
     st.header(f"Today's {league_choice} Best Bets 🎯")
+
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
         if schedule.empty:
@@ -970,12 +1106,14 @@ def run_league_pipeline(league_choice, odds_api_key):
             return
         team_data = preprocess_nfl_data(schedule)
         upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
+
     elif league_choice == "NBA":
         team_data = load_nba_data()
         if team_data.empty:
             st.error("Unable to load NBA data.")
             return
         upcoming = fetch_upcoming_nba_games(days_ahead=3)
+
     else:  # NCAAB
         team_data = load_ncaab_data_current_season(season=2025)
         if team_data.empty:
@@ -987,6 +1125,7 @@ def run_league_pipeline(league_choice, odds_api_key):
         st.warning(f"No upcoming {league_choice} data available for analysis.")
         return
 
+    # Basic approach for "top_10" and "bottom_10" defense ranking
     if league_choice == "NBA":
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
@@ -1010,6 +1149,7 @@ def run_league_pipeline(league_choice, odds_api_key):
             stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=True)
         else:
             stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=False)
+
         team_stats_global = team_stats
         results.clear()
 
@@ -1017,7 +1157,10 @@ def run_league_pipeline(league_choice, odds_api_key):
             home, away = row['home_team'], row['away_team']
             home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
             away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+
             row_gameday = to_naive(row['gameday'])
+
+            # Add small heuristics for rest days, etc., by league
             if league_choice == "NBA" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
@@ -1035,8 +1178,12 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 3
                     elif rest_days_away >= 3:
                         away_pred += 2
+
+                # Basic home-court advantage tweak
                 home_pred += 1
                 away_pred -= 1
+
+                # Defensive strength check
                 if top_10 and bottom_10:
                     if away in top_10:
                         home_pred -= 2
@@ -1046,6 +1193,7 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
+
             elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
@@ -1063,8 +1211,12 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 2
                     elif rest_days_away >= 3:
                         away_pred += 1
+
+                # Mild home-field advantage
                 home_pred += 1
                 away_pred -= 1
+
+                # Defensive strength check
                 if top_10 and bottom_10:
                     if away in top_10:
                         home_pred -= 2
@@ -1074,6 +1226,7 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
+
             elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
@@ -1091,8 +1244,12 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 3
                     elif rest_days_away >= 3:
                         away_pred += 2
+
+                # Basic home-court advantage
                 home_pred += 1
                 away_pred -= 1
+
+                # Defensive strength check
                 if top_10 and bottom_10:
                     if away in top_10:
                         home_pred -= 2
@@ -1102,6 +1259,7 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
+
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
             if outcome:
                 results.append({
@@ -1177,7 +1335,6 @@ def run_league_pipeline(league_choice, odds_api_key):
                     st.write(f"**Bookmaker Total:** {bet['bookmaker_total']}")
             else:
                 st.write("**Bookmaker Spread:** Data not available")
-                # Additional expander for manual odds update
                 with st.expander("Manual Odds Update"):
                     st.write(f"Enter manual odds for {bet['home_team']}:")
                     manual_spread = st.text_input("Home Spread", key=f"manual_spread_{idx}")
@@ -1190,7 +1347,7 @@ def run_league_pipeline(league_choice, odds_api_key):
                         except Exception as e:
                             st.error(f"Error updating manual odds: {e}")
             st.write(f"**Confidence:** {bet['confidence']}%")
-            
+
 ################################################################################
 # STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
 ################################################################################
@@ -1227,8 +1384,10 @@ def scheduled_task():
 def main():
     st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
     st.title("🦊 FoxEdge Sports Betting Insights")
+
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
+
     if not st.session_state['logged_in']:
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
@@ -1260,19 +1419,28 @@ def main():
     )
     
     st.sidebar.header("Navigation")
-    league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
-                                     help="Choose which league's games you'd like to analyze")
+    league_choice = st.sidebar.radio(
+        "Select League",
+        ["NFL", "NBA", "NCAAB"],
+        help="Choose which league's games you'd like to analyze"
+    )
+
     run_league_pipeline(league_choice, odds_api_key)
     st.sidebar.markdown(
         "### About FoxEdge\n"
         "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
     )
+
     if st.button("Save Predictions to CSV"):
         if results:
             save_predictions_to_csv(results)
             csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
-            st.download_button(label="Download Predictions as CSV", data=csv,
-                               file_name='predictions.csv', mime='text/csv')
+            st.download_button(
+                label="Download Predictions as CSV",
+                data=csv,
+                file_name='predictions.csv',
+                mime='text/csv'
+            )
         else:
             st.warning("No predictions to save.")
 
