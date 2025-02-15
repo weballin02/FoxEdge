@@ -607,7 +607,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
     """
     now = datetime.now()
     upcoming_rows = []
-    for offset in range(days_ahead + 1):
+    for offset in range(days_ahead + 7):
         date_target = now + timedelta(days=offset)
         date_str = date_target.strftime('%Y-%m-%d')
         scoreboard = ScoreboardV2(game_date=date_str)
