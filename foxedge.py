@@ -38,7 +38,6 @@ USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimi
 ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 
 # --- NEW FLAG: disable hyperparameter tuning & ARIMA for NCAAB to speed things up ---
-# When True the pipeline will use default model parameters and skip ARIMA training.
 DISABLE_TUNING_FOR_NCAAB = True
 
 ################################################################################
@@ -47,24 +46,15 @@ DISABLE_TUNING_FOR_NCAAB = True
 def fetch_odds(api_key, sport_key, market, region='us'):
     """
     Fetch sports betting odds from The Odds API.
-
-    Args:
-        api_key (str): Your API key.
-        sport_key (str): The sport key (e.g., 'basketball_nba').
-        market (str): The market (e.g., 'spreads').
-        region (str): The region; default 'us'.
-    
-    Returns:
-        list: JSON response from the API (list of events).
     """
     url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
     params = {
         'apiKey': api_key,
-        'regions': region,         # e.g., 'us'
-        'markets': market,         # e.g., 'spreads'
-        'bookmakers': 'bovada',    # limit to Bovada
-        'oddsFormat': 'american',  # odds format
-        'dateFormat': 'iso'        # ISO date format
+        'regions': region,
+        'markets': market,
+        'bookmakers': 'bovada',
+        'oddsFormat': 'american',
+        'dateFormat': 'iso'
     }
     try:
         response = requests.get(url, params=params)
@@ -167,12 +157,6 @@ def round_half(number):
 # HELPER FUNCTION FOR EARLY STOPPING
 ################################################################################
 def supports_early_stopping(model):
-    """
-    Checks if the model's fit method supports the 'early_stopping_rounds' parameter.
-    
-    Returns:
-        True if early_stopping_rounds is accepted, False otherwise.
-    """
     try:
         sig = inspect.signature(model.fit)
         return 'early_stopping_rounds' in sig.parameters
@@ -270,12 +254,6 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
     """
     Trains a hybrid model (Stacking Regressor [+ ARIMA]) for each team.
-    When disable_tuning is True (for NCAAB), default model parameters are used and ARIMA training is skipped.
-    
-    Returns:
-        stack_models: Dictionary of trained Stacking Regressors keyed by team.
-        arima_models: Dictionary of trained ARIMA models keyed by team (empty if tuning is disabled).
-        team_stats: Dictionary of team statistics.
     """
     stack_models = {}
     arima_models = {}
@@ -310,7 +288,6 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
         y_test = y[split_index:]
         
         if disable_tuning:
-            # Use fixed default parameters for speed.
             xgb_best = XGBRegressor(n_estimators=100, max_depth=3, random_state=42)
             lgbm_best = LGBMRegressor(n_estimators=100, max_depth=5, random_state=42)
             cat_best = CatBoostRegressor(n_estimators=100, verbose=0, random_state=42)
@@ -387,7 +364,6 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
                 print(f"Error training ARIMA for team {team}: {e}")
                 continue
         else:
-            # When tuning is disabled (NCAAB), skip ARIMA for speed.
             arima_models[team] = None
 
     return stack_models, arima_models, team_stats
@@ -485,10 +461,6 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     }
 
 def find_top_bets(matchups, threshold=70.0):
-    """
-    Returns a DataFrame with bets having confidence >= threshold.
-    If the input list is empty or does not contain 'confidence', returns an empty DataFrame.
-    """
     df = pd.DataFrame(matchups)
     if df.empty or 'confidence' not in df.columns:
         return pd.DataFrame()
@@ -538,35 +510,24 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
-    """
-    Loads multi-season NBA team logs with pace, efficiency, and enhanced features.
-    
-    Returns:
-        DataFrame with game date, team abbreviation, score, advanced stats, and engineered features.
-    """
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
     all_rows = []
-
     for season in seasons:
         for team in nba_teams_list:
             team_id = team['id']
             team_abbrev = team.get('abbreviation', str(team_id))
-            
             try:
                 gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
                 if gl.empty:
                     continue
-
                 gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
                 gl.sort_values('GAME_DATE', inplace=True)
-
                 needed = ['PTS', 'FGA', 'FTA', 'TOV', 'OREB', 'PTS_OPP']
                 for c in needed:
                     if c not in gl.columns:
                         gl[c] = 0
                     gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
-
                 gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
                 gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
                 gl['OFF_RATING'] = np.where(
@@ -584,7 +545,6 @@ def load_nba_data():
                 gl['rolling_std'] = gl['PTS'].rolling(window=3, min_periods=1).std().fillna(0)
                 gl['season_avg'] = gl['PTS'].expanding().mean()
                 gl['weighted_avg'] = (gl['rolling_avg'] * 0.6) + (gl['season_avg'] * 0.4)
-
                 for idx, row_ in gl.iterrows():
                     try:
                         all_rows.append({
@@ -602,21 +562,16 @@ def load_nba_data():
                     except Exception as e:
                         print(f"Error processing row for team {team_abbrev}: {str(e)}")
                         continue
-
             except Exception as e:
                 print(f"Error processing team {team_abbrev} for season {season}: {str(e)}")
                 continue
-
     if not all_rows:
         return pd.DataFrame()
-
     df = pd.DataFrame(all_rows)
     df.dropna(subset=['score'], inplace=True)
     df.sort_values('gameday', inplace=True)
-
     for col in ['off_rating', 'def_rating', 'pace']:
         df[col].fillna(df[col].mean(), inplace=True)
-
     return df
 
 def fetch_upcoming_nba_games(days_ahead=3):
@@ -629,12 +584,10 @@ def fetch_upcoming_nba_games(days_ahead=3):
         games = scoreboard.get_data_frames()[0]
         if games.empty:
             continue
-
         nba_team_dict = {tm['id']: tm['abbreviation'] for tm in nba_teams.get_teams()}
         games['HOME_TEAM_ABBREV'] = games['HOME_TEAM_ID'].map(nba_team_dict)
         games['AWAY_TEAM_ABBREV'] = games['VISITOR_TEAM_ID'].map(nba_team_dict)
         upcoming_df = games[~games['GAME_STATUS_TEXT'].str.contains("Final", case=False, na=False)]
-
         for _, g in upcoming_df.iterrows():
             upcoming_rows.append({
                 'gameday': pd.to_datetime(date_str),
@@ -728,21 +681,12 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     return df
 
 ################################################################################
-# NEW FUNCTION: COMPARE PREDICTIONS WITH BOOKMAKER ODDS
+# NEW FUNCTION: COMPARE PREDICTIONS WITH BOOKMAKER ODDS (WITH PER-GAME MANUAL UPDATE)
 ################################################################################
 def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
     """
-    Fetches the latest bookmaker odds for spreads and compares them to the model predictions.
-    This function does not affect the original predictions but adds a 'bookmaker_spread'
-    key to each prediction dictionary for comparison.
-    
-    Args:
-        predictions (list): List of prediction dictionaries.
-        league_choice (str): League identifier ('NFL', 'NBA', or 'NCAAB').
-        odds_api_key (str): The API key entered by the user for fetching odds.
-        
-    Returns:
-        list: Updated list of prediction dictionaries with bookmaker odds added.
+    Fetches bookmaker odds for spreads and compares them to model predictions.
+    Adds a 'bookmaker_spread' key for each prediction.
     """
     sport_key_map = {
         "NFL": "americanfootball_nfl",
@@ -755,16 +699,13 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
     
     def map_team_name(team_name):
         """
-        Maps a team name from your predictions to the naming convention used by the odds API.
+        Maps a team name from predictions to the odds API convention.
         For NBA, the app shows abbreviations while the API returns full names.
         """
-        # Default mapping for NFL and NCAAB (extend as needed)
         default_mapping = {
             "New England Patriots": "New England Patriots",
             "Dallas Cowboys": "Dallas Cowboys"
-            # add other NFL/NCAAB mappings if necessary
         }
-        # For NBA, map abbreviations to full team names.
         nba_mapping = {
             "ATL": "Atlanta Hawks",
             "BKN": "Brooklyn Nets",
@@ -804,7 +745,7 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
     
     def get_bookmaker_spread(mapped_team_name, odds_data):
         """
-        Extracts the bookmaker spread (point value) for the specified team from the odds API response.
+        Extracts the bookmaker spread for the specified team.
         """
         for event in odds_data:
             home_api_name = map_team_name(event.get("home_team", ""))
@@ -819,6 +760,7 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
                                         return outcome.get("point")
         return None
 
+    # Update each prediction with bookmaker odds if available.
     for pred in predictions:
         home_mapped = map_team_name(pred["home_team"])
         away_mapped = map_team_name(pred["away_team"])
@@ -829,7 +771,6 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
         else:
             bookmaker_spread = None
         pred["bookmaker_spread"] = bookmaker_spread
-
     return predictions
 
 ################################################################################
@@ -1217,10 +1158,12 @@ def run_league_pipeline(league_choice, odds_api_key):
         else:
             st.info(f"No upcoming {league_choice} games found.")
 
+    # NEW: Odds Comparison and per-game Manual Update Section.
     if st.button("Compare to Bookmaker Odds"):
         compared_results = compare_predictions_with_odds(results.copy(), league_choice, odds_api_key)
+        st.session_state["compared_results"] = compared_results  # Store for manual update
         st.markdown("## Comparison with Bookmaker Odds")
-        for bet in compared_results:
+        for idx, bet in enumerate(compared_results):
             st.markdown("---")
             st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
             st.write(f"**Predicted Spread:** {bet['predicted_diff']}")
@@ -1228,94 +1171,103 @@ def run_league_pipeline(league_choice, odds_api_key):
                 st.write(f"**Bookmaker Spread:** {bet['bookmaker_spread']}")
             else:
                 st.write("**Bookmaker Spread:** Data not available")
+                # Show manual input boxes directly under this game.
+                manual_spread = st.text_input("Enter Manual Spread", key=f"spread_{idx}")
+                manual_total = st.text_input("Enter Manual Total", key=f"total_{idx}")
+                if st.button("Update Manual Odds", key=f"update_{idx}"):
+                    try:
+                        bet["bookmaker_spread"] = float(manual_spread)
+                        bet["bookmaker_total"] = float(manual_total)
+                        st.success("Manual odds updated for this game.")
+                    except Exception as e:
+                        st.error(f"Error updating manual odds: {e}")
             st.write(f"**Confidence:** {bet['confidence']}%")
-
-################################################################################
-# STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
-################################################################################
-def scheduled_task():
-    st.write("🕒 Scheduled task running: Fetching and updating predictions...")
-    st.write("📡 Fetching latest NFL schedule and results...")
-    schedule = nfl.import_schedules([datetime.now().year])
-    schedule.to_csv("nfl_schedule.csv", index=False)
-    st.write("🏀 Fetching latest NBA team game logs...")
-    nba_data = []
-    for team_id in range(1, 31):
-        try:
-            logs = TeamGameLog(team_id=team_id, season="2024-25").get_data_frames()[0]
-            nba_data.append(logs)
-        except Exception as e:
-            st.warning(f"Error fetching data for NBA team {team_id}: {e}")
-    if nba_data:
-        nba_df = pd.concat(nba_data, ignore_index=True)
-        nba_df.to_csv("nba_team_logs.csv", index=False)
-    st.write("🏀 Fetching latest NCAAB data...")
-    ncaab_df, _, _ = cbb.get_games_season(season=2025, info=True, box=False, pbp=False)
-    if not ncaab_df.empty:
-        ncaab_df.to_csv("ncaab_games.csv", index=False)
-    st.write("🤖 Updating prediction models...")
-    if os.path.exists("nfl_schedule.csv"):
-        joblib.dump(schedule, "models/nfl_model.pkl")
-    if os.path.exists("nba_team_logs.csv"):
-        joblib.dump(nba_df, "models/nba_model.pkl")
-    if os.path.exists("ncaab_games.csv"):
-        joblib.dump(ncaab_df, "models/ncaab_model.pkl")
-    st.success("✅ Scheduled task completed successfully!")
-    st.success("Scheduled task completed successfully.")
-
-def main():
-    st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
-    st.title("🦊 FoxEdge Sports Betting Insights")
-    if 'logged_in' not in st.session_state:
-        st.session_state['logged_in'] = False
-    if not st.session_state['logged_in']:
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Login"):
-                user_data = login_with_rest(email, password)
-                if user_data:
-                    st.session_state['logged_in'] = True
-                    st.session_state['email'] = user_data['email']
-                    st.success(f"Welcome, {user_data['email']}!")
-                    st.rerun()
-        with col2:
-            if st.button("Sign Up"):
-                signup_user(email, password)
-        return
-    else:
-        st.sidebar.title("Account")
-        st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
-        if st.sidebar.button("Logout"):
-            logout_user()
-            st.rerun()
-    
-    # Sidebar input for Odds API key.
-    odds_api_key = st.sidebar.text_input(
-        "Enter Odds API Key",
-        type="password",
-        value=st.secrets["odds_api"]["apiKey"] if "odds_api" in st.secrets else ""
-    )
-    
-    st.sidebar.header("Navigation")
-    league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
-                                     help="Choose which league's games you'd like to analyze")
-    run_league_pipeline(league_choice, odds_api_key)
-    st.sidebar.markdown(
-        "### About FoxEdge\n"
-        "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
-    )
-    if st.button("Save Predictions to CSV"):
-        if results:
-            save_predictions_to_csv(results)
-            csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
-            st.download_button(label="Download Predictions as CSV", data=csv,
-                               file_name='predictions.csv', mime='text/csv')
-        else:
-            st.warning("No predictions to save.")
-
+            if "bookmaker_total" in bet:
+                st.write(f"**Bookmaker Total:** {bet['bookmaker_total']}")
+                
 if __name__ == "__main__":
+    def scheduled_task():
+        st.write("🕒 Scheduled task running: Fetching and updating predictions...")
+        st.write("📡 Fetching latest NFL schedule and results...")
+        schedule = nfl.import_schedules([datetime.now().year])
+        schedule.to_csv("nfl_schedule.csv", index=False)
+        st.write("🏀 Fetching latest NBA team game logs...")
+        nba_data = []
+        for team_id in range(1, 31):
+            try:
+                logs = TeamGameLog(team_id=team_id, season="2024-25").get_data_frames()[0]
+                nba_data.append(logs)
+            except Exception as e:
+                st.warning(f"Error fetching data for NBA team {team_id}: {e}")
+        if nba_data:
+            nba_df = pd.concat(nba_data, ignore_index=True)
+            nba_df.to_csv("nba_team_logs.csv", index=False)
+        st.write("🏀 Fetching latest NCAAB data...")
+        ncaab_df, _, _ = cbb.get_games_season(season=2025, info=True, box=False, pbp=False)
+        if not ncaab_df.empty:
+            ncaab_df.to_csv("ncaab_games.csv", index=False)
+        st.write("🤖 Updating prediction models...")
+        if os.path.exists("nfl_schedule.csv"):
+            joblib.dump(schedule, "models/nfl_model.pkl")
+        if os.path.exists("nba_team_logs.csv"):
+            joblib.dump(nba_df, "models/nba_model.pkl")
+        if os.path.exists("ncaab_games.csv"):
+            joblib.dump(ncaab_df, "models/ncaab_model.pkl")
+        st.success("✅ Scheduled task completed successfully!")
+        st.success("Scheduled task completed successfully.")
+    
+    def main():
+        st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
+        st.title("🦊 FoxEdge Sports Betting Insights")
+        if 'logged_in' not in st.session_state:
+            st.session_state['logged_in'] = False
+        if not st.session_state['logged_in']:
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Login"):
+                    user_data = login_with_rest(email, password)
+                    if user_data:
+                        st.session_state['logged_in'] = True
+                        st.session_state['email'] = user_data['email']
+                        st.success(f"Welcome, {user_data['email']}!")
+                        st.rerun()
+            with col2:
+                if st.button("Sign Up"):
+                    signup_user(email, password)
+            return
+        else:
+            st.sidebar.title("Account")
+            st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
+            if st.sidebar.button("Logout"):
+                logout_user()
+                st.rerun()
+        
+        # Sidebar input for Odds API key.
+        odds_api_key = st.sidebar.text_input(
+            "Enter Odds API Key",
+            type="password",
+            value=st.secrets["odds_api"]["apiKey"] if "odds_api" in st.secrets else ""
+        )
+        
+        st.sidebar.header("Navigation")
+        league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
+                                         help="Choose which league's games you'd like to analyze")
+        run_league_pipeline(league_choice, odds_api_key)
+        st.sidebar.markdown(
+            "### About FoxEdge\n"
+            "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
+        )
+        if st.button("Save Predictions to CSV"):
+            if results:
+                save_predictions_to_csv(results)
+                csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
+                st.download_button(label="Download Predictions as CSV", data=csv,
+                                   file_name='predictions.csv', mime='text/csv')
+            else:
+                st.warning("No predictions to save.")
+    
     query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
