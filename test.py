@@ -29,6 +29,7 @@ import cbbpy.mens_scraper as cbb
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, RandomizedSearchCV
 from instagrapi import Client
 import time
+from PIL import Image  # For image processing
 
 # =============================================================================
 # Shared Utility Function (formerly in betting_utils.py)
@@ -36,18 +37,6 @@ import time
 def generate_social_media_post(bet):
     """
     Generate a social media post text from a betting prediction.
-
-    Parameters:
-        bet (dict): A dictionary with keys:
-            - home_team
-            - away_team
-            - predicted_winner
-            - spread_suggestion
-            - predicted_total
-            - confidence
-
-    Returns:
-        str: A formatted social media post.
     """
     conf = bet.get('confidence', 50)
     if conf >= 85:
@@ -101,6 +90,51 @@ def generate_social_media_post(bet):
         cta=selected_cta,
         hashtags=selected_hashtags
     )
+
+# =============================================================================
+# Helper Function: Merge Two Team Logos
+# =============================================================================
+def merge_team_logos(team1, team2, output_path="merged_logo.png", target_height=200, bg_color=(255,255,255)):
+    """
+    Merge logos for two teams side-by-side.
+    
+    Parameters:
+        team1 (str): Name of the first team (e.g., "Atlanta Hawks")
+        team2 (str): Name of the second team
+        output_path (str): File path to save the merged image
+        target_height (int): Height in pixels for the resized logos
+        bg_color (tuple): Background color for the merged image
+        
+    Returns:
+        str: Path to the merged image if both logos are found; otherwise None.
+    """
+    def get_logo(team_name):
+        base_dir = "nba_images"  # Folder in project directory
+        filename = team_name.strip().replace(" ", "_") + ".png"
+        path = os.path.join(base_dir, filename)
+        return path if os.path.exists(path) else None
+
+    logo1_path = get_logo(team1)
+    logo2_path = get_logo(team2)
+    if not logo1_path or not logo2_path:
+        return None  # One or both logos not found.
+
+    img1 = Image.open(logo1_path)
+    img2 = Image.open(logo2_path)
+
+    # Resize both images to the same height
+    img1_ratio = img1.width / img1.height
+    img2_ratio = img2.width / img2.height
+    img1 = img1.resize((int(target_height * img1_ratio), target_height))
+    img2 = img2.resize((int(target_height * img2_ratio), target_height))
+
+    # Create a new image with width equal to sum of both widths
+    total_width = img1.width + img2.width
+    merged_img = Image.new('RGB', (total_width, target_height), color=bg_color)
+    merged_img.paste(img1, (0, 0))
+    merged_img.paste(img2, (img1.width, 0))
+    merged_img.save(output_path)
+    return output_path
 
 # =============================================================================
 # Global Flags and CSV File Name
@@ -837,7 +871,6 @@ def generate_writeup(bet, team_stats_global):
     return writeup
 
 def generate_social_media_post_ui(bet):
-    # Simply use our shared function.
     return generate_social_media_post(bet)
 
 def display_bet_card(bet, team_stats_global, team_data=None):
@@ -887,7 +920,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.line_chart(away_team_data['score'].tail(5).reset_index(drop=True))
 
 # =============================================================================
-# Main Pipeline: Generate Betting Predictions & UI
+# Main Pipeline: Betting Predictions and UI
 # =============================================================================
 results = []
 team_stats_global = {}
@@ -1172,10 +1205,22 @@ def show_instagram_scheduler_section():
             st.markdown("### Generated Social Media Post")
             st.text_area("Post Content", post_text, height=200)
             
+            # If the league is NBA, try to merge both team logos
+            merged_image_path = None
+            # Here we assume that the matchup logos are in nba_images folder.
+            # Merge home and away logos.
+            merged_image_path = merge_team_logos(selected_prediction['home_team'], selected_prediction['away_team'])
+            if merged_image_path:
+                st.markdown("Automatically merged team logos:")
+                st.image(merged_image_path, width=300)
+            else:
+                st.info("Could not automatically merge logos; please provide an image path manually.")
+            
             st.markdown("### Schedule / Post Now")
             scheduled_date = st.date_input("Scheduled Date", datetime.now().date())
             scheduled_time = st.time_input("Scheduled Time", datetime.now().time())
-            image_path = st.text_input("Image Path (local file path)", key="img_path")
+            # Default to merged image path if available.
+            image_path = st.text_input("Image Path (local file path)", value=merged_image_path if merged_image_path else "", key="img_path")
             
             if st.button("Schedule Post"):
                 scheduled_datetime = datetime.combine(scheduled_date, scheduled_time)
@@ -1194,6 +1239,36 @@ def show_instagram_scheduler_section():
                     st.info(f"Post will be submitted in {int(delay)} seconds.")
                     time.sleep(delay)  # For demonstration; in production use APScheduler or background threading.
                     post_to_instagram(client, post_text, image_path)
+
+# =============================================================================
+# Helper to Merge Logos (from nba_images folder)
+# =============================================================================
+def get_team_logo(team_name):
+    base_dir = "nba_images"
+    filename = team_name.strip().replace(" ", "_") + ".png"
+    path = os.path.join(base_dir, filename)
+    return path if os.path.exists(path) else None
+
+def merge_team_logos(team1, team2, output_path="merged_logo.png", target_height=200, bg_color=(255, 255, 255)):
+    """
+    Merge logos for team1 and team2 side-by-side.
+    """
+    logo1_path = get_team_logo(team1)
+    logo2_path = get_team_logo(team2)
+    if not logo1_path or not logo2_path:
+        return None
+    img1 = Image.open(logo1_path)
+    img2 = Image.open(logo2_path)
+    img1_ratio = img1.width / img1.height
+    img2_ratio = img2.width / img2.height
+    img1 = img1.resize((int(target_height * img1_ratio), target_height))
+    img2 = img2.resize((int(target_height * img2_ratio), target_height))
+    total_width = img1.width + img2.width
+    merged_img = Image.new('RGB', (total_width, target_height), color=bg_color)
+    merged_img.paste(img1, (0, 0))
+    merged_img.paste(img2, (img1.width, 0))
+    merged_img.save(output_path)
+    return output_path
 
 # =============================================================================
 # Main Function
