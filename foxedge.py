@@ -770,6 +770,12 @@ def generate_writeup(bet, team_stats_global):
     return writeup
 
 def generate_social_media_post(bet):
+    """
+    Generates a social media post based on the bet details using Markdown formatting.
+    
+    Returns:
+        A string containing the Markdown formatted social media post.
+    """
     conf = bet['confidence']
     if conf >= 85:
         tone = "This one’s a sure-fire winner! Don’t miss out!"
@@ -778,41 +784,45 @@ def generate_social_media_post(bet):
     else:
         tone = "A cautious bet worth watching!"
     templates = [
-        f"🔥 **Bet Alert!** 🔥\n\n"
-        f"**Matchup:** {bet['away_team']} @ {bet['home_team']}\n\n"
-        f"**Prediction Highlights:**\n"
-        f"• **Winner:** {bet['predicted_winner']}\n"
-        f"• **Spread:** {bet['spread_suggestion']}\n"
-        f"• **Total Points:** {bet['predicted_total']}\n"
-        f"• **Confidence:** {bet['confidence']:.1f}%\n\n"
-        f"{tone}\n\n"
-        f"💬 **Testimonial:** “I turned a $10 bet into $50 thanks to FoxEdge – total game changer!” – Alex\n\n"
-        f"👉 **CTA:** {{cta}}\n\n"
-        f"💡 **Did You Know?** Our model analyzes recent form and key metrics to give you the edge!\n\n"
-        f"👥 **Join us:** Be part of a community of winning bettors!\n\n"
-        f"🔎 {{hashtags}}",
-        
-        f"🚀 **Hot Tip Alert!** 🚀\n\n"
-        f"**Game:** {bet['away_team']} @ {bet['home_team']}\n\n"
-        f"• **Winner:** {bet['predicted_winner']}\n"
-        f"• **Spread:** {bet['spread_suggestion']}\n"
-        f"• **Total:** {bet['predicted_total']}\n"
-        f"• **Confidence:** {bet['confidence']:.1f}%\n\n"
-        f"{tone}\n\n"
-        f"💡 **FYI:** Our predictions leverage advanced analytics for an unbeatable edge.\n\n"
-        f"👉 **CTA:** {{cta}}\n\n"
-        f"🏷️ {{hashtags}}",
-        
-        f"🎯 **Pro Pick Alert!** 🎯\n\n"
-        f"Matchup: {bet['away_team']} vs {bet['home_team']}\n"
-        f"Predicted Winner: {bet['predicted_winner']}\n"
-        f"Spread: {bet['spread_suggestion']}\n"
-        f"Total Points: {bet['predicted_total']}\n"
-        f"Confidence: {bet['confidence']:.1f}%\n\n"
-        f"{tone}\n\n"
-        f"👉 **CTA:** {{cta}}\n\n"
-        f"💡 **Did You Know?** Our system uses key metrics for that extra edge!\n\n"
-        f"{{hashtags}}"
+        (
+            "🔥 **Bet Alert!** 🔥\n\n"
+            "**Matchup:** {away_team} @ {home_team}\n\n"
+            "**Prediction Highlights:**\n"
+            "• **Winner:** {predicted_winner}\n"
+            "• **Spread:** {spread_suggestion}\n"
+            "• **Total Points:** {predicted_total}\n"
+            "• **Confidence:** {confidence:.1f}%\n\n"
+            "{tone}\n\n"
+            "💬 **Testimonial:** “I turned a $10 bet into $50 thanks to FoxEdge – total game changer!” – Alex\n\n"
+            "👉 **CTA:** {cta}\n\n"
+            "💡 **Did You Know?** Our model analyzes recent form and key metrics to give you the edge!\n\n"
+            "👥 **Join us:** Be part of a community of winning bettors!\n\n"
+            "🔎 {hashtags}"
+        ),
+        (
+            "🚀 **Hot Tip Alert!** 🚀\n\n"
+            "**Game:** {away_team} @ {home_team}\n\n"
+            "• **Winner:** {predicted_winner}\n"
+            "• **Spread:** {spread_suggestion}\n"
+            "• **Total:** {predicted_total}\n"
+            "• **Confidence:** {confidence:.1f}%\n\n"
+            "{tone}\n\n"
+            "💡 **FYI:** Our predictions leverage advanced analytics for an unbeatable edge.\n\n"
+            "👉 **CTA:** {cta}\n\n"
+            "🏷️ {hashtags}"
+        ),
+        (
+            "🎯 **Pro Pick Alert!** 🎯\n\n"
+            "Matchup: {away_team} vs {home_team}\n"
+            "Predicted Winner: {predicted_winner}\n"
+            "Spread: {spread_suggestion}\n"
+            "Total Points: {predicted_total}\n"
+            "Confidence: {confidence:.1f}%\n\n"
+            "{tone}\n\n"
+            "👉 **CTA:** {cta}\n\n"
+            "💡 **Did You Know?** Our system uses key metrics for that extra edge!\n\n"
+            "{hashtags}"
+        )
     ]
     selected_template = random.choice(templates)
     cta_options = [
@@ -822,12 +832,28 @@ def generate_social_media_post(bet):
         "Join the winning team and share your pick!"
     ]
     selected_cta = random.choice(cta_options)
-    hashtag_pool = ["#SportsBetting", "#GameDay", "#BetSmart", "#WinningTips", "#Edge", "#BettingCommunity"]
+    hashtag_pool = [
+        "#SportsBetting", "#GameDay", "#BetSmart", "#WinningTips", "#Edge", "#BettingCommunity"
+    ]
     selected_hashtags = " ".join(random.sample(hashtag_pool, k=3))
-    post = selected_template.replace("{cta}", selected_cta).replace("{hashtags}", selected_hashtags)
+    # Format the template with the bet details.
+    post = selected_template.format(
+        home_team=bet['home_team'],
+        away_team=bet['away_team'],
+        predicted_winner=bet['predicted_winner'],
+        spread_suggestion=bet['spread_suggestion'],
+        predicted_total=bet['predicted_total'],
+        confidence=bet['confidence'],
+        tone=tone,
+        cta=selected_cta,
+        hashtags=selected_hashtags
+    )
     return post
 
 def display_bet_card(bet, team_stats_global, team_data=None):
+    """
+    Displays a bet card with various sections and a button to generate a formatted social media post.
+    """
     conf = bet['confidence']
     if conf >= 80:
         confidence_color = "green"
@@ -882,7 +908,8 @@ def display_bet_card(bet, team_stats_global, team_data=None):
     with st.expander("Generate Social Media Post", expanded=False):
         if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
             post = generate_social_media_post(bet)
-            st.code(post, language="markdown")
+            # Use st.markdown to render the post with proper Markdown formatting.
+            st.markdown(post)
 
 ################################################################################
 # GLOBALS
