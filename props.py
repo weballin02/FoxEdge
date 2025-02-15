@@ -5,12 +5,12 @@ import random
 import time
 from datetime import datetime, timedelta
 
-# Official endpoints from your list
+# Official endpoints from your list that DO exist in your environment:
 from nba_api.stats.endpoints import (
     scoreboardv2, 
     playergamelogs, 
-    commonteamroster,
-    boxscorematchups 
+    commonteamroster
+    # Notice: NO 'boxscorematchups' import here to avoid ImportError
 )
 from nba_api.stats.static import teams, players
 
@@ -21,47 +21,35 @@ from tensorflow.keras.layers import Dense
 from tensorflow.keras import backend as K  # For clearing session in Keras
 
 ################################################################################
-# MATCHUP-BASED UTILITY FUNCTIONS
+# MATCHUP-BASED UTILITY FUNCTIONS (DUMMY IMPLEMENTATION)
 ################################################################################
 
-@st.cache_data(ttl=3600)
 def fetch_boxscore_matchupsv3_data(game_id):
-    """Fetch advanced matchup data from the boxscorematchups endpoint."""
-    try:
-        time.sleep(0.6)
-        boxscore_obj = boxscorematchups.BoxScoreMatchups(game_id=game_id)
-        df = boxscore_obj.get_data_frames()[0]  # Usually the first DataFrame is the relevant one
-        return df
-    except Exception as e:
-        st.error(f"Error fetching matchup data for game {game_id}: {e}")
-        return pd.DataFrame()
+    """
+    DUMMY function (returns empty DataFrame).
+    Replaces boxscorematchups.BoxScoreMatchups call, which isn't available in your environment.
+    """
+    st.warning("Advanced matchup endpoint not found. Returning empty data for game " + str(game_id))
+    return pd.DataFrame()
 
 def aggregate_matchup_data(matchup_df):
     """
-    Given the raw matchup DataFrame, group by (gameId, personIdOff)
-    to get total partialPossessions, potential assists, etc.
+    If we had real matchup data, we'd group by (gameId, personIdOff).
+    For now, returns an empty DataFrame if there's no data.
     """
     if matchup_df.empty:
         return pd.DataFrame()
-
-    grouped = matchup_df.groupby(['gameId', 'personIdOff'], as_index=False).agg({
-        'partialPossessions': 'sum',
-        'matchupPotentialAssists': 'sum'
-    })
-    grouped.rename(columns={
-        'personIdOff': 'PLAYER_ID',
-        'partialPossessions': 'MATCHUP_PARTIAL_POSSESSIONS',
-        'matchupPotentialAssists': 'MATCHUP_POTENTIAL_AST'
-    }, inplace=True)
-    return grouped
+    # The real logic would be here, but with no data, it remains empty
+    return pd.DataFrame()
 
 def merge_matchup_stats(player_logs_df, matchup_agg_df):
     """
-    Merge aggregated matchup stats into the player's per-game logs
-    using [GAME_ID, PLAYER_ID].
+    Merge aggregated matchup stats into the player's per-game logs if any exist.
+    But for now, we skip, since 'matchup_agg_df' is empty.
     """
     if player_logs_df.empty or matchup_agg_df.empty:
         return player_logs_df
+    # Without real data, this won't do much:
     merged = pd.merge(
         player_logs_df,
         matchup_agg_df,
@@ -230,8 +218,9 @@ class DataProcessor:
 
     def process_player_stats(self, player_stats_df):
         """
-        Process player stats by computing rolling averages for MIN and key stats,
-        plus matchup-based columns if they exist.
+        Process player stats by computing rolling averages for MIN and key stats.
+        The advanced matchup columns won't actually appear unless you manually
+        fill them in, since we can't fetch them from boxscorematchups.
         """
         if player_stats_df.empty:
             return pd.DataFrame()
@@ -239,7 +228,7 @@ class DataProcessor:
         base_columns = ['MIN'] + self.stats_columns
         processed_stats = calculate_rolling_averages(player_stats_df, base_columns, [5, 10])
 
-        # If matchup columns exist, add them to rolling
+        # If matchup columns exist, we do the same, but the dummy function returns empty DF anyway.
         if 'MATCHUP_PARTIAL_POSSESSIONS' in player_stats_df.columns:
             processed_stats = calculate_rolling_averages(
                 processed_stats, 
@@ -247,7 +236,7 @@ class DataProcessor:
                 [5, 10]
             )
 
-        # Per-minute for PTS, AST, etc.
+        # Per-minute for PTS, AST, REB, etc.
         for stat in self.stats_columns:
             processed_stats[f'{stat}_PER_MIN'] = (
                 processed_stats[stat] / processed_stats['MIN']
@@ -292,10 +281,9 @@ class NBADataFetcher:
     def get_upcoming_games(next_n_days=7):
         """
         Collect NBA schedules from scoreboardv2 for the next next_n_days (including today).
-        Returns a DataFrame with all games for that timespan.
         """
         all_games = []
-        for offset in range(next_n_days+1):  # +1 so we include day=7
+        for offset in range(next_n_days+1):
             query_date = (datetime.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
             try:
                 time.sleep(0.6)
@@ -304,7 +292,7 @@ class NBADataFetcher:
                 if not df.empty:
                     df['HOME_TEAM_NAME'] = df['HOME_TEAM_ID'].apply(NBADataFetcher.get_team_name)
                     df['VISITOR_TEAM_NAME'] = df['VISITOR_TEAM_ID'].apply(NBADataFetcher.get_team_name)
-                    df['SCHEDULE_DATE'] = query_date  # Tag with the date for filtering
+                    df['SCHEDULE_DATE'] = query_date
                     all_games.append(df)
             except Exception as e:
                 st.error(f"Error fetching scoreboard for {query_date}: {e}")
@@ -325,7 +313,7 @@ class NBADataFetcher:
     def get_player_stats(player_id, last_n_games=10):
         """
         Fetch last_n_games for the given player ID.
-        Merge advanced matchup data from boxscorematchups for each game.
+        Merge advanced matchup data from the dummy function (which returns empty).
         """
         try:
             time.sleep(0.6)
@@ -343,10 +331,11 @@ class NBADataFetcher:
                 if c in logs.columns:
                     logs[c] = pd.to_numeric(logs[c], errors='coerce')
 
-            # For each game in logs, fetch advanced matchups and merge
+            # For each game in logs, we "fetch" advanced matchups, but it’s just an empty DataFrame now
             unique_games = logs['GAME_ID'].unique()
             all_matchup_aggregations = []
             for g_id in unique_games:
+                # Dummy approach
                 matchup_raw = fetch_boxscore_matchupsv3_data(g_id)
                 if matchup_raw.empty:
                     continue
@@ -378,7 +367,8 @@ class PropPredictor:
     @staticmethod
     def prepare_features(player_stats):
         """
-        Include advanced matchup-based columns if present (rolled).
+        The advanced matchup columns won't be present unless you add them manually. 
+        We'll still define them so code doesn't break.
         """
         base_feats = [
             'MIN_5_AVG', 'PTS_5_AVG', 'AST_5_AVG', 'REB_5_AVG',
@@ -397,7 +387,9 @@ class PropPredictor:
     @staticmethod
     @st.cache_data
     def _cached_predict(_player_stats):
-        """Fallback if no ensemble model is trained."""
+        """
+        Naive fallback if no ensemble model is trained.
+        """
         try:
             if _player_stats.empty:
                 return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
@@ -484,8 +476,8 @@ class PropPredictor:
     @staticmethod
     def build_live_training_data(players_df, data_fetcher, min_games=10, last_n_games=20):
         """
-        Build training data from the next_n_days pool, 
-        including advanced matchup columns if present.
+        Build training data from the next_n_days pool. 
+        The advanced matchup columns won't be actually filled with data, but code won't break.
         """
         training_rows = []
         target_cols = ['PTS', 'AST', 'REB', 'STL', 'BLK']
@@ -599,13 +591,13 @@ def process_game(game_data, data_fetcher, processor, predictor, only_starting):
 
 def main():
     st.set_page_config(
-        page_title="NBA Player Props Predictor (Next 7 Days)", 
+        page_title="NBA Player Props Predictor (No boxscorematchups)", 
         page_icon="🏀",
         layout="wide"
     )
-    st.title("🏀 NBA Player Props Predictor - Next 7 Days")
-    st.markdown("This version fetches upcoming NBA schedules for the next 7 days, "\
-                "including advanced matchup data from boxscorematchups.")
+    st.title("🏀 NBA Player Props Predictor - Next 7 Days (No Advanced Matchups)")
+    st.markdown("We've removed `boxscorematchups` import due to ImportError, "\
+                "so advanced matchup data is unavailable. Everything else works.")
 
     data_fetcher = NBADataFetcher
     processor = DataProcessor()
@@ -693,7 +685,7 @@ def main():
                 display_prop_card(bet)
 
     st.markdown("---")
-    st.markdown("Data from NBA API | Built with Streamlit | Next 7 Days Schedule")
+    st.markdown("Data from NBA API | Built with Streamlit | Next 7 Days schedule | No advanced matchups")
 
 if __name__ == "__main__":
     main()
