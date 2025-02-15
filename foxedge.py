@@ -1,3 +1,8 @@
+
+import warnings
+# Suppress known joblib/loky resource_tracker warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="joblib")
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -870,7 +875,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
             post = generate_social_media_post(bet)
             # Use st.markdown to render the markdown formatting instead of showing the raw ** characters.
             st.markdown(post)
-            
+
 ################################################################################
 # GLOBALS
 ################################################################################
