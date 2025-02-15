@@ -452,7 +452,13 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     }
 
 def find_top_bets(matchups, threshold=70.0):
+    """
+    Returns a DataFrame with bets having confidence >= threshold.
+    If the input list is empty or does not contain 'confidence', returns an empty DataFrame.
+    """
     df = pd.DataFrame(matchups)
+    if df.empty or 'confidence' not in df.columns:
+        return pd.DataFrame()
     df_top = df[df['confidence'] >= threshold].copy()
     df_top.sort_values('confidence', ascending=False, inplace=True)
     return df_top
