@@ -3,47 +3,48 @@ import pandas as pd
 import numpy as np
 import random
 import time
-from datetime import datetime
-from nba_api.stats.endpoints import scoreboardv2, playergamelogs, teamgamelogs, commonteamroster
-from nba_api.stats.static import teams, players
+import datetime
+from datetime import datetime as dt
+from pathlib import Path
 
+# NBA API
+from nba_api.stats.endpoints import scoreboardv2, playergamelogs, commonteamroster
+from nba_api.stats.static import teams
+
+# Modeling
 from sklearn.ensemble import (
     RandomForestRegressor,
     GradientBoostingRegressor
 )
 import xgboost as xgb
-
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
-from tensorflow.keras import backend as K  # For clearing session in Keras
+from tensorflow.keras import backend as K  # For clearing Keras sessions
 
 ################################################################################
-# NEW: CSV INTEGRATION
+# 1) CSV CONFIG & LOADING
 ################################################################################
 
-from pathlib import Path
+USE_NBA_CSV_DATA = True  # Toggle True to load from CSV first, fallback to API if missing
 
-USE_NBA_CSV_DATA = True  # Set to False to disable CSV loading
-
-def load_csv_data_safe(file_path):
-    """Return a DataFrame from CSV or empty DataFrame on failure."""
-    file = Path(file_path)
-    if not file.exists():
+def load_csv_data_safe(file_path: str) -> pd.DataFrame:
+    """Return a DataFrame from CSV, or an empty DataFrame on error."""
+    f = Path(file_path)
+    if not f.exists():
         print(f"CSV not found at {file_path}")
         return pd.DataFrame()
     try:
-        df = pd.read_csv(file)
-        return df
+        return pd.read_csv(f)
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=14400)
-def load_nba_players_csv():
+def load_nba_players_csv() -> pd.DataFrame:
     """
-    Attempt to load historical player logs from data/nba_players_all.csv.
-    Expected columns (example):
-      - 'player_id', 'player_name', 'game_date', 'TEAM_ID', 'MIN', 'PTS', 'AST', 'REB', 'STL', 'BLK', etc.
+    Attempt to load historical player logs from data/nba_players_all.csv
+    with columns like: 'player_id', 'player_name', 'game_date', 'TEAM_ID',
+    'MIN', 'PTS', 'AST', 'REB', 'STL', 'BLK', etc.
     """
     if not USE_NBA_CSV_DATA:
         return pd.DataFrame()
@@ -53,22 +54,23 @@ def load_nba_players_csv():
         return df
 
     # Basic cleanup
-    if 'game_date' in df.columns:
-        df['game_date'] = pd.to_datetime(df['game_date'], errors='coerce')
-        df = df.dropna(subset=['game_date'])
+    if "game_date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
+        df.dropna(subset=["game_date"], inplace=True)
+
     # Ensure numeric columns
-    numeric_cols = ['MIN','PTS','AST','REB','STL','BLK']
+    numeric_cols = ["MIN","PTS","AST","REB","STL","BLK"]
     for col in numeric_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # Sort by player_id, date
-    if 'player_id' in df.columns:
-        df.sort_values(['player_id','game_date'], inplace=True)
+    # Sort by player_id, then date
+    if "player_id" in df.columns:
+        df.sort_values(["player_id","game_date"], inplace=True)
     return df
 
 ################################################################################
-# UTILITY FUNCTIONS
+# 2) UTILITY FUNCTIONS
 ################################################################################
 
 def calculate_rolling_averages(df, columns, windows):
@@ -80,7 +82,7 @@ def calculate_rolling_averages(df, columns, windows):
     return result
 
 def format_prediction_output(predictions):
-    """Format predictions for display."""
+    """Format predictions dict for display."""
     return {
         'Points': f"{predictions.get('PTS', 0):.1f}",
         'Assists': f"{predictions.get('AST', 0):.1f}",
@@ -90,13 +92,36 @@ def format_prediction_output(predictions):
     }
 
 ################################################################################
-# UI COMPONENTS (Adapted for Player Props)
+# 3) DAY-BY-DAY SEARCH FOR NEXT GAME
+################################################################################
+
+def find_next_gameday_with_games(start_date=None, max_days_ahead=14):
+    """
+    Checks NBA scoreboard from start_date up to max_days_ahead days.
+    Returns the first date string (YYYY-MM-DD) that has at least one NBA game.
+    If none are found, returns None.
+    """
+    if start_date is None:
+        start_date = dt.now()
+
+    for i in range(max_days_ahead):
+        day_to_check = start_date + datetime.timedelta(days=i)
+        date_str = day_to_check.strftime('%Y-%m-%d')
+
+        scoreboard = scoreboardv2.ScoreboardV2(game_date=date_str)
+        games_df = scoreboard.get_data_frames()[0]
+        if not games_df.empty:
+            return date_str
+    return None
+
+################################################################################
+# 4) UI COMPONENTS (Player Prop Cards & Social Posts)
 ################################################################################
 
 def generate_social_media_post(bet):
     """
-    Generate a social media post for a given bet (here, a player prop).
-    Expects bet to include 'player_name', 'team', 'predictions', and 'confidence'.
+    Generate a social media post for a given bet (player prop).
+    Expects 'player_name', 'team', 'predictions', 'confidence'.
     """
     conf = bet.get('confidence', 0)
     if conf >= 85:
@@ -152,13 +177,8 @@ def generate_social_media_post(bet):
 
 def display_prop_card(bet):
     """
-    Display a player prop card using a design layout with containers, columns, and expanders.
-    Expects a bet dictionary with:
-      - 'player_name'
-      - 'team'
-      - 'predictions': dict (e.g., 'PTS', 'AST', etc.)
-      - 'value_bets': list (optional)
-      - 'confidence': numeric value for styling.
+    Display a player prop card. Expects a bet dictionary with:
+      - 'player_name', 'team', 'predictions' dict, 'value_bets' list, 'confidence' float.
     """
     confidence = bet.get('confidence', 0)
     if confidence >= 80:
@@ -182,29 +202,33 @@ def display_prop_card(bet):
         if 'predictions' in bet:
             formatted_preds = format_prediction_output(bet['predictions'])
             cols = st.columns(len(formatted_preds))
-            for col, (prop, value) in zip(cols, formatted_preds.items()):
-                col.metric(label=prop, value=value)
+            for c, (prop, value) in zip(cols, formatted_preds.items()):
+                c.metric(label=prop, value=value)
+
     with st.expander("Detailed Insights", expanded=False):
         if bet.get('value_bets'):
             for vb in bet['value_bets']:
                 st.markdown(
-                    f"**Prop:** {vb.get('prop', '')} | **Suggestion:** {'OVER' if vb.get('value', 0) > 0 else 'UNDER'} | **Confidence:** {vb.get('confidence', 0):.0%}"
+                    f"**Prop:** {vb.get('prop', '')} | "
+                    f"**Suggestion:** {'OVER' if vb.get('value', 0) > 0 else 'UNDER'} "
+                    f"| **Confidence:** {vb.get('confidence', 0):.0%}"
                 )
         else:
             st.info("No value bets available.")
+
     with st.expander("Generate Social Media Post", expanded=False):
         if st.button("Generate Post", key=f"post_{bet['player_name']}"):
             post = generate_social_media_post(bet)
             st.code(post, language="markdown")
 
 ################################################################################
-# DATA PROCESSING & PREDICTION FUNCTIONS (Player Props)
+# 5) HELPER: Projected Starting Lineups
 ################################################################################
 
 def get_projected_starting_players(players_df, data_fetcher, games=3, n=5):
     """
-    For each player in players_df, fetch recent game logs and compute average minutes.
-    Returns the top n players by average minutes.
+    For each player in players_df, fetch recent game logs, compute average minutes,
+    then return top n players by avg minutes.
     """
     players_with_minutes = []
     for _, player in players_df.iterrows():
@@ -219,51 +243,61 @@ def get_projected_starting_players(players_df, data_fetcher, games=3, n=5):
             'name': player['name'],
             'avg_min': avg_min
         })
-    df = pd.DataFrame(players_with_minutes)
-    df = df.sort_values(by='avg_min', ascending=False)
+
+    # Handle potential empty list
+    if not players_with_minutes:
+        return pd.DataFrame(columns=["id", "name", "avg_min"])
+
+    df = pd.DataFrame(players_with_minutes, columns=["id", "name", "avg_min"])
+    if not df.empty and 'avg_min' in df.columns:
+        df = df.sort_values(by='avg_min', ascending=False)
     return df.head(n)
+
+################################################################################
+# 6) DATA PROCESSOR & FETCHER
+################################################################################
 
 class DataProcessor:
     def __init__(self):
-        self.stats_columns = ['PTS', 'AST', 'REB', 'STL', 'BLK']
+        self.stats_columns = ['PTS','AST','REB','STL','BLK']
 
     def process_player_stats(self, player_stats_df):
         """
-        Process player stats by computing rolling averages for MIN and key stats.
+        Process player stats by computing rolling averages for MIN + key stats.
         """
         if player_stats_df.empty:
             return pd.DataFrame()
-        base_columns = ['MIN'] + self.stats_columns
-        processed_stats = calculate_rolling_averages(player_stats_df, base_columns, [5, 10])
-        for stat in self.stats_columns:
-            processed_stats[f'{stat}_PER_MIN'] = (processed_stats[stat] / processed_stats['MIN']).fillna(0)
+        base_cols = ['MIN'] + self.stats_columns
+        processed_stats = calculate_rolling_averages(player_stats_df, base_cols, [5, 10])
+        for s in self.stats_columns:
+            processed_stats[f'{s}_PER_MIN'] = (processed_stats[s] / processed_stats['MIN']).fillna(0)
         return processed_stats
 
     def adjust_for_opponent(self, player_stats, team_stats):
-        """(Optional) Adjust stats based on opponent metrics (not used here)."""
+        """(Optional) Adjust stats based on opponent metrics (not used)."""
         return player_stats
 
 class NBADataFetcher:
     """
-    Enhanced data fetcher that can read from CSV for historical logs or fallback to the API.
+    Enhanced data fetcher that can read from CSV or fallback to the API.
     """
-    # Cache the loaded CSV logs to avoid repeated file reads
     players_csv_data = load_nba_players_csv()
 
     @st.cache_data(ttl=3600)
     def get_team_name(team_id):
         try:
             nba_teams = teams.get_teams()
-            team_info = next((team for team in nba_teams if team['id'] == team_id), None)
-            return team_info['full_name'] if team_info else f"Team {team_id}"
+            info = next((t for t in nba_teams if t['id'] == team_id), None)
+            return info['full_name'] if info else f"Team {team_id}"
         except Exception as e:
             st.error(f"Error fetching team name: {e}")
             return f"Team {team_id}"
 
     @st.cache_data(ttl=3600)
     def get_team_players(team_id):
+        from nba_api.stats.endpoints import commonteamroster
+        time.sleep(0.6)
         try:
-            time.sleep(0.6)
             roster = commonteamroster.CommonTeamRoster(team_id=team_id)
             roster_df = roster.get_data_frames()[0]
             if not roster_df.empty:
@@ -272,60 +306,40 @@ class NBADataFetcher:
                     'name': str(row['PLAYER'])
                 } for _, row in roster_df.iterrows()]
                 return pd.DataFrame(players_data)
-            return pd.DataFrame([{'id': '1', 'name': 'Player Data Unavailable'}])
+            return pd.DataFrame(columns=['id','name'])
         except Exception as e:
             st.error(f"Error fetching team players: {e}")
-            return pd.DataFrame(columns=['id', 'name'])
+            return pd.DataFrame(columns=['id','name'])
 
     @st.cache_data(ttl=3600)
-    def get_todays_games():
-        try:
-            time.sleep(0.6)
-            scoreboard = scoreboardv2.ScoreboardV2(game_date=datetime.now().strftime("%Y-%m-%d"))
-            games_df = scoreboard.get_data_frames()[0]
-            if not games_df.empty:
-                games_df['HOME_TEAM_NAME'] = games_df['HOME_TEAM_ID'].apply(NBADataFetcher.get_team_name)
-                games_df['VISITOR_TEAM_NAME'] = games_df['VISITOR_TEAM_ID'].apply(NBADataFetcher.get_team_name)
-                return games_df[[
-                    'GAME_ID','GAME_DATE_EST','HOME_TEAM_ID','VISITOR_TEAM_ID',
-                    'HOME_TEAM_NAME','VISITOR_TEAM_NAME'
-                ]]
-            return pd.DataFrame(columns=[
-                'GAME_ID','GAME_DATE_EST','HOME_TEAM_ID','VISITOR_TEAM_ID',
-                'HOME_TEAM_NAME','VISITOR_TEAM_NAME'
-            ])
-        except Exception as e:
-            st.error(f"Error fetching games: {e}")
-            return pd.DataFrame()
-
-    @classmethod
-    def get_player_stats(cls, player_id, last_n_games=10):
+    def get_player_stats(player_id, last_n_games=10):
         """
-        If CSV data is available for this player, slice their last N games.
-        Otherwise, fallback to the NBA API.
+        If CSV data is available for this player, slice last N games from there.
+        Otherwise fallback to the NBA API.
         """
-        if USE_NBA_CSV_DATA and not cls.players_csv_data.empty:
-            # Use CSV slice:
-            df = cls.players_csv_data[cls.players_csv_data['player_id'] == float(player_id)]
+        if USE_NBA_CSV_DATA and not NBADataFetcher.players_csv_data.empty:
+            # Filter CSV by player_id
+            df = NBADataFetcher.players_csv_data[
+                NBADataFetcher.players_csv_data['player_id'] == float(player_id)
+            ]
             if df.empty:
-                # Fallback if no row for that player
-                return cls.fetch_player_logs_api(player_id, last_n_games)
-            # Sort by date descending, take last N rows
+                return NBADataFetcher.fetch_player_logs_api(player_id, last_n_games)
+
+            # Sort descending by date, take the last N
             df = df.sort_values('game_date', ascending=False).head(last_n_games)
             df = df.rename(columns={'game_date':'GAME_DATE'})
-            # Match column names to your code
             df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
             return df
         else:
             # Fallback to the API
-            return cls.fetch_player_logs_api(player_id, last_n_games)
+            return NBADataFetcher.fetch_player_logs_api(player_id, last_n_games)
 
     @staticmethod
     @st.cache_data(ttl=3600)
     def fetch_player_logs_api(player_id, last_n_games=10):
-        """Direct call to NBA API if CSV is not used or data not found."""
+        from nba_api.stats.endpoints import playergamelogs
+        time.sleep(0.6)
         try:
-            time.sleep(0.6)
             logs = playergamelogs.PlayerGameLogs(
                 player_id_nullable=player_id,
                 last_n_games_nullable=last_n_games
@@ -335,9 +349,13 @@ class NBADataFetcher:
                 return pd.DataFrame(columns=['GAME_DATE','MIN','PTS','AST','REB','STL','BLK'])
             return df
         except Exception as e:
-            st.error(f"Error fetching player stats: {e}")
+            st.error(f"Error fetching player stats API: {e}")
             return pd.DataFrame(columns=['GAME_DATE','MIN','PTS','AST','REB','STL','BLK'])
 
+
+################################################################################
+# 7) PROP PREDICTOR (Ensemble, Value Bets, etc.)
+################################################################################
 
 class PropPredictor:
     def __init__(self):
@@ -352,52 +370,48 @@ class PropPredictor:
 
     @staticmethod
     def prepare_features(player_stats):
-        try:
-            feature_cols = [
-                'MIN_5_AVG','PTS_5_AVG','AST_5_AVG','REB_5_AVG',
-                'MIN_10_AVG','PTS_10_AVG','AST_10_AVG','REB_10_AVG'
-            ]
-            missing_cols = [col for col in feature_cols if col not in player_stats.columns]
-            if missing_cols:
-                st.warning(f"Missing columns for features: {missing_cols}")
-                for col in missing_cols:
-                    player_stats[col] = 0
-            return player_stats[feature_cols].fillna(0)
-        except Exception as e:
-            st.error(f"Error preparing features: {e}")
-            return pd.DataFrame(columns=[])
+        feature_cols = [
+            'MIN_5_AVG','PTS_5_AVG','AST_5_AVG','REB_5_AVG',
+            'MIN_10_AVG','PTS_10_AVG','AST_10_AVG','REB_10_AVG'
+        ]
+        if player_stats.empty:
+            return pd.DataFrame(columns=feature_cols)
+        for col in feature_cols:
+            if col not in player_stats.columns:
+                player_stats[col] = 0
+        return player_stats[feature_cols].fillna(0)
 
     @staticmethod
     @st.cache_data
     def _cached_predict(_player_stats):
         """
-        Simple baseline if no ensemble model is trained:
-        Takes the means of the last 10-game rolling average + random variation.
+        Baseline if no ensemble model is trained:
+        Takes mean of last 10-game rolling average + random variation.
         """
-        try:
-            if _player_stats.empty:
-                return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
-            predictions = {}
-            for prop in ['PTS','AST','REB','STL','BLK']:
-                col_name = f'{prop}_10_AVG'
-                base_value = _player_stats[col_name].mean() if col_name in _player_stats.columns else 0
-                variation = np.random.normal(0, max(1, base_value * 0.1))
-                predictions[prop] = max(0, base_value + variation)
-            return pd.Series(predictions)
-        except Exception as e:
-            st.error(f"Error in baseline prediction: {e}")
-            return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
+        if _player_stats.empty:
+            return pd.Series({'PTS':0,'AST':0,'REB':0,'STL':0,'BLK':0})
+        predictions = {}
+        for prop in ['PTS','AST','REB','STL','BLK']:
+            col = f'{prop}_10_AVG'
+            base_val = _player_stats[col].mean() if col in _player_stats.columns else 0
+            variation = np.random.normal(0, max(1, base_val*0.1))
+            predictions[prop] = max(0, base_val + variation)
+        return pd.Series(predictions)
 
     def train_ensemble_models(self, X_train, y_train_dict):
-        K.clear_session()  # Clear previous Keras session.
+        K.clear_session()
         self.ensemble_models = {}
+
         for prop in y_train_dict.keys():
+            # XGBoost
             xgb_model = xgb.XGBRegressor(n_estimators=100, random_state=42)
             xgb_model.fit(X_train, y_train_dict[prop])
 
+            # GradientBoosting
             gbm_model = GradientBoostingRegressor(n_estimators=100, random_state=42)
             gbm_model.fit(X_train, y_train_dict[prop])
 
+            # Simple NN
             nn_model = Sequential()
             nn_model.add(Dense(64, input_dim=X_train.shape[1], activation='relu'))
             nn_model.add(Dense(32, activation='relu'))
@@ -425,72 +439,66 @@ class PropPredictor:
 
     def predict_props(self, player_stats):
         if player_stats is None or player_stats.empty:
-            return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
+            return pd.Series({'PTS':0,'AST':0,'REB':0,'STL':0,'BLK':0})
         if self.ensemble_models:
             return self.predict_ensemble(player_stats)
         return self._cached_predict(player_stats)
 
     def identify_value_bets(self, predictions, sportsbook_lines):
-        try:
-            """
-            You can integrate real sportsbook lines or mock lines. 
-            This just does a random mock approach for demonstration.
-            """
-            value_bets = []
-            mock_lines = {
-                'PTS': predictions.get('PTS', 0) + np.random.normal(0, 2),
-                'AST': predictions.get('AST', 0) + np.random.normal(0, 1),
-                'REB': predictions.get('REB', 0) + np.random.normal(0, 1)
-            }
-            for prop, pred in predictions.items():
-                if prop in mock_lines:
-                    diff = pred - mock_lines[prop]
-                    if abs(diff) > 2:  # Arbitrary threshold to mark "value"
-                        value_bets.append({
-                            'prop': prop,
-                            'prediction': pred,
-                            'line': mock_lines[prop],
-                            'value': diff,
-                            'confidence': min(abs(diff)/4, 1)
-                        })
+        """
+        Mock approach to lines. In real usage, fetch actual lines from e.g. The Odds API.
+        """
+        value_bets = []
+        if not predictions:
             return value_bets
-        except Exception as e:
-            st.error(f"Error identifying value bets: {e}")
-            return []
+        # Simple random offsets
+        mock_lines = {
+            'PTS': predictions.get('PTS',0) + np.random.normal(0,2),
+            'AST': predictions.get('AST',0) + np.random.normal(0,1),
+            'REB': predictions.get('REB',0) + np.random.normal(0,1)
+        }
+        for prop, pred in predictions.items():
+            if prop in mock_lines:
+                diff = pred - mock_lines[prop]
+                if abs(diff) > 2:  # Arbitrary threshold
+                    value_bets.append({
+                        'prop': prop,
+                        'prediction': pred,
+                        'line': mock_lines[prop],
+                        'value': diff,
+                        'confidence': min(abs(diff)/4,1)
+                    })
+        return value_bets
 
     @staticmethod
     def build_live_training_data(players_df, data_fetcher, min_games=10, last_n_games=20):
         """
-        Builds a training dataset by fetching each player's last N games, 
-        or by slicing CSV data (if available).
+        Build a training dataset for each player's last N games (CSV or API).
         """
         training_rows = []
         target_cols = ['PTS','AST','REB','STL','BLK']
         for _, player in players_df.iterrows():
-            player_id = player['id']
-            game_logs = data_fetcher.get_player_stats(player_id, last_n_games=last_n_games)
+            pid = player['id']
+            game_logs = data_fetcher.get_player_stats(pid, last_n_games=last_n_games)
             if game_logs.empty or len(game_logs) < min_games:
                 continue
-            try:
-                # Sort logs by date
-                if 'GAME_DATE' in game_logs.columns:
-                    game_logs['GAME_DATE'] = pd.to_datetime(game_logs['GAME_DATE'], errors='coerce')
-                else:
-                    game_logs['GAME_DATE'] = pd.NaT
-                game_logs = game_logs.sort_values('GAME_DATE')
-            except Exception as e:
-                st.error(f"Error processing game logs for {player['name']}: {e}")
-                continue
 
-            for col in ['MIN','PTS','AST','REB','STL','BLK']:
-                if col in game_logs.columns:
-                    game_logs[col] = pd.to_numeric(game_logs[col], errors='coerce').fillna(0)
+            if 'GAME_DATE' not in game_logs.columns:
+                game_logs['GAME_DATE'] = pd.NaT
+            else:
+                game_logs['GAME_DATE'] = pd.to_datetime(game_logs['GAME_DATE'], errors='coerce')
+            game_logs.sort_values('GAME_DATE', inplace=True)
 
-            # Create rolling features
-            game_logs['MIN_5_AVG'] = game_logs['MIN'].rolling(window=5, min_periods=1).mean().shift(1)
-            game_logs['PTS_5_AVG'] = game_logs['PTS'].rolling(window=5, min_periods=1).mean().shift(1)
-            game_logs['AST_5_AVG'] = game_logs['AST'].rolling(window=5, min_periods=1).mean().shift(1)
-            game_logs['REB_5_AVG'] = game_logs['REB'].rolling(window=5, min_periods=1).mean().shift(1)
+            # Ensure numeric
+            for c in ['MIN','PTS','AST','REB','STL','BLK']:
+                if c in game_logs.columns:
+                    game_logs[c] = pd.to_numeric(game_logs[c], errors='coerce').fillna(0)
+
+            # Rolling features
+            game_logs['MIN_5_AVG']  = game_logs['MIN'].rolling(window=5, min_periods=1).mean().shift(1)
+            game_logs['PTS_5_AVG']  = game_logs['PTS'].rolling(window=5, min_periods=1).mean().shift(1)
+            game_logs['AST_5_AVG']  = game_logs['AST'].rolling(window=5, min_periods=1).mean().shift(1)
+            game_logs['REB_5_AVG']  = game_logs['REB'].rolling(window=5, min_periods=1).mean().shift(1)
 
             game_logs['MIN_10_AVG'] = game_logs['MIN'].rolling(window=10, min_periods=1).mean().shift(1)
             game_logs['PTS_10_AVG'] = game_logs['PTS'].rolling(window=10, min_periods=1).mean().shift(1)
@@ -501,86 +509,101 @@ class PropPredictor:
                 'MIN_5_AVG','PTS_5_AVG','AST_5_AVG','REB_5_AVG',
                 'MIN_10_AVG','PTS_10_AVG','AST_10_AVG','REB_10_AVG'
             ]
-            game_logs = game_logs.dropna(subset=feature_cols)
-            for idx, row in game_logs.iterrows():
-                sample = {col: row[col] for col in feature_cols}
-                sample['player_id'] = player_id
+            game_logs.dropna(subset=feature_cols, inplace=True)
+
+            for _, row in game_logs.iterrows():
+                sample = {fc: row[fc] for fc in feature_cols}
+                sample['player_id'] = pid
                 sample['player_name'] = player['name']
-                for target in target_cols:
-                    if target in row:
-                        sample[target] = row[target]
-                    else:
-                        sample[target] = 0
+                for t in target_cols:
+                    sample[t] = row[t] if t in row else 0
                 training_rows.append(sample)
+
         if not training_rows:
-            st.warning("Not enough historical data available for training.")
+            st.warning("Not enough historical data for training.")
             return pd.DataFrame(), {}
         training_df = pd.DataFrame(training_rows)
-        X = training_df[feature_cols]
-        y_train_dict = {target: training_df[target] for target in target_cols}
+        X = training_df[[
+            'MIN_5_AVG','PTS_5_AVG','AST_5_AVG','REB_5_AVG',
+            'MIN_10_AVG','PTS_10_AVG','AST_10_AVG','REB_10_AVG'
+        ]]
+        y_train_dict = {t: training_df[t] for t in target_cols}
         return X, y_train_dict
 
 ################################################################################
-# HELPER FUNCTION TO PROCESS A SINGLE GAME'S PREDICTIONS
+# 8) PROCESS A SINGLE GAME
 ################################################################################
 
 def process_game(game_data, data_fetcher, processor, predictor, only_starting):
     """
-    For a given game, fetch team rosters (filtered to starting players if desired)
-    and compute predictions for each player. Returns a list of bet dictionaries.
+    For a given game, fetch rosters, possibly only top N 'starting' players by MIN,
+    then compute predictions for each player.
     """
     home_players = data_fetcher.get_team_players(game_data['HOME_TEAM_ID'])
     away_players = data_fetcher.get_team_players(game_data['VISITOR_TEAM_ID'])
+
     if only_starting:
         home_players = get_projected_starting_players(home_players, data_fetcher, games=3, n=5)
         away_players = get_projected_starting_players(away_players, data_fetcher, games=3, n=5)
+
     bets = []
-    for player in pd.concat([home_players, away_players]).drop_duplicates(subset='id').itertuples(index=False):
-        player_stats = data_fetcher.get_player_stats(player.id)
-        if player_stats.empty:
+    combined_players = pd.concat([home_players, away_players]).drop_duplicates(subset='id')
+    for _, p in combined_players.iterrows():
+        p_stats = data_fetcher.get_player_stats(p['id'])
+        if p_stats.empty:
             continue
-        processed_stats = processor.process_player_stats(player_stats)
-        # Determine team membership
-        if player.id in home_players['id'].values:
+        processed_stats = processor.process_player_stats(p_stats)
+
+        # Determine which side (home/away) for labeling
+        if p['id'] in home_players['id'].values:
             team_name = game_data['HOME_TEAM_NAME']
-        elif player.id in away_players['id'].values:
+        elif p['id'] in away_players['id'].values:
             team_name = game_data['VISITOR_TEAM_NAME']
         else:
             team_name = "Unknown"
+
         preds = predictor.predict_props(processed_stats)
         value_bets = predictor.identify_value_bets(preds, None)
+        conf = np.mean([preds.get('PTS',0), preds.get('AST',0), preds.get('REB',0)])
+        
         bet = {
-            'player_name': player.name,
+            'player_name': p['name'],
             'team': team_name,
             'predictions': preds,
             'value_bets': value_bets,
-            'confidence': np.mean([preds.get('PTS', 0), preds.get('AST', 0), preds.get('REB', 0)])
+            'confidence': conf
         }
         bets.append(bet)
     return bets
 
 ################################################################################
-# MAIN STREAMLIT APP
+# 9) MAIN STREAMLIT APP
 ################################################################################
 
 def main():
     st.set_page_config(page_title="NBA Player Props Predictor", page_icon="🏀", layout="wide")
     st.title("🏀 NBA Player Props Predictor")
-    st.markdown("Select a view mode to display player prop predictions for today.")
 
-    # Horizontal radio select with a dummy placeholder on the same line.
+    # 1) Find next date with NBA games (up to 14 days from now):
+    next_game_date = find_next_gameday_with_games(max_days_ahead=14)
+    if not next_game_date:
+        st.warning("No NBA games in the next 14 days. Try again later!")
+        return
+
+    st.info(f"Using date: {next_game_date} for predictions.")
+    scoreboard = scoreboardv2.ScoreboardV2(game_date=next_game_date)
+    games_df = scoreboard.get_data_frames()[0]
+    if games_df.empty:
+        st.warning("Unexpected: scoreboard is empty for that date.")
+        return
+
+    st.markdown("Select a view mode to display player prop predictions.")
     view_mode = st.radio(
         "View Mode:",
-        options=["Please select a view option", "Top Props (Daily)", "Props by Game", "Single Game Analysis"],
+        ["Top Props (Daily)", "Props by Game", "Single Game Analysis"],
         horizontal=True
     )
 
-    # Only proceed if a valid view mode is selected.
-    if view_mode == "Please select a view option":
-        st.info("Please select a valid view mode to begin.")
-        return
-
-    # Sidebar options.
     use_live_training = st.sidebar.checkbox("Train Ensemble Models (Live)", value=True)
     only_starting = st.sidebar.checkbox("Only Predict for Starting Players", value=True)
 
@@ -588,69 +611,67 @@ def main():
     processor = DataProcessor()
     predictor = PropPredictor()
 
-    # Optionally, build or retrain ensemble models from CSV data:
+    # 2) Optionally build ensemble from today's participants
     if use_live_training:
-        st.info("Building training dataset from player logs (CSV + fallback to API)...")
-        # Quick example: gather all players from all teams in today's matchups
-        games_df = data_fetcher.get_todays_games()
-        if games_df.empty:
-            st.warning("No games found for today to build training data.")
+        st.info("Building training dataset from CSV/API logs...")
+        # Collect all unique teams from today's scoreboard
+        all_teams_today = pd.concat([
+            games_df[['HOME_TEAM_ID']].rename(columns={'HOME_TEAM_ID':'TEAM_ID'}),
+            games_df[['VISITOR_TEAM_ID']].rename(columns={'VISITOR_TEAM_ID':'TEAM_ID'})
+        ]).drop_duplicates()
+
+        all_players_list = []
+        for _, row_ in all_teams_today.iterrows():
+            team_p = data_fetcher.get_team_players(row_['TEAM_ID'])
+            all_players_list.append(team_p)
+
+        all_players_df = pd.concat(all_players_list, ignore_index=True).drop_duplicates(subset='id')
+        X_train, y_train_dict = predictor.build_live_training_data(all_players_df, data_fetcher, min_games=5, last_n_games=25)
+        if not X_train.empty:
+            st.info(f"Training on {len(X_train)} samples from CSV/API logs...")
+            predictor.train_ensemble_models(X_train, y_train_dict)
         else:
-            all_teams_today = pd.concat([
-                games_df[['HOME_TEAM_ID']].rename(columns={'HOME_TEAM_ID':'TEAM_ID'}),
-                games_df[['VISITOR_TEAM_ID']].rename(columns={'VISITOR_TEAM_ID':'TEAM_ID'})
-            ]).drop_duplicates()
-            all_players_list = []
-            for _, row_ in all_teams_today.iterrows():
-                roster_df = data_fetcher.get_team_players(row_['TEAM_ID'])
-                all_players_list.append(roster_df)
-            all_players_df = pd.concat(all_players_list, ignore_index=True).drop_duplicates(subset='id')
-            X_train, y_train_dict = predictor.build_live_training_data(all_players_df, data_fetcher, min_games=5, last_n_games=25)
-            if not X_train.empty:
-                st.info(f"Training on {len(X_train)} samples from CSV/API logs...")
-                predictor.train_ensemble_models(X_train, y_train_dict)
-            else:
-                st.warning("Insufficient data to train ensemble models.")
-    else:
-        st.info("Using default baseline model for player props...")
+            st.warning("Not enough data to train ensemble. Using baseline predictions.")
 
-    # Now fetch games for displaying predictions in selected view mode
-    games_df = data_fetcher.get_todays_games()
-    if games_df.empty:
-        st.warning("No games scheduled for today or error fetching game data.")
-        return
-
+    # 3) Now show predictions in selected view mode
     if view_mode in ["Top Props (Daily)", "Props by Game"]:
         all_bets = []
-        for _, game in games_df.iterrows():
-            bets = process_game(game, data_fetcher, processor, predictor, only_starting)
-            all_bets.extend(bets)
+        for _, g in games_df.iterrows():
+            bet_list = process_game(g, data_fetcher, processor, predictor, only_starting)
+            all_bets.extend(bet_list)
+
         if view_mode == "Top Props (Daily)":
+            # Sort all bets by confidence
             all_bets.sort(key=lambda x: x['confidence'], reverse=True)
             st.header("🎯 Top Value Props (Daily)")
-            for bet in all_bets[:5]:
-                display_prop_card(bet)
-        elif view_mode == "Props by Game":
-            for _, game in games_df.iterrows():
-                st.subheader(f"{game['HOME_TEAM_NAME']} vs {game['VISITOR_TEAM_NAME']}")
-                bets = process_game(game, data_fetcher, processor, predictor, only_starting)
-                for bet in bets:
-                    display_prop_card(bet)
+            for b in all_bets[:5]:
+                display_prop_card(b)
+        else:  # Props by Game
+            unique_game_ids = games_df['GAME_ID'].unique()
+            for game_id in unique_game_ids:
+                row_ = games_df[games_df['GAME_ID'] == game_id].iloc[0]
+                st.subheader(f"{row_['HOME_TEAM_NAME']} vs {row_['VISITOR_TEAM_NAME']}")
+                bet_list = process_game(row_, data_fetcher, processor, predictor, only_starting)
+                for b in bet_list:
+                    display_prop_card(b)
                 st.markdown("---")
 
-    elif view_mode == "Single Game Analysis":
-        game_options = [f"{row['HOME_TEAM_NAME']} vs {row['VISITOR_TEAM_NAME']}" for _, row in games_df.iterrows()]
+    else:  # Single Game Analysis
+        game_options = [
+            f"{row['HOME_TEAM_NAME']} vs {row['VISITOR_TEAM_NAME']}"
+            for _, row in games_df.iterrows()
+        ]
         selected_game = st.selectbox("Select Game", options=game_options, key="game_selector")
         if selected_game:
             game_idx = game_options.index(selected_game)
             game_data = games_df.iloc[game_idx]
-            bets = process_game(game_data, data_fetcher, processor, predictor, only_starting)
+            bet_list = process_game(game_data, data_fetcher, processor, predictor, only_starting)
             st.header("🎯 Player Props for Selected Game")
-            for bet in bets:
-                display_prop_card(bet)
+            for b in bet_list:
+                display_prop_card(b)
 
     st.markdown("---")
-    st.markdown("Data provided by CSV & NBA API | Built with Streamlit")
+    st.markdown("**Data Source**: CSV & NBA API | Built with Streamlit")
 
 if __name__ == "__main__":
     main()
