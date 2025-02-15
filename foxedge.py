@@ -1,3 +1,4 @@
+
 import warnings
 # Suppress known joblib/loky resource_tracker warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="joblib")
@@ -7,7 +8,6 @@ import pandas as pd
 import numpy as np
 import pytz
 import random
-import time  # For timing and ETA calculations
 from datetime import datetime, timedelta
 import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
@@ -252,45 +252,23 @@ def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_st
 ################################################################################
 # MODEL TRAINING & PREDICTION (STACKING + AUTO-ARIMA HYBRID)
 ################################################################################
+@st.cache_data(ttl=3600)
 def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
     """
     Trains a hybrid model (Stacking Regressor [+ ARIMA]) for each team.
     Also computes additional momentum features and dynamic rest-day effects.
-    
-    Displays live progress and status updates:
-        - Current team being processed
-        - Progress count and progress bar
-        - Estimated time remaining
-        - Intermediate training metrics (e.g., computed MSE)
-        - A summary message upon completion for each team.
     
     Returns:
         stack_models: Dictionary of trained Stacking Regressors keyed by team.
         arima_models: Dictionary of trained ARIMA models keyed by team (empty if tuning is disabled).
         team_stats: Dictionary of team statistics including dynamic rest effects.
     """
-    st.info("Initializing models and processing team data...")
     stack_models = {}
     arima_models = {}
     team_stats = {}
     all_teams = team_data['team'].unique()
-    total_teams = len(all_teams)
-
-    # Create placeholders for progress and status messages
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    eta_text = st.empty()
-    start_time = time.time()
-
-    for idx, team in enumerate(all_teams):
-        team_start_time = time.time()
-        # Update status for current team/model processing
-        status_text.text(f"Training models for team: {team}... (Team {idx+1} of {total_teams})")
-        elapsed = time.time() - start_time
-        avg_time = elapsed / (idx + 1) if idx > 0 else 0
-        estimated_remaining = int((total_teams - (idx + 1)) * avg_time)
-        eta_text.text(f"Estimated time remaining: ~{estimated_remaining} seconds")
-        
+    
+    for team in all_teams:
         df_team = team_data[team_data['team'] == team].copy()
         df_team.sort_values('gameday', inplace=True)
         # Ensure gameday is datetime
@@ -310,8 +288,10 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
         df_team['last_5_weighted'] = (df_team['last_5_avg'] * 0.7) + (df_team['season_avg'] * 0.3)
         
         # Compute dynamic rest-day adjustments
+        # Calculate the number of rest days between games
         df_team['rest_days'] = (df_team['gameday'] - df_team['gameday'].shift(1)).dt.days.fillna(0)
         overall_avg = df_team['score'].mean()
+        # For each unique rest_days value, compute the difference from overall average
         rest_effect_dict = df_team.groupby('rest_days').apply(lambda g: g['score'].mean() - overall_avg).to_dict()
         
         team_stats[team] = {
@@ -390,11 +370,9 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
             mse = mean_squared_error(y_test, preds)
             print(f"Team: {team}, Stacking Regressor MSE: {mse}")
             stack_models[team] = stack
-            team_stats[team]['mse'] = mse  # Intermediate metric for display
+            team_stats[team]['mse'] = mse
             bias = np.mean(y_train - stack.predict(X_train))
             team_stats[team]['bias'] = bias
-            # Display intermediate training metric
-            st.write(f"Team {team}: Stacking Regressor MSE = {mse:.3f}")
         except Exception as e:
             print(f"Error training Stacking Regressor for team {team}: {e}")
             continue
@@ -418,17 +396,9 @@ def train_team_models(team_data: pd.DataFrame, disable_tuning=False):
                 print(f"Error training ARIMA for team {team}: {e}")
                 arima_models[team] = None
         else:
+            # When tuning is disabled (NCAAB), skip ARIMA for speed.
             arima_models[team] = None
 
-        # Display summary message for team training completion
-        team_duration = int(time.time() - team_start_time)
-        st.success(f"Team {team} model trained successfully in {team_duration} seconds.")
-        
-        # Update progress bar
-        progress_bar.progress((idx + 1) / total_teams)
-
-    progress_bar.progress(1.0)
-    st.success("All team models processed successfully!")
     return stack_models, arima_models, team_stats
 
 def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
@@ -532,6 +502,7 @@ def find_top_bets(matchups, threshold=70.0):
 ################################################################################
 # NFL DATA LOADING
 ################################################################################
+@st.cache_data(ttl=3600)
 def load_nfl_schedule():
     current_year = datetime.now().year
     years = [current_year - i for i in range(12)]
@@ -568,6 +539,7 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ################################################################################
 # NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
+@st.cache_data(ttl=3600)
 def load_nba_data():
     nba_teams_list = nba_teams.get_teams()
     seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
@@ -654,6 +626,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 # NCAAB HISTORICAL LOADER (FROM SCRIPT 1)
 ################################################################################
+@st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
     """
     Loads finished or in-progress NCAA MBB games for the given season
@@ -900,8 +873,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
     with st.expander("Generate Social Media Post", expanded=False):
         if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
             post = generate_social_media_post(bet)
-            # Use st.markdown to render the markdown formatting instead of showing the raw ** characters.
-            st.markdown(post)
+            st.code(post, language="markdown")
 
 ################################################################################
 # GLOBALS
