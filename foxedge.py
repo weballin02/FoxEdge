@@ -729,6 +729,80 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     return df
 
 ################################################################################
+# NEW FUNCTION: COMPARE PREDICTIONS WITH BOOKMAKER ODDS
+################################################################################
+def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
+    """
+    Fetches the latest bookmaker odds for spreads and compares them to the model predictions.
+    This function does not affect the original predictions but adds a 'bookmaker_spread'
+    key to each prediction dictionary for comparison.
+    
+    Args:
+        predictions (list): List of prediction dictionaries.
+        league_choice (str): League identifier ('NFL', 'NBA', or 'NCAAB') used to determine the odds API sport key.
+        odds_api_key (str): The API key entered by the user for fetching odds.
+        
+    Returns:
+        list: Updated list of prediction dictionaries with bookmaker odds added.
+    """
+    sport_key_map = {
+        "NFL": "americanfootball_nfl",
+        "NBA": "basketball_nba",
+        "NCAAB": "basketball_ncaab"
+    }
+    sport_key = sport_key_map.get(league_choice, "")
+    selected_market = "spreads"  # We're comparing spreads.
+    
+    # Fetch odds data using your existing fetch_odds function.
+    odds_data = fetch_odds(odds_api_key, sport_key, selected_market)
+    
+    def map_team_name(team_name):
+        """
+        Maps a team name from your predictions to the naming convention used by the odds API.
+        Adjust this mapping as needed.
+        """
+        mapping = {
+            # Example mapping: "Your Team Name": "Odds API Team Name"
+            "Los Angeles Lakers": "LALakers",
+            "New England Patriots": "NEPatriots",
+            # Add more mappings as required...
+        }
+        return mapping.get(team_name, team_name)
+    
+    def get_bookmaker_spread(mapped_team_name, odds_data):
+        """
+        Extracts the bookmaker spread (point value) for the specified team from the odds API response.
+        Returns None if not found.
+        """
+        for event in odds_data:
+            home_api_name = map_team_name(event.get("home_team", ""))
+            away_api_name = map_team_name(event.get("away_team", ""))
+            if mapped_team_name in (home_api_name, away_api_name):
+                for bm in event.get("bookmakers", []):
+                    if bm.get("key") == "bovada":
+                        for market in bm.get("markets", []):
+                            if market.get("key") == "spreads":
+                                for outcome in market.get("outcomes", []):
+                                    if mapped_team_name == map_team_name(outcome.get("name", "")):
+                                        return outcome.get("point")
+        return None
+
+    for pred in predictions:
+        home_mapped = map_team_name(pred["home_team"])
+        away_mapped = map_team_name(pred["away_team"])
+        home_line = get_bookmaker_spread(home_mapped, odds_data)
+        away_line = get_bookmaker_spread(away_mapped, odds_data)
+        
+        if home_line is not None and away_line is not None:
+            bookmaker_spread = home_line - away_line
+        else:
+            bookmaker_spread = None
+        
+        pred["bookmaker_spread"] = bookmaker_spread
+
+    return predictions
+
+################################################################################
 # UI COMPONENTS
 ################################################################################
 def generate_writeup(bet, team_stats_global):
@@ -836,7 +910,6 @@ def generate_social_media_post(bet):
         "#SportsBetting", "#GameDay", "#BetSmart", "#WinningTips", "#Edge", "#BettingCommunity"
     ]
     selected_hashtags = " ".join(random.sample(hashtag_pool, k=3))
-    # Format the template with the bet details.
     post = selected_template.format(
         home_team=bet['home_team'],
         away_team=bet['away_team'],
@@ -908,7 +981,6 @@ def display_bet_card(bet, team_stats_global, team_data=None):
     with st.expander("Generate Social Media Post", expanded=False):
         if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
             post = generate_social_media_post(bet)
-            # Use st.markdown to render the post with proper Markdown formatting.
             st.markdown(post)
 
 ################################################################################
@@ -920,7 +992,7 @@ team_stats_global = {}
 ################################################################################
 # MAIN PIPELINE
 ################################################################################
-def run_league_pipeline(league_choice):
+def run_league_pipeline(league_choice, odds_api_key):
     st.header(f"Today's {league_choice} Best Bets 🎯")
     if league_choice == "NFL":
         schedule = load_nfl_schedule()
@@ -1036,7 +1108,6 @@ def run_league_pipeline(league_choice):
                         away_pred += 2
 
             elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
-                # Use Script 1's NCAAB adjustments
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
                     last_game_home = to_naive(home_games['gameday'].max())
@@ -1125,6 +1196,20 @@ def run_league_pipeline(league_choice):
         else:
             st.info(f"No upcoming {league_choice} games found.")
 
+    # NEW: Add a button to manually trigger bookmaker odds comparison.
+    if st.button("Compare to Bookmaker Odds"):
+        compared_results = compare_predictions_with_odds(results.copy(), league_choice, odds_api_key)
+        st.markdown("## Comparison with Bookmaker Odds")
+        for bet in compared_results:
+            st.markdown("---")
+            st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
+            st.write(f"**Predicted Spread:** {bet['predicted_diff']}")
+            if bet.get("bookmaker_spread") is not None:
+                st.write(f"**Bookmaker Spread:** {bet['bookmaker_spread']}")
+            else:
+                st.write("**Bookmaker Spread:** Data not available")
+            st.write(f"**Confidence:** {bet['confidence']}%")
+
 ################################################################################
 # STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
 ################################################################################
@@ -1185,10 +1270,18 @@ def main():
         if st.sidebar.button("Logout"):
             logout_user()
             st.rerun()
+    
+    # NEW: Sidebar input for Odds API key.
+    odds_api_key = st.sidebar.text_input(
+        "Enter Odds API Key",
+        type="password",
+        value=st.secrets["odds_api"]["apiKey"] if "odds_api" in st.secrets else ""
+    )
+    
     st.sidebar.header("Navigation")
     league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
                                      help="Choose which league's games you'd like to analyze")
-    run_league_pipeline(league_choice)
+    run_league_pipeline(league_choice, odds_api_key)
     st.sidebar.markdown(
         "### About FoxEdge\n"
         "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
