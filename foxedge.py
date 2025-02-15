@@ -31,12 +31,12 @@ import cbbpy.mens_scraper as cbb
 
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
-# --- Global Flags for Model Tuning (Optimal Setup) ---
+# --- Global Flags for Model Tuning ---
 USE_RANDOMIZED_SEARCH = False
 USE_OPTUNA_SEARCH = True
 ENABLE_EARLY_STOPPING = True
 
-# --- NEW FLAG: disable hyperparameter tuning & ARIMA for NCAAB to speed things up ---
+# --- NEW FLAG: disable tuning & ARIMA for NCAAB to speed things up ---
 DISABLE_TUNING_FOR_NCAAB = True
 
 ################################################################################
@@ -922,9 +922,23 @@ def display_bet_card(bet, team_stats_global, team_data=None):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
         st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
-    with st.expander("Game Analysis", expanded=False):
-        writeup = generate_writeup(bet, team_stats_global)
-        st.markdown(writeup)
+    with st.expander("Generate Social Media Post", expanded=False):
+        if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
+            post = generate_social_media_post(bet)
+            st.markdown(post)
+    # NEW: If no bookmaker spread, show manual odds update expander.
+    if bet.get("bookmaker_spread") is None:
+        with st.expander("Manual Odds Update"):
+            st.write(f"Enter manual odds for {bet['home_team']}:")
+            manual_home_spread = st.text_input("Home Spread", key=f"manual_spread_{bet['date']}_{bet['home_team']}")
+            manual_total = st.text_input("Game Total", key=f"manual_total_{bet['date']}_{bet['home_team']}")
+            if st.button("Update Manual Odds", key=f"update_manual_{bet['date']}_{bet['home_team']}"):
+                try:
+                    bet["bookmaker_spread"] = float(manual_home_spread)
+                    bet["bookmaker_total"] = float(manual_total)
+                    st.success("Manual odds updated for this game.")
+                except Exception as e:
+                    st.error(f"Error updating manual odds: {e}")
     if team_data is not None:
         with st.expander("Recent Performance Trends", expanded=False):
             home_team_data = team_data[team_data['team'] == bet['home_team']].sort_values('gameday')
@@ -937,10 +951,6 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
                 away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(away_scores)
-    with st.expander("Generate Social Media Post", expanded=False):
-        if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
-            post = generate_social_media_post(bet)
-            st.markdown(post)
 
 ################################################################################
 # GLOBALS
@@ -1152,7 +1162,7 @@ def run_league_pipeline(league_choice, odds_api_key):
         else:
             st.info(f"No upcoming {league_choice} games found.")
 
-    # NEW: Odds Comparison with per-game Manual Update.
+    # NEW: Odds Comparison with per-game Manual Update expander (if no odds available)
     if st.button("Compare to Bookmaker Odds"):
         compared_results = compare_predictions_with_odds(results.copy(), league_choice, odds_api_key)
         st.session_state["compared_results"] = compared_results
@@ -1163,22 +1173,24 @@ def run_league_pipeline(league_choice, odds_api_key):
             st.write(f"**Predicted Spread:** {bet['predicted_diff']}")
             if bet.get("bookmaker_spread") is not None:
                 st.write(f"**Bookmaker Spread:** {bet['bookmaker_spread']}")
+                if "bookmaker_total" in bet:
+                    st.write(f"**Bookmaker Total:** {bet['bookmaker_total']}")
             else:
                 st.write("**Bookmaker Spread:** Data not available")
-                # Show manual inputs directly beneath this game.
-                manual_spread = st.text_input("Enter Manual Spread", key=f"spread_{idx}")
-                manual_total = st.text_input("Enter Manual Total", key=f"total_{idx}")
-                if st.button("Update Manual Odds", key=f"update_{idx}"):
-                    try:
-                        bet["bookmaker_spread"] = float(manual_spread)
-                        bet["bookmaker_total"] = float(manual_total)
-                        st.success("Manual odds updated for this game.")
-                    except Exception as e:
-                        st.error(f"Error updating manual odds: {e}")
+                # Additional expander for manual odds update
+                with st.expander("Manual Odds Update"):
+                    st.write(f"Enter manual odds for {bet['home_team']}:")
+                    manual_spread = st.text_input("Home Spread", key=f"manual_spread_{idx}")
+                    manual_total = st.text_input("Game Total", key=f"manual_total_{idx}")
+                    if st.button("Update Manual Odds", key=f"update_manual_{idx}"):
+                        try:
+                            bet["bookmaker_spread"] = float(manual_spread)
+                            bet["bookmaker_total"] = float(manual_total)
+                            st.success("Manual odds updated for this game.")
+                        except Exception as e:
+                            st.error(f"Error updating manual odds: {e}")
             st.write(f"**Confidence:** {bet['confidence']}%")
-            if "bookmaker_total" in bet:
-                st.write(f"**Bookmaker Total:** {bet['bookmaker_total']}")
-
+            
 ################################################################################
 # STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
 ################################################################################
