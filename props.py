@@ -3,14 +3,13 @@ import pandas as pd
 import numpy as np
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Official endpoints from your list
 from nba_api.stats.endpoints import (
     scoreboardv2, 
     playergamelogs, 
     commonteamroster,
-    # This is where advanced matchup data comes from (if your local nba_api supports it):
     boxscorematchups 
 )
 from nba_api.stats.static import teams, players
@@ -27,16 +26,11 @@ from tensorflow.keras import backend as K  # For clearing session in Keras
 
 @st.cache_data(ttl=3600)
 def fetch_boxscore_matchupsv3_data(game_id):
-    """
-    Fetch advanced matchup data from the boxscorematchups endpoint.
-    This corresponds to the boxscorematchupsv3_output in your snippet.
-    Returns a DataFrame with columns like partialPossessions, matchupPotentialAssists, etc.
-    """
+    """Fetch advanced matchup data from the boxscorematchups endpoint."""
     try:
         time.sleep(0.6)
-        # Actual usage if your local nba_api includes boxscorematchups:
         boxscore_obj = boxscorematchups.BoxScoreMatchups(game_id=game_id)
-        df = boxscore_obj.get_data_frames()[0]  # Usually the first DataFrame is the main data
+        df = boxscore_obj.get_data_frames()[0]  # Usually the first DataFrame is the relevant one
         return df
     except Exception as e:
         st.error(f"Error fetching matchup data for game {game_id}: {e}")
@@ -45,9 +39,7 @@ def fetch_boxscore_matchupsv3_data(game_id):
 def aggregate_matchup_data(matchup_df):
     """
     Given the raw matchup DataFrame, group by (gameId, personIdOff)
-    to get total partialPossessions, potential assists, etc. for each
-    offensive player in that game.
-    Returns a DataFrame with columns: [gameId, PLAYER_ID, MATCHUP_PARTIAL_POSSESSIONS, MATCHUP_POTENTIAL_AST, ...]
+    to get total partialPossessions, potential assists, etc.
     """
     if matchup_df.empty:
         return pd.DataFrame()
@@ -55,7 +47,6 @@ def aggregate_matchup_data(matchup_df):
     grouped = matchup_df.groupby(['gameId', 'personIdOff'], as_index=False).agg({
         'partialPossessions': 'sum',
         'matchupPotentialAssists': 'sum'
-        # Add other advanced matchup stats if needed, e.g. 'matchupFieldGoalsAttempted', 'matchupBlocks', etc.
     })
     grouped.rename(columns={
         'personIdOff': 'PLAYER_ID',
@@ -67,11 +58,10 @@ def aggregate_matchup_data(matchup_df):
 def merge_matchup_stats(player_logs_df, matchup_agg_df):
     """
     Merge aggregated matchup stats into the player's per-game logs
-    (player_logs_df). Both should share [GAME_ID, PLAYER_ID].
+    using [GAME_ID, PLAYER_ID].
     """
     if player_logs_df.empty or matchup_agg_df.empty:
         return player_logs_df
-    
     merged = pd.merge(
         player_logs_df,
         matchup_agg_df,
@@ -79,9 +69,7 @@ def merge_matchup_stats(player_logs_df, matchup_agg_df):
         left_on=['GAME_ID', 'PLAYER_ID'],
         right_on=['gameId', 'PLAYER_ID']
     )
-    # Drop leftover columns if present
     merged.drop(columns=['gameId'], errors='ignore', inplace=True)
-    # Fill NaNs with 0 for matchup stats
     merged['MATCHUP_PARTIAL_POSSESSIONS'] = merged['MATCHUP_PARTIAL_POSSESSIONS'].fillna(0)
     merged['MATCHUP_POTENTIAL_AST'] = merged['MATCHUP_POTENTIAL_AST'].fillna(0)
     return merged
@@ -109,7 +97,7 @@ def format_prediction_output(predictions):
     }
 
 ################################################################################
-# UI COMPONENTS (Adapted for Player Props)
+# UI COMPONENTS
 ################################################################################
 
 def generate_social_media_post(bet):
@@ -172,12 +160,6 @@ def generate_social_media_post(bet):
 def display_prop_card(bet):
     """
     Display a player prop card using a design layout with containers, columns, and expanders.
-    Expects a bet dictionary with:
-      - 'player_name'
-      - 'team'
-      - 'predictions': dict (e.g., 'PTS', 'AST', etc.)
-      - 'value_bets': list (optional)
-      - 'confidence': numeric value for styling.
     """
     confidence = bet.get('confidence', 0)
     if confidence >= 80:
@@ -217,7 +199,7 @@ def display_prop_card(bet):
             st.code(post, language="markdown")
 
 ################################################################################
-# DATA PROCESSING & PREDICTION FUNCTIONS (Player Props)
+# DATA PROCESSING & PREDICTION FUNCTIONS
 ################################################################################
 
 def get_projected_starting_players(players_df, data_fetcher, games=3, n=5):
@@ -249,33 +231,32 @@ class DataProcessor:
     def process_player_stats(self, player_stats_df):
         """
         Process player stats by computing rolling averages for MIN and key stats,
-        as well as matchup-based columns if they exist.
+        plus matchup-based columns if they exist.
         """
         if player_stats_df.empty:
             return pd.DataFrame()
-        
-        # Basic rolling averages for MIN, PTS, AST, REB, STL, BLK
+
         base_columns = ['MIN'] + self.stats_columns
         processed_stats = calculate_rolling_averages(player_stats_df, base_columns, [5, 10])
 
-        # Rolling averages for matchup columns if present
+        # If matchup columns exist, add them to rolling
         if 'MATCHUP_PARTIAL_POSSESSIONS' in player_stats_df.columns:
             processed_stats = calculate_rolling_averages(
-                processed_stats,
-                ['MATCHUP_PARTIAL_POSSESSIONS', 'MATCHUP_POTENTIAL_AST'],
+                processed_stats, 
+                ['MATCHUP_PARTIAL_POSSESSIONS', 'MATCHUP_POTENTIAL_AST'], 
                 [5, 10]
             )
 
-        # Per-minute for PTS, AST, REB, etc.
+        # Per-minute for PTS, AST, etc.
         for stat in self.stats_columns:
             processed_stats[f'{stat}_PER_MIN'] = (
                 processed_stats[stat] / processed_stats['MIN']
             ).fillna(0)
-        
+
         return processed_stats
 
     def adjust_for_opponent(self, player_stats, team_stats):
-        """(Optional) Adjust stats based on opponent metrics (not implemented here)."""
+        """(Optional) Adjust stats based on opponent metrics (not used)."""
         return player_stats
 
 class NBADataFetcher:
@@ -291,6 +272,7 @@ class NBADataFetcher:
 
     @st.cache_data(ttl=3600)
     def get_team_players(team_id):
+        """Fetch a given team's roster from commonteamroster."""
         try:
             time.sleep(0.6)
             roster = commonteamroster.CommonTeamRoster(team_id=team_id)
@@ -307,49 +289,62 @@ class NBADataFetcher:
             return pd.DataFrame(columns=['id', 'name'])
 
     @st.cache_data(ttl=3600)
-    def get_todays_games():
+    def get_upcoming_games(next_n_days=7):
         """
-        Fetch today's schedule using scoreboardv2.
+        Collect NBA schedules from scoreboardv2 for the next next_n_days (including today).
+        Returns a DataFrame with all games for that timespan.
         """
-        try:
-            time.sleep(0.6)
-            scoreboard = scoreboardv2.ScoreboardV2(game_date=datetime.now().strftime("%Y-%m-%d"))
-            games_df = scoreboard.get_data_frames()[0]
-            if not games_df.empty:
-                games_df['HOME_TEAM_NAME'] = games_df['HOME_TEAM_ID'].apply(NBADataFetcher.get_team_name)
-                games_df['VISITOR_TEAM_NAME'] = games_df['VISITOR_TEAM_ID'].apply(NBADataFetcher.get_team_name)
-                return games_df[['GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID',
-                                 'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME']]
-            return pd.DataFrame(columns=['GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID',
-                                         'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME'])
-        except Exception as e:
-            st.error(f"Error fetching games: {e}")
-            return pd.DataFrame()
+        all_games = []
+        for offset in range(next_n_days+1):  # +1 so we include day=7
+            query_date = (datetime.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
+            try:
+                time.sleep(0.6)
+                sb = scoreboardv2.ScoreboardV2(game_date=query_date)
+                df = sb.get_data_frames()[0]
+                if not df.empty:
+                    df['HOME_TEAM_NAME'] = df['HOME_TEAM_ID'].apply(NBADataFetcher.get_team_name)
+                    df['VISITOR_TEAM_NAME'] = df['VISITOR_TEAM_ID'].apply(NBADataFetcher.get_team_name)
+                    df['SCHEDULE_DATE'] = query_date  # Tag with the date for filtering
+                    all_games.append(df)
+            except Exception as e:
+                st.error(f"Error fetching scoreboard for {query_date}: {e}")
+
+        if all_games:
+            combined = pd.concat(all_games, ignore_index=True)
+            return combined[[
+                'GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID',
+                'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME', 'SCHEDULE_DATE'
+            ]]
+        else:
+            return pd.DataFrame(columns=[
+                'GAME_ID', 'GAME_DATE_EST', 'HOME_TEAM_ID', 'VISITOR_TEAM_ID',
+                'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME', 'SCHEDULE_DATE'
+            ])
 
     @st.cache_data(ttl=3600)
     def get_player_stats(player_id, last_n_games=10):
         """
-        Fetch the last_n_games of logs for the given player ID.
-        Also merges advanced matchup data from boxscorematchups if available.
+        Fetch last_n_games for the given player ID.
+        Merge advanced matchup data from boxscorematchups for each game.
         """
         try:
             time.sleep(0.6)
-            player_logs = playergamelogs.PlayerGameLogs(
+            logs = playergamelogs.PlayerGameLogs(
                 player_id_nullable=player_id,
                 last_n_games_nullable=last_n_games
             ).get_data_frames()[0]
 
-            if player_logs.empty:
+            if logs.empty:
                 return pd.DataFrame()
 
             # Convert numeric columns
             numeric_cols = ['MIN','PTS','AST','REB','STL','BLK']
             for c in numeric_cols:
-                if c in player_logs.columns:
-                    player_logs[c] = pd.to_numeric(player_logs[c], errors='coerce')
+                if c in logs.columns:
+                    logs[c] = pd.to_numeric(logs[c], errors='coerce')
 
-            # For each game in logs, fetch boxscorematchups data and aggregate
-            unique_games = player_logs['GAME_ID'].unique()
+            # For each game in logs, fetch advanced matchups and merge
+            unique_games = logs['GAME_ID'].unique()
             all_matchup_aggregations = []
             for g_id in unique_games:
                 matchup_raw = fetch_boxscore_matchupsv3_data(g_id)
@@ -360,10 +355,10 @@ class NBADataFetcher:
 
             if all_matchup_aggregations:
                 combined_matchup_df = pd.concat(all_matchup_aggregations, ignore_index=True)
-                merged_logs = merge_matchup_stats(player_logs, combined_matchup_df)
-                return merged_logs
+                merged = merge_matchup_stats(logs, combined_matchup_df)
+                return merged
 
-            return player_logs
+            return logs
         
         except Exception as e:
             st.error(f"Error fetching player stats for player {player_id}: {e}")
@@ -383,34 +378,26 @@ class PropPredictor:
     @staticmethod
     def prepare_features(player_stats):
         """
-        Include advanced matchup fields if present: e.g. MATCHUP_PARTIAL_POSSESSIONS_5_AVG, etc.
+        Include advanced matchup-based columns if present (rolled).
         """
-        base_features = [
+        base_feats = [
             'MIN_5_AVG', 'PTS_5_AVG', 'AST_5_AVG', 'REB_5_AVG',
             'MIN_10_AVG', 'PTS_10_AVG', 'AST_10_AVG', 'REB_10_AVG'
         ]
-        # We also try to include the matchup rolling averages if they exist
-        adv_matchup_features = [
-            'MATCHUP_PARTIAL_POSSESSIONS_5_AVG',
-            'MATCHUP_POTENTIAL_AST_5_AVG',
-            'MATCHUP_PARTIAL_POSSESSIONS_10_AVG',
-            'MATCHUP_POTENTIAL_AST_10_AVG'
+        adv_feats = [
+            'MATCHUP_PARTIAL_POSSESSIONS_5_AVG', 'MATCHUP_PARTIAL_POSSESSIONS_10_AVG',
+            'MATCHUP_POTENTIAL_AST_5_AVG', 'MATCHUP_POTENTIAL_AST_10_AVG'
         ]
-        feature_cols = base_features + adv_matchup_features
-
+        feature_cols = base_feats + adv_feats
         for col in feature_cols:
             if col not in player_stats.columns:
                 player_stats[col] = 0
-
         return player_stats[feature_cols].fillna(0)
 
     @staticmethod
     @st.cache_data
     def _cached_predict(_player_stats):
-        """
-        Naive fallback if no ensemble models are trained: 
-        uses rolling average + random variation as a placeholder.
-        """
+        """Fallback if no ensemble model is trained."""
         try:
             if _player_stats.empty:
                 return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
@@ -422,7 +409,7 @@ class PropPredictor:
                 predictions[prop] = max(0, base_value + variation)
             return pd.Series(predictions)
         except Exception as e:
-            st.error(f"Error in fallback prediction: {e}")
+            st.error(f"Error in fallback predict: {e}")
             return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
 
     def train_ensemble_models(self, X_train, y_train_dict):
@@ -430,22 +417,17 @@ class PropPredictor:
         self.ensemble_models = {}
 
         for prop in y_train_dict.keys():
-            # XGBoost
             xgb_model = xgb.XGBRegressor(n_estimators=100, random_state=42)
             xgb_model.fit(X_train, y_train_dict[prop])
-
-            # Gradient Boosting
             gbm_model = GradientBoostingRegressor(n_estimators=100, random_state=42)
             gbm_model.fit(X_train, y_train_dict[prop])
-
-            # Simple NN
             nn_model = Sequential()
             nn_model.add(Dense(64, input_dim=X_train.shape[1], activation='relu'))
             nn_model.add(Dense(32, activation='relu'))
             nn_model.add(Dense(1, activation='linear'))
             nn_model.compile(loss='mse', optimizer='adam')
             nn_model.fit(X_train, y_train_dict[prop], epochs=50, batch_size=8, verbose=0)
-
+            
             self.ensemble_models[prop] = {
                 'xgb': xgb_model,
                 'gbm': gbm_model,
@@ -455,9 +437,6 @@ class PropPredictor:
         st.success("Ensemble models trained successfully on live data.")
 
     def predict_ensemble(self, player_stats):
-        """
-        Combine predictions from XGB, GBM, and a small neural net.
-        """
         X = self.prepare_features(player_stats)
         predictions = {}
         for prop in self.ensemble_models.keys():
@@ -471,15 +450,13 @@ class PropPredictor:
     def predict_props(self, player_stats):
         if player_stats is None or player_stats.empty:
             return pd.Series({'PTS': 0, 'AST': 0, 'REB': 0, 'STL': 0, 'BLK': 0})
-
         if self.ensemble_models:
             return self.predict_ensemble(player_stats)
         return self._cached_predict(player_stats)
 
     def identify_value_bets(self, predictions, sportsbook_lines):
         """
-        Compare predictions to a mock sportsbook line to find differences > 2 
-        as a signal for an OVER or UNDER.
+        Compare predictions to a mock line. If difference > 2, it's a 'value bet.'
         """
         try:
             value_bets = []
@@ -507,48 +484,46 @@ class PropPredictor:
     @staticmethod
     def build_live_training_data(players_df, data_fetcher, min_games=10, last_n_games=20):
         """
-        Gathers training rows from the last_n_games for each player, 
-        including advanced matchup columns.
+        Build training data from the next_n_days pool, 
+        including advanced matchup columns if present.
         """
         training_rows = []
         target_cols = ['PTS', 'AST', 'REB', 'STL', 'BLK']
 
         for _, player in players_df.iterrows():
-            player_id = player['id']
-            game_logs = data_fetcher.get_player_stats(player_id, last_n_games=last_n_games)
-            if game_logs.empty or len(game_logs) < min_games:
+            p_id = player['id']
+            logs = data_fetcher.get_player_stats(p_id, last_n_games=last_n_games)
+            if logs.empty or len(logs) < min_games:
                 continue
 
             try:
-                game_logs['GAME_DATE'] = pd.to_datetime(game_logs['GAME_DATE'])
-                game_logs = game_logs.sort_values('GAME_DATE')
+                logs['GAME_DATE'] = pd.to_datetime(logs['GAME_DATE'])
+                logs = logs.sort_values('GAME_DATE')
             except Exception as e:
-                st.error(f"Error processing game logs for {player['name']}: {e}")
+                st.error(f"Error processing logs for {player['name']}: {e}")
                 continue
 
-            # Convert columns to numeric
             for col in ['MIN','PTS','AST','REB','STL','BLK','MATCHUP_PARTIAL_POSSESSIONS','MATCHUP_POTENTIAL_AST']:
-                if col in game_logs.columns:
-                    game_logs[col] = pd.to_numeric(game_logs[col], errors='coerce').fillna(0)
+                if col in logs.columns:
+                    logs[col] = pd.to_numeric(logs[col], errors='coerce').fillna(0)
 
-            # Rolling averages for base stats
+            # Rolling
             for base_col in ['MIN','PTS','AST','REB']:
-                game_logs[f'{base_col}_5_AVG']  = game_logs[base_col].rolling(window=5, min_periods=1).mean().shift(1)
-                game_logs[f'{base_col}_10_AVG'] = game_logs[base_col].rolling(window=10, min_periods=1).mean().shift(1)
+                logs[f'{base_col}_5_AVG']  = logs[base_col].rolling(window=5, min_periods=1).mean().shift(1)
+                logs[f'{base_col}_10_AVG'] = logs[base_col].rolling(window=10, min_periods=1).mean().shift(1)
 
-            # Rolling for matchup stats if present
-            if 'MATCHUP_PARTIAL_POSSESSIONS' in game_logs.columns:
-                game_logs['MATCHUP_PARTIAL_POSSESSIONS_5_AVG'] = (
-                    game_logs['MATCHUP_PARTIAL_POSSESSIONS'].rolling(window=5, min_periods=1).mean().shift(1)
+            if 'MATCHUP_PARTIAL_POSSESSIONS' in logs.columns:
+                logs['MATCHUP_PARTIAL_POSSESSIONS_5_AVG'] = (
+                    logs['MATCHUP_PARTIAL_POSSESSIONS'].rolling(window=5, min_periods=1).mean().shift(1)
                 )
-                game_logs['MATCHUP_PARTIAL_POSSESSIONS_10_AVG'] = (
-                    game_logs['MATCHUP_PARTIAL_POSSESSIONS'].rolling(window=10, min_periods=1).mean().shift(1)
+                logs['MATCHUP_PARTIAL_POSSESSIONS_10_AVG'] = (
+                    logs['MATCHUP_PARTIAL_POSSESSIONS'].rolling(window=10, min_periods=1).mean().shift(1)
                 )
-                game_logs['MATCHUP_POTENTIAL_AST_5_AVG'] = (
-                    game_logs['MATCHUP_POTENTIAL_AST'].rolling(window=5, min_periods=1).mean().shift(1)
+                logs['MATCHUP_POTENTIAL_AST_5_AVG'] = (
+                    logs['MATCHUP_POTENTIAL_AST'].rolling(window=5, min_periods=1).mean().shift(1)
                 )
-                game_logs['MATCHUP_POTENTIAL_AST_10_AVG'] = (
-                    game_logs['MATCHUP_POTENTIAL_AST'].rolling(window=10, min_periods=1).mean().shift(1)
+                logs['MATCHUP_POTENTIAL_AST_10_AVG'] = (
+                    logs['MATCHUP_POTENTIAL_AST'].rolling(window=10, min_periods=1).mean().shift(1)
                 )
 
             feature_cols = [
@@ -557,22 +532,22 @@ class PropPredictor:
                 'MATCHUP_PARTIAL_POSSESSIONS_5_AVG','MATCHUP_PARTIAL_POSSESSIONS_10_AVG',
                 'MATCHUP_POTENTIAL_AST_5_AVG','MATCHUP_POTENTIAL_AST_10_AVG'
             ]
+            logs = logs.dropna(subset=feature_cols, how='all')
 
-            game_logs = game_logs.dropna(subset=feature_cols, how='all')
-            for idx, row in game_logs.iterrows():
+            for idx, row in logs.iterrows():
                 sample = {col: row.get(col, 0) for col in feature_cols}
-                sample['player_id'] = player_id
+                sample['player_id'] = p_id
                 sample['player_name'] = player['name']
-                for target in target_cols:
-                    sample[target] = row.get(target, 0)
+                for t_col in target_cols:
+                    sample[t_col] = row.get(t_col, 0)
                 training_rows.append(sample)
 
         if not training_rows:
-            st.warning("Not enough historical data available for training.")
+            st.warning("Not enough historical data for training.")
             return pd.DataFrame(), {}
         training_df = pd.DataFrame(training_rows)
         X = training_df[feature_cols]
-        y_train_dict = {target: training_df[target] for target in target_cols}
+        y_train_dict = {t: training_df[t] for t in target_cols}
         return X, y_train_dict
 
 ################################################################################
@@ -581,8 +556,8 @@ class PropPredictor:
 
 def process_game(game_data, data_fetcher, processor, predictor, only_starting):
     """
-    For a given game, fetch team rosters (filtered to likely starting players if desired)
-    and compute predictions for each player. Returns a list of bet dictionaries.
+    For a given game, fetch team rosters (filtered to likely starters if desired)
+    and compute predictions for each player.
     """
     home_players = data_fetcher.get_team_players(game_data['HOME_TEAM_ID'])
     away_players = data_fetcher.get_team_players(game_data['VISITOR_TEAM_ID'])
@@ -597,12 +572,11 @@ def process_game(game_data, data_fetcher, processor, predictor, only_starting):
         if player_stats.empty:
             continue
 
-        # Process with rolling averages (and matchup rolling if present)
         processed_stats = processor.process_player_stats(player_stats)
-        # Potentially adjust for opponent or pace if you want
-        # processed_stats = processor.adjust_for_opponent(processed_stats, ...)
+        preds = predictor.predict_props(processed_stats)
+        value_bets = predictor.identify_value_bets(preds, None)
+        confidence = np.mean([preds.get('PTS', 0), preds.get('AST', 0), preds.get('REB', 0)])
 
-        # Label for which team the player is on
         if player.id in home_players['id'].values:
             team_name = game_data['HOME_TEAM_NAME']
         elif player.id in away_players['id'].values:
@@ -610,21 +584,13 @@ def process_game(game_data, data_fetcher, processor, predictor, only_starting):
         else:
             team_name = "Unknown"
 
-        # Generate final predictions
-        preds = predictor.predict_props(processed_stats)
-        # Attempt to find value edges
-        value_bets = predictor.identify_value_bets(preds, None)
-        # Example confidence as average of PTS, AST, and REB predictions
-        confidence = np.mean([preds.get('PTS', 0), preds.get('AST', 0), preds.get('REB', 0)])
-
-        bet = {
+        bets.append({
             'player_name': player.name,
             'team': team_name,
             'predictions': preds,
             'value_bets': value_bets,
             'confidence': confidence
-        }
-        bets.append(bet)
+        })
     return bets
 
 ################################################################################
@@ -632,18 +598,44 @@ def process_game(game_data, data_fetcher, processor, predictor, only_starting):
 ################################################################################
 
 def main():
-    st.set_page_config(page_title="NBA Player Props Predictor (Matchup Enhanced)", 
-                       page_icon="🏀", layout="wide")
-    st.title("🏀 NBA Player Props Predictor (with Advanced Matchup Data)")
-    st.markdown("Select a view mode to display player prop predictions for today. "\
-                "We've integrated `boxscorematchupsv3_output` to include partial possessions, potential assists, etc.")
+    st.set_page_config(
+        page_title="NBA Player Props Predictor (Next 7 Days)", 
+        page_icon="🏀",
+        layout="wide"
+    )
+    st.title("🏀 NBA Player Props Predictor - Next 7 Days")
+    st.markdown("This version fetches upcoming NBA schedules for the next 7 days, "\
+                "including advanced matchup data from boxscorematchups.")
 
+    data_fetcher = NBADataFetcher
+    processor = DataProcessor()
+    predictor = PropPredictor()
+
+    # Gather games for next 7 days
+    upcoming_games_df = data_fetcher.get_upcoming_games(next_n_days=7)
+    if upcoming_games_df.empty:
+        st.warning("No games found in the next 7 days or error fetching data.")
+        return
+
+    # Let the user pick which date to analyze
+    unique_dates = sorted(upcoming_games_df['SCHEDULE_DATE'].unique())
+    selected_date = st.selectbox(
+        "Select a date from the next 7 days:",
+        options=unique_dates
+    )
+
+    # Filter games to only those on the chosen date
+    date_games = upcoming_games_df[upcoming_games_df['SCHEDULE_DATE'] == selected_date].copy()
+    if date_games.empty:
+        st.warning(f"No games found for {selected_date}.")
+        return
+
+    # Provide same radio-based view modes
     view_mode = st.radio(
         "View Mode:",
         options=["Please select a view option", "Top Props (Daily)", "Props by Game", "Single Game Analysis"],
         horizontal=True
     )
-
     if view_mode == "Please select a view option":
         st.info("Please select a valid view mode to begin.")
         return
@@ -652,19 +644,10 @@ def main():
     use_live_training = st.sidebar.checkbox("Train Ensemble Models (Live)", value=True)
     only_starting = st.sidebar.checkbox("Only Predict for Likely Starters", value=True)
 
-    data_fetcher = NBADataFetcher
-    processor = DataProcessor()
-    predictor = PropPredictor()
-
-    games_df = data_fetcher.get_todays_games()
-    if games_df.empty:
-        st.warning("No games scheduled for today or error fetching game data.")
-        return
-
-    # Optionally train ensemble models on today's players
+    # Optionally train ensemble with all players in these date_games
     if use_live_training:
         all_player_ids = []
-        for _, game in games_df.iterrows():
+        for _, game in date_games.iterrows():
             home_df = data_fetcher.get_team_players(game['HOME_TEAM_ID'])
             away_df = data_fetcher.get_team_players(game['VISITOR_TEAM_ID'])
             combined = pd.concat([home_df, away_df]).drop_duplicates(subset='id')
@@ -675,21 +658,23 @@ def main():
         if not X_train.empty:
             predictor.train_ensemble_models(X_train, y_train_dict)
 
+    # Now proceed with the user’s chosen view mode
     if view_mode in ["Top Props (Daily)", "Props by Game"]:
         all_bets = []
-        for _, game in games_df.iterrows():
+        for _, game in date_games.iterrows():
             bets = process_game(game, data_fetcher, processor, predictor, only_starting)
             all_bets.extend(bets)
 
         if view_mode == "Top Props (Daily)":
-            # Sort by confidence, highest first
             all_bets.sort(key=lambda x: x['confidence'], reverse=True)
-            st.header("🎯 Top Value Props (Daily)")
+            st.header(f"🎯 Top Value Props for {selected_date}")
             for bet in all_bets[:5]:
                 display_prop_card(bet)
+
         elif view_mode == "Props by Game":
-            for _, game in games_df.iterrows():
-                st.subheader(f"{game['HOME_TEAM_NAME']} vs {game['VISITOR_TEAM_NAME']}")
+            for _, game in date_games.iterrows():
+                st.subheader(f"{game['HOME_TEAM_NAME']} vs {game['VISITOR_TEAM_NAME']} " \
+                             f"on {selected_date}")
                 bets = process_game(game, data_fetcher, processor, predictor, only_starting)
                 for bet in bets:
                     display_prop_card(bet)
@@ -697,18 +682,18 @@ def main():
 
     elif view_mode == "Single Game Analysis":
         game_options = [f"{row['HOME_TEAM_NAME']} vs {row['VISITOR_TEAM_NAME']}" 
-                        for _, row in games_df.iterrows()]
+                        for _, row in date_games.iterrows()]
         selected_game = st.selectbox("Select Game", options=game_options, key="game_selector")
         if selected_game:
             game_idx = game_options.index(selected_game)
-            game_data = games_df.iloc[game_idx]
+            game_data = date_games.iloc[game_idx]
             bets = process_game(game_data, data_fetcher, processor, predictor, only_starting)
-            st.header("🎯 Player Props for Selected Game")
+            st.header(f"🎯 Player Props for {selected_game} on {selected_date}")
             for bet in bets:
                 display_prop_card(bet)
 
     st.markdown("---")
-    st.markdown("Data provided by NBA API | Built with Streamlit | Advanced Matchup Integration")
+    st.markdown("Data from NBA API | Built with Streamlit | Next 7 Days Schedule")
 
 if __name__ == "__main__":
     main()
