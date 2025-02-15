@@ -42,6 +42,39 @@ ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
 DISABLE_TUNING_FOR_NCAAB = True
 
 ################################################################################
+# FETCH_ODDS FUNCTION
+################################################################################
+def fetch_odds(api_key, sport_key, market, region='us'):
+    """
+    Fetch sports betting odds from The Odds API.
+
+    Args:
+        api_key (str): Your API key.
+        sport_key (str): The sport key (e.g., 'basketball_nba').
+        market (str): The market (e.g., 'spreads').
+        region (str): The region; default 'us'.
+    
+    Returns:
+        list: JSON response from the API (list of events).
+    """
+    url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
+    params = {
+        'apiKey': api_key,
+        'regions': region,         # e.g., 'us'
+        'markets': market,         # e.g., 'spreads'
+        'bookmakers': 'bovada',    # limit to Bovada
+        'oddsFormat': 'american',  # odds format
+        'dateFormat': 'iso'        # ISO date format
+    }
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        st.error(f"Error fetching odds: {e}")
+        return []
+
+################################################################################
 # HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
 ################################################################################
 def to_naive(dt):
@@ -512,7 +545,7 @@ def load_nba_data():
         DataFrame with game date, team abbreviation, score, advanced stats, and engineered features.
     """
     nba_teams_list = nba_teams.get_teams()
-    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']  # Adjust as needed
+    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
     all_rows = []
 
     for season in seasons:
@@ -528,41 +561,30 @@ def load_nba_data():
                 gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
                 gl.sort_values('GAME_DATE', inplace=True)
 
-                # Convert needed columns to numeric
                 needed = ['PTS', 'FGA', 'FTA', 'TOV', 'OREB', 'PTS_OPP']
                 for c in needed:
                     if c not in gl.columns:
                         gl[c] = 0
                     gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
 
-                # Compute team possessions
                 gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
                 gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
-
-                # Offensive Rating
                 gl['OFF_RATING'] = np.where(
                     gl['TEAM_POSSESSIONS'] > 0,
                     (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100,
                     np.nan
                 )
-
-                # Defensive Rating
                 gl['DEF_RATING'] = np.where(
                     gl['TEAM_POSSESSIONS'] > 0,
                     (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100,
                     np.nan
                 )
-
-                # Pace approximated as TEAM_POSSESSIONS
                 gl['PACE'] = gl['TEAM_POSSESSIONS']
-
-                # Enhanced Feature Engineering
                 gl['rolling_avg'] = gl['PTS'].rolling(window=3, min_periods=1).mean()
                 gl['rolling_std'] = gl['PTS'].rolling(window=3, min_periods=1).std().fillna(0)
                 gl['season_avg'] = gl['PTS'].expanding().mean()
                 gl['weighted_avg'] = (gl['rolling_avg'] * 0.6) + (gl['season_avg'] * 0.4)
 
-                # Save each game row with required fields
                 for idx, row_ in gl.iterrows():
                     try:
                         all_rows.append({
@@ -592,19 +614,12 @@ def load_nba_data():
     df.dropna(subset=['score'], inplace=True)
     df.sort_values('gameday', inplace=True)
 
-    # Fill missing advanced stats with league means
     for col in ['off_rating', 'def_rating', 'pace']:
         df[col].fillna(df[col].mean(), inplace=True)
 
     return df
 
 def fetch_upcoming_nba_games(days_ahead=3):
-    """
-    Fetches upcoming NBA games for the next few days using nba_api.
-    
-    Returns:
-        DataFrame with game date, home team, and away team.
-    """
     now = datetime.now()
     upcoming_rows = []
     for offset in range(days_ahead + 7):
@@ -637,19 +652,11 @@ def fetch_upcoming_nba_games(days_ahead=3):
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_ncaab_data_current_season(season=2025):
-    """
-    Loads finished or in-progress NCAA MBB games for the given season
-    using cbbpy. Adds is_home=1 for home team, is_home=0 for away.
-    
-    Now also includes opponent score (opp_score) for defensive metric calculations.
-    """
     info_df, _, _ = cbb.get_games_season(season=season, info=True, box=False, pbp=False)
     if info_df.empty:
         return pd.DataFrame()
-
     if not pd.api.types.is_datetime64_any_dtype(info_df["game_day"]):
         info_df["game_day"] = pd.to_datetime(info_df["game_day"], errors="coerce")
-
     home_df = info_df[['game_day', 'home_team', 'home_score', 'away_score']].rename(columns={
         "game_day": "gameday",
         "home_team": "team",
@@ -657,7 +664,6 @@ def load_ncaab_data_current_season(season=2025):
         "away_score": "opp_score"
     })
     home_df['is_home'] = 1
-
     away_df = info_df[['game_day', 'away_team', 'away_score', 'home_score']].rename(columns={
         "game_day": "gameday",
         "away_team": "team",
@@ -665,7 +671,6 @@ def load_ncaab_data_current_season(season=2025):
         "home_score": "opp_score"
     })
     away_df['is_home'] = 0
-
     data = pd.concat([home_df, away_df], ignore_index=True)
     data.dropna(subset=["score"], inplace=True)
     data.sort_values("gameday", inplace=True)
@@ -677,13 +682,7 @@ def load_ncaab_data_current_season(season=2025):
     data['game_index'] = data.groupby('team').cumcount()
     return data
 
-########################################
-# NCAAB UPCOMING: ESPN method (FROM SCRIPT 1)
-########################################
 def fetch_upcoming_ncaab_games() -> pd.DataFrame:
-    """
-    Fetches upcoming NCAAB games for 'today' and 'tomorrow' using ESPN's scoreboard API.
-    """
     timezone = pytz.timezone('America/Los_Angeles')
     current_time = datetime.now(timezone)
     dates = [
@@ -739,7 +738,7 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
     
     Args:
         predictions (list): List of prediction dictionaries.
-        league_choice (str): League identifier ('NFL', 'NBA', or 'NCAAB') used to determine the odds API sport key.
+        league_choice (str): League identifier ('NFL', 'NBA', or 'NCAAB').
         odds_api_key (str): The API key entered by the user for fetching odds.
         
     Returns:
@@ -751,28 +750,61 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
         "NCAAB": "basketball_ncaab"
     }
     sport_key = sport_key_map.get(league_choice, "")
-    selected_market = "spreads"  # We're comparing spreads.
-    
-    # Fetch odds data using your existing fetch_odds function.
+    selected_market = "spreads"
     odds_data = fetch_odds(odds_api_key, sport_key, selected_market)
     
     def map_team_name(team_name):
         """
         Maps a team name from your predictions to the naming convention used by the odds API.
-        Adjust this mapping as needed.
+        For NBA, the app shows abbreviations while the API returns full names.
         """
-        mapping = {
-            # Example mapping: "Your Team Name": "Odds API Team Name"
-            "Los Angeles Lakers": "LALakers",
-            "New England Patriots": "NEPatriots",
-            # Add more mappings as required...
+        # Default mapping for NFL and NCAAB (extend as needed)
+        default_mapping = {
+            "New England Patriots": "New England Patriots",
+            "Dallas Cowboys": "Dallas Cowboys"
+            # add other NFL/NCAAB mappings if necessary
         }
-        return mapping.get(team_name, team_name)
+        # For NBA, map abbreviations to full team names.
+        nba_mapping = {
+            "ATL": "Atlanta Hawks",
+            "BKN": "Brooklyn Nets",
+            "BOS": "Boston Celtics",
+            "CHA": "Charlotte Hornets",
+            "CHI": "Chicago Bulls",
+            "CLE": "Cleveland Cavaliers",
+            "DAL": "Dallas Mavericks",
+            "DEN": "Denver Nuggets",
+            "DET": "Detroit Pistons",
+            "GSW": "Golden State Warriors",
+            "HOU": "Houston Rockets",
+            "IND": "Indiana Pacers",
+            "LAC": "Los Angeles Clippers",
+            "LAL": "Los Angeles Lakers",
+            "MEM": "Memphis Grizzlies",
+            "MIA": "Miami Heat",
+            "MIL": "Milwaukee Bucks",
+            "MIN": "Minnesota Timberwolves",
+            "NOP": "New Orleans Pelicans",
+            "NYK": "New York Knicks",
+            "OKC": "Oklahoma City Thunder",
+            "ORL": "Orlando Magic",
+            "PHI": "Philadelphia 76ers",
+            "PHX": "Phoenix Suns",
+            "POR": "Portland Trail Blazers",
+            "SAC": "Sacramento Kings",
+            "SAS": "San Antonio Spurs",
+            "TOR": "Toronto Raptors",
+            "UTA": "Utah Jazz",
+            "WAS": "Washington Wizards"
+        }
+        if league_choice == "NBA":
+            return nba_mapping.get(team_name, team_name)
+        else:
+            return default_mapping.get(team_name, team_name)
     
     def get_bookmaker_spread(mapped_team_name, odds_data):
         """
         Extracts the bookmaker spread (point value) for the specified team from the odds API response.
-        Returns None if not found.
         """
         for event in odds_data:
             home_api_name = map_team_name(event.get("home_team", ""))
@@ -792,12 +824,10 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
         away_mapped = map_team_name(pred["away_team"])
         home_line = get_bookmaker_spread(home_mapped, odds_data)
         away_line = get_bookmaker_spread(away_mapped, odds_data)
-        
         if home_line is not None and away_line is not None:
             bookmaker_spread = home_line - away_line
         else:
             bookmaker_spread = None
-        
         pred["bookmaker_spread"] = bookmaker_spread
 
     return predictions
@@ -844,12 +874,6 @@ def generate_writeup(bet, team_stats_global):
     return writeup
 
 def generate_social_media_post(bet):
-    """
-    Generates a social media post based on the bet details using Markdown formatting.
-    
-    Returns:
-        A string containing the Markdown formatted social media post.
-    """
     conf = bet['confidence']
     if conf >= 85:
         tone = "This one’s a sure-fire winner! Don’t miss out!"
@@ -924,9 +948,6 @@ def generate_social_media_post(bet):
     return post
 
 def display_bet_card(bet, team_stats_global, team_data=None):
-    """
-    Displays a bet card with various sections and a button to generate a formatted social media post.
-    """
     conf = bet['confidence']
     if conf >= 80:
         confidence_color = "green"
@@ -1196,7 +1217,6 @@ def run_league_pipeline(league_choice, odds_api_key):
         else:
             st.info(f"No upcoming {league_choice} games found.")
 
-    # NEW: Add a button to manually trigger bookmaker odds comparison.
     if st.button("Compare to Bookmaker Odds"):
         compared_results = compare_predictions_with_odds(results.copy(), league_choice, odds_api_key)
         st.markdown("## Comparison with Bookmaker Odds")
@@ -1271,7 +1291,7 @@ def main():
             logout_user()
             st.rerun()
     
-    # NEW: Sidebar input for Odds API key.
+    # Sidebar input for Odds API key.
     odds_api_key = st.sidebar.text_input(
         "Enter Odds API Key",
         type="password",
