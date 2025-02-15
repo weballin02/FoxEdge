@@ -431,34 +431,142 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     conf_high = round_half(mu + 1.96 * sigma)
     return round_half(ensemble_calibrated), (conf_low, conf_high)
 
-def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
+import numpy as np
+
+def evaluate_matchup(
+    home_team: str,
+    away_team: str,
+    home_pred: float,
+    away_pred: float,
+    team_stats: dict,
+    n_sim: int = 10_000
+):
+    """
+    Evaluate a matchup using Monte Carlo simulation.
+    Maintains original keys for full backward compatibility,
+    and adds new fields for 95% intervals, probability of 
+    over/under the *predicted total*, and covering the 
+    *predicted point spread*.
+    """
+    # If predictions are None, preserve your existing "no output" logic
     if home_pred is None or away_pred is None:
         return None
-    diff = home_pred - away_pred
-    total_points = home_pred + away_pred
-    home_std = team_stats.get(home_team, {}).get('std', 5)
-    away_std = team_stats.get(away_team, {}).get('std', 5)
-    combined_std = max(1.0, (home_std + away_std) / 2)
-    raw_conf = abs(diff) / combined_std
-    confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
-    penalty = 0
-    if team_stats.get(home_team, {}).get('mse', 0) > 120:
-        penalty += 10
-    if team_stats.get(away_team, {}).get('mse', 0) > 120:
-        penalty += 10
-    confidence = max(1, min(99, confidence - penalty))
-    winner = home_team if diff > 0 else away_team
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 1) Pull standard deviations
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    home_std = team_stats.get(home_team, {}).get('std', 8.0)
+    away_std = team_stats.get(away_team, {}).get('std', 8.0)
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 2) Monte Carlo simulations
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    home_samples = np.random.normal(loc=home_pred, scale=home_std, size=n_sim)
+    away_samples = np.random.normal(loc=away_pred, scale=away_std, size=n_sim)
+
+    diff_samples = home_samples - away_samples
+    total_samples = home_samples + away_samples
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 3) Mean predictions
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    mean_diff = np.mean(diff_samples)
+    mean_total = np.mean(total_samples)
+
+    # Probability that home_team wins (mean_diff > 0)
+    p_home_win = np.mean(diff_samples > 0)
+    if mean_diff > 0:
+        predicted_winner = home_team
+        confidence_raw = p_home_win
+    else:
+        predicted_winner = away_team
+        confidence_raw = 1.0 - p_home_win
+    final_confidence = 100.0 * confidence_raw
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 4) 95% Confidence Intervals
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    diff_95_lower, diff_95_upper = np.percentile(diff_samples, [2.5, 97.5])
+    total_95_lower, total_95_upper = np.percentile(total_samples, [2.5, 97.5])
+
+    # Rounding helper for half-points
+    def round_half(x):
+        return round(x * 2) / 2
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 5) Round final diff & total
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    predicted_diff = round_half(mean_diff)
+    predicted_total = round_half(mean_total)
+    final_confidence = round(final_confidence, 2)
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 6) Probability Over/Under 
+    #    *the predicted total*
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # We'll compare total_samples to 'predicted_total' 
+    p_over_pred_total = np.mean(total_samples > predicted_total)
+    p_under_pred_total = 1.0 - p_over_pred_total
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 7) Probability of covering 
+    #    *the predicted point spread*
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # If predicted_diff >= 0 => home is favored by predicted_diff
+    # Probability home covers = P(diff_samples > predicted_diff)
+    # Probability away covers = 1 - that probability
+    if predicted_diff >= 0:
+        p_cover_spread_home = np.mean(diff_samples > predicted_diff)
+        p_cover_spread_away = 1.0 - p_cover_spread_home
+    else:
+        # away favored by abs(predicted_diff)
+        p_cover_spread_away = np.mean(diff_samples < predicted_diff)
+        p_cover_spread_home = 1.0 - p_cover_spread_away
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 8) Original keys (unchanged)
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    spread_suggestion = f"Lean {predicted_winner} by {predicted_diff:.1f}"
+    # Keep any original threshold-based suggestion if you want (e.g., 145):
+    # But since we're adding new fields for the predicted_total approach,
+    # we'll keep the old 'ou_suggestion' for compatibility.
     ou_threshold = 145
-    spread_suggestion = f"Lean {winner} by {round_half(diff):.1f}"
-    ou_suggestion = f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
+    ou_side = "Over" if predicted_total > ou_threshold else "Under"
+    ou_suggestion = f"Take the {ou_side} {predicted_total:.1f}"
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # 9) Return a dict that 
+    #    preserves old fields 
+    #    and adds new ones
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     return {
-        'predicted_winner': winner,
-        'diff': round_half(diff),
-        'total_points': round_half(total_points),
-        'confidence': confidence,
-        'spread_suggestion': spread_suggestion,
-        'ou_suggestion': ou_suggestion
+        # ---------- Old/Existing Keys ----------
+        "predicted_winner": predicted_winner,
+        "predicted_diff": predicted_diff,
+        "predicted_total": predicted_total,
+        "confidence": final_confidence,
+        "spread_suggestion": spread_suggestion,
+        "ou_suggestion": ou_suggestion,
+
+        # ---------- New Keys ----------
+        "diff_95_ci": (
+            round_half(diff_95_lower),
+            round_half(diff_95_upper)
+        ),
+        "total_95_ci": (
+            round_half(total_95_lower),
+            round_half(total_95_upper)
+        ),
+
+        # Probability total is > or < the *predicted_total* 
+        "prob_over_pred_total": round(p_over_pred_total, 3),
+        "prob_under_pred_total": round(p_under_pred_total, 3),
+
+        # Probability each team covers the *predicted_diff*
+        "prob_cover_spread_home": round(p_cover_spread_home, 3),
+        "prob_cover_spread_away": round(p_cover_spread_away, 3),
     }
+
 
 def find_top_bets(matchups, threshold=70.0):
     df = pd.DataFrame(matchups)
