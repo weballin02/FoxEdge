@@ -503,35 +503,66 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
 ################################################################################
 # NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
 ################################################################################
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def load_nba_data():
+    """
+    Loads multi-season NBA team logs with pace, efficiency, and enhanced features.
+    
+    Returns:
+        DataFrame with game date, team abbreviation, score, advanced stats, and engineered features.
+    """
     nba_teams_list = nba_teams.get_teams()
-    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
+    seasons = ['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']  # Adjust as needed
     all_rows = []
+
     for season in seasons:
         for team in nba_teams_list:
             team_id = team['id']
             team_abbrev = team.get('abbreviation', str(team_id))
+            
             try:
                 gl = TeamGameLog(team_id=team_id, season=season).get_data_frames()[0]
                 if gl.empty:
                     continue
+
                 gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
                 gl.sort_values('GAME_DATE', inplace=True)
+
+                # Convert needed columns to numeric
                 needed = ['PTS', 'FGA', 'FTA', 'TOV', 'OREB', 'PTS_OPP']
                 for c in needed:
                     if c not in gl.columns:
                         gl[c] = 0
                     gl[c] = pd.to_numeric(gl[c], errors='coerce').fillna(0)
+
+                # Compute team possessions
                 gl['TEAM_POSSESSIONS'] = gl['FGA'] + 0.44 * gl['FTA'] + gl['TOV'] - gl['OREB']
                 gl['TEAM_POSSESSIONS'] = gl['TEAM_POSSESSIONS'].apply(lambda x: x if x > 0 else np.nan)
-                gl['OFF_RATING'] = np.where(gl['TEAM_POSSESSIONS'] > 0, (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100, np.nan)
-                gl['DEF_RATING'] = np.where(gl['TEAM_POSSESSIONS'] > 0, (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100, np.nan)
+
+                # Offensive Rating
+                gl['OFF_RATING'] = np.where(
+                    gl['TEAM_POSSESSIONS'] > 0,
+                    (gl['PTS'] / gl['TEAM_POSSESSIONS']) * 100,
+                    np.nan
+                )
+
+                # Defensive Rating
+                gl['DEF_RATING'] = np.where(
+                    gl['TEAM_POSSESSIONS'] > 0,
+                    (gl['PTS_OPP'] / gl['TEAM_POSSESSIONS']) * 100,
+                    np.nan
+                )
+
+                # Pace approximated as TEAM_POSSESSIONS
                 gl['PACE'] = gl['TEAM_POSSESSIONS']
+
+                # Enhanced Feature Engineering
                 gl['rolling_avg'] = gl['PTS'].rolling(window=3, min_periods=1).mean()
                 gl['rolling_std'] = gl['PTS'].rolling(window=3, min_periods=1).std().fillna(0)
                 gl['season_avg'] = gl['PTS'].expanding().mean()
                 gl['weighted_avg'] = (gl['rolling_avg'] * 0.6) + (gl['season_avg'] * 0.4)
+
+                # Save each game row with required fields
                 for idx, row_ in gl.iterrows():
                     try:
                         all_rows.append({
@@ -549,19 +580,31 @@ def load_nba_data():
                     except Exception as e:
                         print(f"Error processing row for team {team_abbrev}: {str(e)}")
                         continue
+
             except Exception as e:
                 print(f"Error processing team {team_abbrev} for season {season}: {str(e)}")
                 continue
+
     if not all_rows:
         return pd.DataFrame()
+
     df = pd.DataFrame(all_rows)
     df.dropna(subset=['score'], inplace=True)
     df.sort_values('gameday', inplace=True)
+
+    # Fill missing advanced stats with league means
     for col in ['off_rating', 'def_rating', 'pace']:
         df[col].fillna(df[col].mean(), inplace=True)
+
     return df
 
 def fetch_upcoming_nba_games(days_ahead=3):
+    """
+    Fetches upcoming NBA games for the next few days using nba_api.
+    
+    Returns:
+        DataFrame with game date, home team, and away team.
+    """
     now = datetime.now()
     upcoming_rows = []
     for offset in range(days_ahead + 1):
@@ -571,10 +614,12 @@ def fetch_upcoming_nba_games(days_ahead=3):
         games = scoreboard.get_data_frames()[0]
         if games.empty:
             continue
+
         nba_team_dict = {tm['id']: tm['abbreviation'] for tm in nba_teams.get_teams()}
         games['HOME_TEAM_ABBREV'] = games['HOME_TEAM_ID'].map(nba_team_dict)
         games['AWAY_TEAM_ABBREV'] = games['VISITOR_TEAM_ID'].map(nba_team_dict)
         upcoming_df = games[~games['GAME_STATUS_TEXT'].str.contains("Final", case=False, na=False)]
+
         for _, g in upcoming_df.iterrows():
             upcoming_rows.append({
                 'gameday': pd.to_datetime(date_str),
