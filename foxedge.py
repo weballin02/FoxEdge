@@ -29,13 +29,12 @@ import inspect
 # cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
 
-# Additional imports for hyperparameter tuning and time-series cross validation
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 # --- Global Flags for Model Tuning (Optimal Setup) ---
-USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (we rely on Bayesian search)
-USE_OPTUNA_SEARCH = True         # Use Bayesian (Optuna) hyperparameter optimization
-ENABLE_EARLY_STOPPING = True     # Enable early stopping for LightGBM models
+USE_RANDOMIZED_SEARCH = False
+USE_OPTUNA_SEARCH = True
+ENABLE_EARLY_STOPPING = True
 
 # --- NEW FLAG: disable hyperparameter tuning & ARIMA for NCAAB to speed things up ---
 DISABLE_TUNING_FOR_NCAAB = True
@@ -168,7 +167,6 @@ def supports_early_stopping(model):
 ################################################################################
 def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=False):
     cv = TimeSeriesSplit(n_splits=3)
-    
     def objective(trial):
         params = {}
         for key, values in param_grid.items():
@@ -431,130 +429,33 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     conf_high = round_half(mu + 1.96 * sigma)
     return round_half(ensemble_calibrated), (conf_low, conf_high)
 
-################################################################################
-# UPDATED MONTE CARLO EVALUATE_MATCHUP
-################################################################################
-def evaluate_matchup(
-    home_team: str,
-    away_team: str,
-    home_pred: float,
-    away_pred: float,
-    team_stats: dict,
-    n_sim: int = 10_000
-):
-    """
-    Evaluate a matchup using Monte Carlo simulation.
-    Maintains original keys for full backward compatibility,
-    and adds new fields for 95% intervals, probability of 
-    over/under the *predicted total*, and covering the 
-    *predicted point spread*.
-    """
-    # If predictions are None, preserve your existing "no output" logic
+def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     if home_pred is None or away_pred is None:
         return None
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 1) Pull standard deviations
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    home_std = team_stats.get(home_team, {}).get('std', 8.0)
-    away_std = team_stats.get(away_team, {}).get('std', 8.0)
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 2) Monte Carlo simulations
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    home_samples = np.random.normal(loc=home_pred, scale=home_std, size=n_sim)
-    away_samples = np.random.normal(loc=away_pred, scale=away_std, size=n_sim)
-
-    diff_samples = home_samples - away_samples
-    total_samples = home_samples + away_samples
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 3) Mean predictions
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    mean_diff = np.mean(diff_samples)
-    mean_total = np.mean(total_samples)
-
-    # Probability that home_team wins (mean_diff > 0)
-    p_home_win = np.mean(diff_samples > 0)
-    if mean_diff > 0:
-        predicted_winner = home_team
-        confidence_raw = p_home_win
-    else:
-        predicted_winner = away_team
-        confidence_raw = 1.0 - p_home_win
-    final_confidence = 100.0 * confidence_raw
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 4) 95% Confidence Intervals
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    diff_95_lower, diff_95_upper = np.percentile(diff_samples, [2.5, 97.5])
-    total_95_lower, total_95_upper = np.percentile(total_samples, [2.5, 97.5])
-
-    # Rounding helper for half-points
-    def round_half(x):
-        return round(x * 2) / 2
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 5) Round final diff & total
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    predicted_diff = round_half(mean_diff)
-    predicted_total = round_half(mean_total)
-    final_confidence = round(final_confidence, 2)
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 6) Probability Over/Under 
-    #    *the predicted total*
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    p_over_pred_total = np.mean(total_samples > predicted_total)
-    p_under_pred_total = 1.0 - p_over_pred_total
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 7) Probability of covering 
-    #    *the predicted point spread*
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    if predicted_diff >= 0:
-        p_cover_spread_home = np.mean(diff_samples > predicted_diff)
-        p_cover_spread_away = 1.0 - p_cover_spread_home
-    else:
-        p_cover_spread_away = np.mean(diff_samples < predicted_diff)
-        p_cover_spread_home = 1.0 - p_cover_spread_away
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 8) Original keys (unchanged)
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    spread_suggestion = f"Lean {predicted_winner} by {predicted_diff:.1f}"
-    # If you want to keep a fixed threshold-based suggestion for backwards compatibility:
+    diff = home_pred - away_pred
+    total_points = home_pred + away_pred
+    home_std = team_stats.get(home_team, {}).get('std', 5)
+    away_std = team_stats.get(away_team, {}).get('std', 5)
+    combined_std = max(1.0, (home_std + away_std) / 2)
+    raw_conf = abs(diff) / combined_std
+    confidence = round(min(99, max(1, 50 + raw_conf * 15)), 2)
+    penalty = 0
+    if team_stats.get(home_team, {}).get('mse', 0) > 120:
+        penalty += 10
+    if team_stats.get(away_team, {}).get('mse', 0) > 120:
+        penalty += 10
+    confidence = max(1, min(99, confidence - penalty))
+    winner = home_team if diff > 0 else away_team
     ou_threshold = 145
-    ou_side = "Over" if predicted_total > ou_threshold else "Under"
-    ou_suggestion = f"Take the {ou_side} {predicted_total:.1f}"
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 9) Return a dict that 
-    #    preserves old fields 
-    #    and adds new ones
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    spread_suggestion = f"Lean {winner} by {round_half(diff):.1f}"
+    ou_suggestion = f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f}"
     return {
-        # ---------- Old/Existing Keys ----------
-        "predicted_winner": predicted_winner,
-        "predicted_diff": predicted_diff,
-        "predicted_total": predicted_total,
-        "confidence": final_confidence,
-        "spread_suggestion": spread_suggestion,
-        "ou_suggestion": ou_suggestion,
-
-        # ---------- New Keys ----------
-        "diff_95_ci": (
-            round_half(diff_95_lower),
-            round_half(diff_95_upper)
-        ),
-        "total_95_ci": (
-            round_half(total_95_lower),
-            round_half(total_95_upper)
-        ),
-        "prob_over_pred_total": round(p_over_pred_total, 3),
-        "prob_under_pred_total": round(p_under_pred_total, 3),
-        "prob_cover_spread_home": round(p_cover_spread_home, 3),
-        "prob_cover_spread_away": round(p_cover_spread_away, 3),
+        'predicted_winner': winner,
+        'diff': round_half(diff),
+        'total_points': round_half(total_points),
+        'confidence': confidence,
+        'spread_suggestion': spread_suggestion,
+        'ou_suggestion': ou_suggestion
     }
 
 def find_top_bets(matchups, threshold=70.0):
@@ -778,7 +679,7 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     return df
 
 ################################################################################
-# NEW FUNCTION: COMPARE PREDICTIONS WITH BOOKMAKER ODDS (WITH PER-GAME MANUAL UPDATE)
+# NEW FUNCTION: COMPARE PREDICTIONS WITH BOOKMAKER ODDS (PER-GAME MANUAL UPDATE)
 ################################################################################
 def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
     """
@@ -857,7 +758,6 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
                                         return outcome.get("point")
         return None
 
-    # Update each prediction with bookmaker odds if available.
     for pred in predictions:
         home_mapped = map_team_name(pred["home_team"])
         away_mapped = map_team_name(pred["away_team"])
@@ -1136,7 +1036,6 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
-
             elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
@@ -1165,7 +1064,6 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
-
             elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
                 home_games = team_data[team_data['team'] == home]
                 if not home_games.empty:
@@ -1194,10 +1092,7 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred -= 2
                     elif home in bottom_10:
                         away_pred += 2
-
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
-
-            # ~~~~~ FIX HERE: Use outcome['predicted_diff'] & outcome['predicted_total'] ~~~~~
             if outcome:
                 results.append({
                     'date': row['gameday'],
@@ -1207,8 +1102,8 @@ def run_league_pipeline(league_choice, odds_api_key):
                     'home_pred': home_pred,
                     'away_pred': away_pred,
                     'predicted_winner': outcome['predicted_winner'],
-                    'predicted_diff': outcome['predicted_diff'],     # <--- corrected
-                    'predicted_total': outcome['predicted_total'],   # <--- corrected
+                    'predicted_diff': outcome['diff'],
+                    'predicted_total': outcome['total_points'],
                     'confidence': outcome['confidence'],
                     'spread_suggestion': outcome['spread_suggestion'],
                     'ou_suggestion': outcome['ou_suggestion']
@@ -1257,10 +1152,10 @@ def run_league_pipeline(league_choice, odds_api_key):
         else:
             st.info(f"No upcoming {league_choice} games found.")
 
-    # NEW: Odds Comparison and per-game Manual Update Section.
+    # NEW: Odds Comparison with per-game Manual Update.
     if st.button("Compare to Bookmaker Odds"):
         compared_results = compare_predictions_with_odds(results.copy(), league_choice, odds_api_key)
-        st.session_state["compared_results"] = compared_results  # Store for manual update
+        st.session_state["compared_results"] = compared_results
         st.markdown("## Comparison with Bookmaker Odds")
         for idx, bet in enumerate(compared_results):
             st.markdown("---")
@@ -1270,7 +1165,7 @@ def run_league_pipeline(league_choice, odds_api_key):
                 st.write(f"**Bookmaker Spread:** {bet['bookmaker_spread']}")
             else:
                 st.write("**Bookmaker Spread:** Data not available")
-                # Show manual input boxes directly under this game.
+                # Show manual inputs directly beneath this game.
                 manual_spread = st.text_input("Enter Manual Spread", key=f"spread_{idx}")
                 manual_total = st.text_input("Enter Manual Total", key=f"total_{idx}")
                 if st.button("Update Manual Odds", key=f"update_{idx}"):
@@ -1284,89 +1179,92 @@ def run_league_pipeline(league_choice, odds_api_key):
             if "bookmaker_total" in bet:
                 st.write(f"**Bookmaker Total:** {bet['bookmaker_total']}")
 
-if __name__ == "__main__":
-    def scheduled_task():
-        st.write("🕒 Scheduled task running: Fetching and updating predictions...")
-        st.write("📡 Fetching latest NFL schedule and results...")
-        schedule = nfl.import_schedules([datetime.now().year])
-        schedule.to_csv("nfl_schedule.csv", index=False)
-        st.write("🏀 Fetching latest NBA team game logs...")
-        nba_data = []
-        for team_id in range(1, 31):
-            try:
-                logs = TeamGameLog(team_id=team_id, season="2024-25").get_data_frames()[0]
-                nba_data.append(logs)
-            except Exception as e:
-                st.warning(f"Error fetching data for NBA team {team_id}: {e}")
-        if nba_data:
-            nba_df = pd.concat(nba_data, ignore_index=True)
-            nba_df.to_csv("nba_team_logs.csv", index=False)
-        st.write("🏀 Fetching latest NCAAB data...")
-        ncaab_df, _, _ = cbb.get_games_season(season=2025, info=True, box=False, pbp=False)
-        if not ncaab_df.empty:
-            ncaab_df.to_csv("ncaab_games.csv", index=False)
-        st.write("🤖 Updating prediction models...")
-        if os.path.exists("nfl_schedule.csv"):
-            joblib.dump(schedule, "models/nfl_model.pkl")
-        if os.path.exists("nba_team_logs.csv"):
-            joblib.dump(nba_df, "models/nba_model.pkl")
-        if os.path.exists("ncaab_games.csv"):
-            joblib.dump(ncaab_df, "models/ncaab_model.pkl")
-        st.success("✅ Scheduled task completed successfully!")
-        st.success("Scheduled task completed successfully.")
+################################################################################
+# STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
+################################################################################
+def scheduled_task():
+    st.write("🕒 Scheduled task running: Fetching and updating predictions...")
+    st.write("📡 Fetching latest NFL schedule and results...")
+    schedule = nfl.import_schedules([datetime.now().year])
+    schedule.to_csv("nfl_schedule.csv", index=False)
+    st.write("🏀 Fetching latest NBA team game logs...")
+    nba_data = []
+    for team_id in range(1, 31):
+        try:
+            logs = TeamGameLog(team_id=team_id, season="2024-25").get_data_frames()[0]
+            nba_data.append(logs)
+        except Exception as e:
+            st.warning(f"Error fetching data for NBA team {team_id}: {e}")
+    if nba_data:
+        nba_df = pd.concat(nba_data, ignore_index=True)
+        nba_df.to_csv("nba_team_logs.csv", index=False)
+    st.write("🏀 Fetching latest NCAAB data...")
+    ncaab_df, _, _ = cbb.get_games_season(season=2025, info=True, box=False, pbp=False)
+    if not ncaab_df.empty:
+        ncaab_df.to_csv("ncaab_games.csv", index=False)
+    st.write("🤖 Updating prediction models...")
+    if os.path.exists("nfl_schedule.csv"):
+        joblib.dump(schedule, "models/nfl_model.pkl")
+    if os.path.exists("nba_team_logs.csv"):
+        joblib.dump(nba_df, "models/nba_model.pkl")
+    if os.path.exists("ncaab_games.csv"):
+        joblib.dump(ncaab_df, "models/ncaab_model.pkl")
+    st.success("✅ Scheduled task completed successfully!")
+    st.success("Scheduled task completed successfully.")
+
+def main():
+    st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
+    st.title("🦊 FoxEdge Sports Betting Insights")
+    if 'logged_in' not in st.session_state:
+        st.session_state['logged_in'] = False
+    if not st.session_state['logged_in']:
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Login"):
+                user_data = login_with_rest(email, password)
+                if user_data:
+                    st.session_state['logged_in'] = True
+                    st.session_state['email'] = user_data['email']
+                    st.success(f"Welcome, {user_data['email']}!")
+                    st.rerun()
+        with col2:
+            if st.button("Sign Up"):
+                signup_user(email, password)
+        return
+    else:
+        st.sidebar.title("Account")
+        st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
+        if st.sidebar.button("Logout"):
+            logout_user()
+            st.rerun()
     
-    def main():
-        st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
-        st.title("🦊 FoxEdge Sports Betting Insights")
-        if 'logged_in' not in st.session_state:
-            st.session_state['logged_in'] = False
-        if not st.session_state['logged_in']:
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Login"):
-                    user_data = login_with_rest(email, password)
-                    if user_data:
-                        st.session_state['logged_in'] = True
-                        st.session_state['email'] = user_data['email']
-                        st.success(f"Welcome, {user_data['email']}!")
-                        st.rerun()
-            with col2:
-                if st.button("Sign Up"):
-                    signup_user(email, password)
-            return
+    # Sidebar input for Odds API key.
+    odds_api_key = st.sidebar.text_input(
+        "Enter Odds API Key",
+        type="password",
+        value=st.secrets["odds_api"]["apiKey"] if "odds_api" in st.secrets else ""
+    )
+    
+    st.sidebar.header("Navigation")
+    league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
+                                     help="Choose which league's games you'd like to analyze")
+    run_league_pipeline(league_choice, odds_api_key)
+    st.sidebar.markdown(
+        "### About FoxEdge\n"
+        "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
+    )
+    if st.button("Save Predictions to CSV"):
+        if results:
+            save_predictions_to_csv(results)
+            csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
+            st.download_button(label="Download Predictions as CSV", data=csv,
+                               file_name='predictions.csv', mime='text/csv')
         else:
-            st.sidebar.title("Account")
-            st.sidebar.write(f"Logged in as: {st.session_state.get('email','Unknown')}")
-            if st.sidebar.button("Logout"):
-                logout_user()
-                st.rerun()
-        
-        # Sidebar input for Odds API key.
-        odds_api_key = st.sidebar.text_input(
-            "Enter Odds API Key",
-            type="password",
-            value=st.secrets["odds_api"]["apiKey"] if "odds_api" in st.secrets else ""
-        )
-        
-        st.sidebar.header("Navigation")
-        league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"],
-                                         help="Choose which league's games you'd like to analyze")
-        run_league_pipeline(league_choice, odds_api_key)
-        st.sidebar.markdown(
-            "### About FoxEdge\n"
-            "FoxEdge provides data-driven insights for NFL, NBA, and NCAAB games, helping bettors make informed decisions."
-        )
-        if st.button("Save Predictions to CSV"):
-            if results:
-                save_predictions_to_csv(results)
-                csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
-                st.download_button(label="Download Predictions as CSV", data=csv,
-                                   file_name='predictions.csv', mime='text/csv')
-            else:
-                st.warning("No predictions to save.")
-    
+            st.warning("No predictions to save.")
+
+if __name__ == "__main__":
     query_params = st.query_params
     if "trigger" in query_params:
         scheduled_task()
