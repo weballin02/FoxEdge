@@ -34,8 +34,8 @@ from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 # --- Global Flags for Model Tuning (Optimal Setup) ---
 USE_RANDOMIZED_SEARCH = False    # Do not use RandomizedSearchCV (we rely on Bayesian search)
-USE_OPTUNA_SEARCH = True           # Use Bayesian (Optuna) hyperparameter optimization
-ENABLE_EARLY_STOPPING = True       # Enable early stopping for LightGBM models
+USE_OPTUNA_SEARCH = True         # Use Bayesian (Optuna) hyperparameter optimization
+ENABLE_EARLY_STOPPING = True     # Enable early stopping for LightGBM models
 
 # --- NEW FLAG: disable hyperparameter tuning & ARIMA for NCAAB to speed things up ---
 DISABLE_TUNING_FOR_NCAAB = True
@@ -431,8 +431,9 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     conf_high = round_half(mu + 1.96 * sigma)
     return round_half(ensemble_calibrated), (conf_low, conf_high)
 
-import numpy as np
-
+################################################################################
+# UPDATED MONTE CARLO EVALUATE_MATCHUP
+################################################################################
 def evaluate_matchup(
     home_team: str,
     away_team: str,
@@ -504,7 +505,6 @@ def evaluate_matchup(
     # 6) Probability Over/Under 
     #    *the predicted total*
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # We'll compare total_samples to 'predicted_total' 
     p_over_pred_total = np.mean(total_samples > predicted_total)
     p_under_pred_total = 1.0 - p_over_pred_total
 
@@ -512,14 +512,10 @@ def evaluate_matchup(
     # 7) Probability of covering 
     #    *the predicted point spread*
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # If predicted_diff >= 0 => home is favored by predicted_diff
-    # Probability home covers = P(diff_samples > predicted_diff)
-    # Probability away covers = 1 - that probability
     if predicted_diff >= 0:
         p_cover_spread_home = np.mean(diff_samples > predicted_diff)
         p_cover_spread_away = 1.0 - p_cover_spread_home
     else:
-        # away favored by abs(predicted_diff)
         p_cover_spread_away = np.mean(diff_samples < predicted_diff)
         p_cover_spread_home = 1.0 - p_cover_spread_away
 
@@ -527,9 +523,7 @@ def evaluate_matchup(
     # 8) Original keys (unchanged)
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     spread_suggestion = f"Lean {predicted_winner} by {predicted_diff:.1f}"
-    # Keep any original threshold-based suggestion if you want (e.g., 145):
-    # But since we're adding new fields for the predicted_total approach,
-    # we'll keep the old 'ou_suggestion' for compatibility.
+    # If you want to keep a fixed threshold-based suggestion for backwards compatibility:
     ou_threshold = 145
     ou_side = "Over" if predicted_total > ou_threshold else "Under"
     ou_suggestion = f"Take the {ou_side} {predicted_total:.1f}"
@@ -557,16 +551,11 @@ def evaluate_matchup(
             round_half(total_95_lower),
             round_half(total_95_upper)
         ),
-
-        # Probability total is > or < the *predicted_total* 
         "prob_over_pred_total": round(p_over_pred_total, 3),
         "prob_under_pred_total": round(p_under_pred_total, 3),
-
-        # Probability each team covers the *predicted_diff*
         "prob_cover_spread_home": round(p_cover_spread_home, 3),
         "prob_cover_spread_away": round(p_cover_spread_away, 3),
     }
-
 
 def find_top_bets(matchups, threshold=70.0):
     df = pd.DataFrame(matchups)
@@ -1207,6 +1196,8 @@ def run_league_pipeline(league_choice, odds_api_key):
                         away_pred += 2
 
             outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
+
+            # ~~~~~ FIX HERE: Use outcome['predicted_diff'] & outcome['predicted_total'] ~~~~~
             if outcome:
                 results.append({
                     'date': row['gameday'],
@@ -1216,8 +1207,8 @@ def run_league_pipeline(league_choice, odds_api_key):
                     'home_pred': home_pred,
                     'away_pred': away_pred,
                     'predicted_winner': outcome['predicted_winner'],
-                    'predicted_diff': outcome['diff'],
-                    'predicted_total': outcome['total_points'],
+                    'predicted_diff': outcome['predicted_diff'],     # <--- corrected
+                    'predicted_total': outcome['predicted_total'],   # <--- corrected
                     'confidence': outcome['confidence'],
                     'spread_suggestion': outcome['spread_suggestion'],
                     'ou_suggestion': outcome['ou_suggestion']
@@ -1292,7 +1283,7 @@ def run_league_pipeline(league_choice, odds_api_key):
             st.write(f"**Confidence:** {bet['confidence']}%")
             if "bookmaker_total" in bet:
                 st.write(f"**Bookmaker Total:** {bet['bookmaker_total']}")
-                
+
 if __name__ == "__main__":
     def scheduled_task():
         st.write("🕒 Scheduled task running: Fetching and updating predictions...")
