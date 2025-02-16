@@ -32,7 +32,7 @@ import cbbpy.mens_scraper as cbb
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
 # --- Global Flags for Model Tuning (Optimal Setup) ---
-USE_RANDOMIZED_SEARCH = False
+USE_RANDOMIZED_SEARCH = True
 USE_OPTUNA_SEARCH = True
 ENABLE_EARLY_STOPPING = True
 
