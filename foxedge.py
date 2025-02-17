@@ -939,8 +939,10 @@ def load_nba_data():
     return df
 
 def fetch_upcoming_nba_games(days_ahead=3):
-    now = datetime.now()
+    pt_timezone = pytz.timezone('America/Los_Angeles')
+    now = datetime.now(pt_timezone)
     upcoming_rows = []
+    # Increase the range slightly to cover extra days if needed.
     for offset in range(days_ahead + 7):
         date_target = now + timedelta(days=offset)
         date_str = date_target.strftime('%Y-%m-%d')
@@ -953,8 +955,14 @@ def fetch_upcoming_nba_games(days_ahead=3):
         games['AWAY_TEAM_ABBREV'] = games['VISITOR_TEAM_ID'].map(nba_team_dict)
         upcoming_df = games[~games['GAME_STATUS_TEXT'].str.contains("Final", case=False, na=False)]
         for _, g in upcoming_df.iterrows():
+            # Convert the date string to datetime and localize it to PT.
+            game_date = pd.to_datetime(date_str)
+            if game_date.tzinfo is None:
+                game_date = pt_timezone.localize(game_date)
+            else:
+                game_date = game_date.astimezone(pt_timezone)
             upcoming_rows.append({
-                'gameday': pd.to_datetime(date_str),
+                'gameday': game_date,
                 'home_team': g['HOME_TEAM_ABBREV'],
                 'away_team': g['AWAY_TEAM_ABBREV']
             })
@@ -1203,6 +1211,15 @@ def generate_social_media_post_prod(bet):
     return generate_social_media_post(bet)
 
 def display_bet_card(bet, team_stats_global, team_data=None):
+    """
+    Display a bet card with detailed insights, analysis, and performance trends.
+    The game date/time is converted and displayed in Pacific Time (PT).
+    
+    Args:
+        bet (dict): Dictionary containing bet details.
+        team_stats_global (dict): Global team stats used for analysis.
+        team_data (pd.DataFrame, optional): DataFrame containing team performance data.
+    """
     conf = bet['confidence']
     if conf >= 80:
         confidence_color = "green"
@@ -1210,6 +1227,10 @@ def display_bet_card(bet, team_stats_global, team_data=None):
         confidence_color = "red"
     else:
         confidence_color = "orange"
+    
+    # Define Pacific Time timezone
+    pt_timezone = pytz.timezone('America/Los_Angeles')
+    
     with st.container():
         st.markdown("---")
         col1, col2, col3 = st.columns([2, 2, 1])
@@ -1217,29 +1238,35 @@ def display_bet_card(bet, team_stats_global, team_data=None):
             st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
             date_obj = bet['date']
             if isinstance(date_obj, datetime):
-                st.caption(date_obj.strftime("%A, %B %d - %I:%M %p"))
+                # If datetime is naive, assume it's in PT; otherwise, convert it to PT.
+                if date_obj.tzinfo is None:
+                    date_obj = pt_timezone.localize(date_obj)
+                else:
+                    date_obj = date_obj.astimezone(pt_timezone)
+                st.caption(date_obj.strftime("%A, %B %d - %I:%M %p PT"))
         with col2:
             if bet['confidence'] >= 80:
                 st.markdown("🔥 **High-Confidence Bet** 🔥")
-            st.markdown(
-                f"**Spread Suggestion:** {bet['spread_suggestion']}"
-            )
-            st.markdown(
-                f"**Total Suggestion:** {bet['ou_suggestion']}"
-            )
+            st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
+            st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
         with col3:
-            tooltip_text = "Confidence indicates the statistical edge derived from the combined performance metrics."
+            tooltip_text = ("Confidence indicates the statistical edge derived from the "
+                            "combined performance metrics.")
             st.markdown(
-                f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['confidence']:.1f}% Confidence</h3>",
+                f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>"
+                f"{bet['confidence']:.1f}% Confidence</h3>",
                 unsafe_allow_html=True,
             )
+    
     with st.expander("Detailed Insights", expanded=False):
         st.markdown(f"**Predicted Winner:** {bet['predicted_winner']}")
         st.markdown(f"**Predicted Total Points:** {bet['predicted_total']}")
         st.markdown(f"**Prediction Margin (Diff):** {bet['predicted_diff']}")
+    
     with st.expander("Game Analysis", expanded=False):
         writeup = generate_writeup(bet, team_stats_global)
         st.markdown(writeup)
+    
     if team_data is not None:
         with st.expander("Recent Performance Trends", expanded=False):
             home_team_data = team_data[team_data['team'] == bet['home_team']].sort_values('gameday')
@@ -1252,6 +1279,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 st.markdown(f"**{bet['away_team']} Recent Scores:**")
                 away_scores = away_team_data['score'].tail(5).reset_index(drop=True)
                 st.line_chart(away_scores)
+    
     with st.expander("Generate Social Media Post", expanded=False):
         if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
             display_generated_post(bet)
