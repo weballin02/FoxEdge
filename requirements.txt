@@ -86,3 +86,4 @@ Optuna
 tensorflow>=2.18.0
 pysbr
 instagrapi
+moviepy
