@@ -1776,6 +1776,10 @@ def run_league_pipeline(league_choice, odds_api_key):
         st.warning(f"No upcoming {league_choice} data available.")
         return
     if league_choice == "NBA":
+        # Check for 'def_rating' column; if missing, set default value
+        if 'def_rating' not in team_data.columns:
+            st.warning("def_rating column is missing. Defaulting to baseline value (e.g., 110) for all teams.")
+            team_data['def_rating'] = 110
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
         top_10 = set([t for t, r in sorted_def[:10]])
@@ -2176,10 +2180,6 @@ def display_performance_dashboard():
     with tab_additional:
         display_additional_analytics()
 
-# =============================================================================
-# Main Pipeline: run_league_pipeline is now defined above main()
-# =============================================================================
-
 def load_todays_predictions(csv_file="predictions.csv"):
     file = Path(csv_file)
     if not file.exists():
@@ -2208,8 +2208,9 @@ def load_todays_predictions(csv_file="predictions.csv"):
         return todays_df.to_dict('records')
 
 # =============================================================================
-# Main Function
+# Main Pipeline: run_league_pipeline is now defined above main()
 # =============================================================================
+
 def main():
     st.set_page_config(page_title="FoxEdge Sports Betting Insights", page_icon="🦊", layout="centered")
     st.title("🦊 FoxEdge Sports Betting Insights")
