@@ -186,6 +186,209 @@ def save_prediction_to_csv(prediction, csv_file=CSV_FILE):
         df_combined.to_csv(csv_file, index=False)
     st.success("Prediction saved to CSV!")
 
+@st.cache_data(show_spinner=False, hash_funcs={np.ndarray: lambda x: x.tobytes()})
+def fit_distribution(simulation_array):
+    """
+    Fit a probability distribution to the simulation results using the fitter library.
+    Returns the best‐fitting distribution based on sum‑of‐squares error.
+    """
+    try:
+        from fitter import Fitter
+        f = Fitter(simulation_array.flatten(), distributions=['norm', 't', 'lognorm'])
+        f.fit()
+        return f.get_best(method='sumsquare_error')
+    except Exception as e:
+        print(f"Error fitting distribution: {e}")
+        return None
+
+
+def monte_carlo_simulation_margin(model_home, model_away, X_home, X_away, n_simulations=10000,
+                                  error_std_home=5, error_std_away=5, random_seed=42, run_fitter=False):
+    """
+    Run a Monte Carlo simulation on the point margin (home minus away).
+    
+    Args:
+        model_home: Trained model for the home team.
+        model_away: Trained model for the away team.
+        X_home: Feature array for the home team.
+        X_away: Feature array for the away team.
+        n_simulations: Number of simulation iterations.
+        error_std_home: Standard deviation for home team noise.
+        error_std_away: Standard deviation for away team noise.
+        random_seed: Seed for reproducibility.
+        run_fitter: If True, fit a distribution to the simulation outcomes.
+    
+    Returns:
+        A dictionary with the following keys:
+          - mean_diff: Mean simulated margin.
+          - ci: A tuple (lower, upper) representing the 95% confidence interval.
+          - median_diff: Median simulated margin.
+          - std_diff: Standard deviation of the simulated margins.
+          - win_rate: Percentage of simulations favoring the predicted winner.
+          - win_margin_rate: Percentage of simulations exceeding the mean margin.
+          - simulated_diffs: The raw simulated differences as a NumPy array.
+          - fitted_distribution: The best‑fitting distribution (if run_fitter is True).
+    """
+    np.random.seed(random_seed)
+    base_pred_home = model_home.predict(X_home)
+    base_pred_away = model_away.predict(X_away)
+    simulated_diffs = []
+    for _ in range(n_simulations):
+        noise_home = np.random.normal(0, error_std_home, size=base_pred_home.shape)
+        noise_away = np.random.normal(0, error_std_away, size=base_pred_away.shape)
+        simulated_diffs.append((base_pred_home + noise_home) - (base_pred_away + noise_away))
+    simulated_diffs = np.array(simulated_diffs)
+    mean_diff = simulated_diffs.mean()
+    ci_lower = np.percentile(simulated_diffs, 2.5)
+    ci_upper = np.percentile(simulated_diffs, 97.5)
+    ci = (ci_lower, ci_upper)
+    if mean_diff >= 0:
+        win_rate = (simulated_diffs > 0).mean() * 100
+        win_margin_rate = (simulated_diffs >= mean_diff).mean() * 100
+    else:
+        win_rate = (simulated_diffs < 0).mean() * 100
+        win_margin_rate = (simulated_diffs <= mean_diff).mean() * 100
+    return {
+        "mean_diff": mean_diff,
+        "ci": ci,
+        "median_diff": np.median(simulated_diffs),
+        "std_diff": simulated_diffs.std(),
+        "win_rate": win_rate,
+        "win_margin_rate": win_margin_rate,
+        "simulated_diffs": simulated_diffs,
+        "fitted_distribution": fit_distribution(simulated_diffs) if run_fitter else None
+    }
+
+
+def monte_carlo_simulation_totals(model_home, model_away, X_home, X_away, n_simulations=10000,
+                                  error_std_home=5, error_std_away=5, random_seed=42, run_fitter=False):
+    """
+    Run a Monte Carlo simulation on the game total (sum of home and away scores).
+    
+    Args:
+        model_home: Trained model for the home team.
+        model_away: Trained model for the away team.
+        X_home: Feature array for the home team.
+        X_away: Feature array for the away team.
+        n_simulations: Number of simulation iterations.
+        error_std_home: Standard deviation for home team noise.
+        error_std_away: Standard deviation for away team noise.
+        random_seed: Seed for reproducibility.
+        run_fitter: If True, fit a distribution to the simulation outcomes.
+    
+    Returns:
+        A dictionary with the following keys:
+          - mean_total: Mean simulated total points.
+          - median_total: Median simulated total.
+          - std_total: Standard deviation of the totals.
+          - over_threshold: 5th percentile of totals.
+          - under_threshold: 95th percentile of totals.
+          - simulated_totals: The raw simulated totals as a NumPy array.
+          - fitted_distribution: The best‑fitting distribution (if run_fitter is True).
+    """
+    np.random.seed(random_seed)
+    base_pred_home = model_home.predict(X_home)
+    base_pred_away = model_away.predict(X_away)
+    simulated_totals = []
+    for _ in range(n_simulations):
+        noise_home = np.random.normal(0, error_std_home, size=base_pred_home.shape)
+        noise_away = np.random.normal(0, error_std_away, size=base_pred_away.shape)
+        simulated_totals.append((base_pred_home + noise_home) + (base_pred_away + noise_away))
+    simulated_totals = np.array(simulated_totals)
+    return {
+        "mean_total": simulated_totals.mean(),
+        "median_total": np.median(simulated_totals),
+        "std_total": simulated_totals.std(),
+        "over_threshold": np.percentile(simulated_totals, 5),
+        "under_threshold": np.percentile(simulated_totals, 95),
+        "simulated_totals": simulated_totals,
+        "fitted_distribution": fit_distribution(simulated_totals) if run_fitter else None
+    }
+
+
+def update_predictions_with_results(predictions_csv="predictions.csv", league="NBA"):
+    """
+    Update the predictions CSV file with actual game outcomes and compute the differences
+    between predicted and actual margins and totals.
+    
+    This function reads in the predictions, matches them with historical game data
+    (using the appropriate data loader for the given league), and then updates each prediction
+    with the actual home score, away score, margin, total, deltas, and whether the predicted
+    winner matches the actual winner.
+    
+    Args:
+        predictions_csv (str): Path to the CSV file containing predictions.
+        league (str): League identifier ("NBA", "NFL", or "NCAAB").
+    
+    Returns:
+        pd.DataFrame: The updated predictions DataFrame.
+    """
+    try:
+        df_preds = pd.read_csv(predictions_csv, parse_dates=["date"])
+    except Exception as e:
+        print(f"Error loading predictions CSV: {e}")
+        return None
+    if league == "NBA":
+        df_history = load_nba_data()
+        if "pts" in df_history.columns:
+            df_history = df_history.rename(columns={"pts": "score"})
+    elif league == "NFL":
+        schedule = load_nfl_schedule()
+        df_history = preprocess_nfl_data(schedule)
+    elif league == "NCAAB":
+        df_history = load_ncaab_data_current_season(season=2025)
+    else:
+        print("Unsupported league specified.")
+        return None
+    updated_rows = []
+    for idx, pred in df_preds.iterrows():
+        try:
+            pred_date = pd.to_datetime(pred["date"]).date()
+        except Exception as e:
+            print(f"Error converting prediction date: {e}")
+            pred_date = None
+        home_team = pred.get("home_team", None)
+        away_team = pred.get("away_team", None)
+        df_game = df_history[pd.to_datetime(df_history["gameday"]).dt.date == pred_date]
+        game_home = df_game[df_game["team"] == home_team]
+        game_away = df_game[df_game["team"] == away_team]
+        if not game_home.empty and not game_away.empty:
+            actual_home_score = game_home.iloc[0].get("score", None)
+            actual_away_score = game_away.iloc[0].get("score", None)
+            if actual_home_score is not None and actual_away_score is not None:
+                actual_margin = actual_home_score - actual_away_score
+                actual_total = actual_home_score + actual_away_score
+                pred_margin = pred.get("predicted_diff", None)
+                pred_total = pred.get("predicted_total", None)
+                margin_delta = actual_margin - pred_margin if pred_margin is not None else None
+                total_delta = actual_total - pred_total if pred_total is not None else None
+                predicted_winner = pred.get("predicted_winner", None)
+                actual_winner = home_team if actual_margin > 0 else away_team
+                prediction_correct = (predicted_winner == actual_winner)
+                pred_update = pred.to_dict()
+                pred_update.update({
+                    "actual_home_score": actual_home_score,
+                    "actual_away_score": actual_away_score,
+                    "actual_margin": actual_margin,
+                    "actual_total": actual_total,
+                    "margin_delta": margin_delta,
+                    "total_delta": total_delta,
+                    "prediction_correct": prediction_correct
+                })
+                updated_rows.append(pred_update)
+            else:
+                updated_rows.append(pred.to_dict())
+        else:
+            updated_rows.append(pred.to_dict())
+    updated_df = pd.DataFrame(updated_rows)
+    try:
+        updated_df.to_csv(predictions_csv, index=False)
+        updated_df.to_csv("top_bets.csv", index=False)
+        print(f"Predictions CSV updated successfully and saved to both {predictions_csv} and top_bets.csv")
+    except Exception as e:
+        print(f"Error saving updated CSV: {e}")
+    return updated_df
+
 ################################################################################
 # ENHANCED DETAILED INSIGHTS FUNCTIONS (Merged from test script)
 ################################################################################
