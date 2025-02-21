@@ -1641,20 +1641,58 @@ def run_league_pipeline(league_choice, odds_api_key):
             if outcome is None:
                 continue
             if home in stack_models and away in stack_models:
-                last_features_home = team_data[team_data['team'] == home][['rolling_avg','rolling_std','weighted_avg']].tail(1)
-                last_features_away = team_data[team_data['team'] == away][['rolling_avg','rolling_std','weighted_avg']].tail(1)
+                last_features_home = team_data[team_data['team'] == home][['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
+                last_features_away = team_data[team_data['team'] == away][['rolling_avg', 'rolling_std', 'weighted_avg']].tail(1)
                 if not last_features_home.empty and not last_features_away.empty:
-                    # Monte Carlo simulation is run with a lower number of iterations here for speed.
-                    monte_results = []
                     try:
-                        monte_mean_diff, monte_ci, win_rate, win_margin_rate, monte_median, monte_std, simulated_diffs = \
-                            _ = (0, (0, 0), 0, 0, 0, 0, [])  # Placeholder if simulation not available.
-                    except Exception:
-                        monte_mean_diff, monte_ci, win_rate, win_margin_rate, monte_median, monte_std, simulated_diffs = (None,)*7
+                        monte_margin = monte_carlo_simulation_margin(
+                            model_home=stack_models[home],
+                            model_away=stack_models[away],
+                            X_home=last_features_home.values,
+                            X_away=last_features_away.values,
+                            n_simulations=10000,
+                            error_std_home=team_stats[home]['std'],
+                            error_std_away=team_stats[away]['std'],
+                            random_seed=42,
+                            run_fitter=False
+                        )
+                        monte_mean_diff = monte_margin["mean_diff"]
+                        monte_ci = monte_margin["ci"]
+                        win_rate = monte_margin["win_rate"]
+                        win_margin_rate = monte_margin["win_margin_rate"]
+                        monte_median = monte_margin["median_diff"]
+                        monte_std = monte_margin["std_diff"]
+                        simulated_diffs = monte_margin["simulated_diffs"]
+                    except Exception as e:
+                        print(f"Monte Carlo margin simulation failed for {home} vs {away}: {e}")
+                        monte_mean_diff = monte_ci = win_rate = win_margin_rate = monte_median = monte_std = simulated_diffs = None
+
+                    try:
+                        monte_totals = monte_carlo_simulation_totals(
+                            model_home=stack_models[home],
+                            model_away=stack_models[away],
+                            X_home=last_features_home.values,
+                            X_away=last_features_away.values,
+                            n_simulations=10000,
+                            error_std_home=team_stats[home]['std'],
+                            error_std_away=team_stats[away]['std'],
+                            random_seed=42,
+                            run_fitter=False
+                        )
+                        mean_total = monte_totals["mean_total"]
+                        median_total = monte_totals["median_total"]
+                        std_total = monte_totals["std_total"]
+                        over_threshold = monte_totals["over_threshold"]
+                        under_threshold = monte_totals["under_threshold"]
+                    except Exception as e:
+                        print(f"Monte Carlo totals simulation failed for {home} vs {away}: {e}")
+                        mean_total = median_total = std_total = over_threshold = under_threshold = None
                 else:
-                    monte_mean_diff, monte_ci, win_rate, win_margin_rate, monte_median, monte_std, simulated_diffs = (None,)*7
+                    monte_mean_diff = monte_ci = win_rate = win_margin_rate = monte_median = monte_std = simulated_diffs = None
+                    mean_total = median_total = std_total = over_threshold = under_threshold = None
             else:
-                monte_mean_diff, monte_ci, win_rate, win_margin_rate, monte_median, monte_std, simulated_diffs = (None,)*7
+                monte_mean_diff = monte_ci = win_rate = win_margin_rate = monte_median = monte_std = simulated_diffs = None
+                mean_total = median_total = std_total = over_threshold = under_threshold = None
             if monte_mean_diff is not None and monte_std is not None and win_rate is not None:
                 new_confidence = updated_confidence(outcome['confidence'], monte_mean_diff, monte_std, win_rate)
             else:
@@ -1755,7 +1793,13 @@ def run_league_pipeline(league_choice, odds_api_key):
                                file_name='predictions.csv', mime='text/csv')
         else:
             st.warning("No predictions to save.")
-    # Show Instagram scheduler section on the sidebar.
+    if st.button("Update Predictions with Results"):
+        updated_df = update_predictions_with_results(predictions_csv=CSV_FILE, league=league_choice)
+        if updated_df is not None:
+            st.success("Predictions updated with actual results!")
+            st.dataframe(updated_df.head())
+        else:
+            st.error("Failed to update predictions with results.")
     show_instagram_scheduler_section(league_choice)
 
 ################################################################################
