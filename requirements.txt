@@ -86,7 +86,7 @@ Optuna
 tensorflow>=2.18.0
 pysbr
 instagrapi
-moviepy
+moviepy==1.0.3
 imageio
 imageio[ffmpeg]
 decorator
