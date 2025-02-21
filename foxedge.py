@@ -25,20 +25,21 @@ import joblib
 import os
 import optuna  # For Bayesian hyperparameter optimization
 import inspect
-
-# cbbpy for NCAAB
 import cbbpy.mens_scraper as cbb
-
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 
+# Additional imports for TikTok video generation
+from moviepy.editor import ColorClip, TextClip, ImageClip, CompositeVideoClip, AudioFileClip
+from gtts import gTTS
+from contextlib import contextmanager
+import time
+
 ################################################################################
-# FEATURE FLAGS (Merged from test script)
+# FEATURE FLAGS
 ################################################################################
 LOCAL_TEST_MODE = True
 TEST_FIRST_PREDICTION_FROM_CSV = False
 USE_NBA_CSV_DATA = True
-
-# Existing production flags:
 USE_RANDOMIZED_SEARCH = True
 USE_OPTUNA_SEARCH = True
 ENABLE_EARLY_STOPPING = True
@@ -47,9 +48,8 @@ DISABLE_TUNING_FOR_NCAAB = True
 CSV_FILE = "predictions.csv"  # (Already used in production)
 
 ################################################################################
-# LOGO MERGING FUNCTIONS (Merged from test script)
+# LOGO MERGING FUNCTIONS
 ################################################################################
-# NBA mapping dictionary for logo files.
 nba_mapping = {
     "ATL": "Atlanta Hawks",
     "BKN": "Brooklyn Nets",
@@ -88,7 +88,7 @@ def merge_ncaa_team_logos(team1, team2, output_path="merged_ncaa_logo.png", targ
     Merge NCAA team logos side by side.
     Filenames are assumed to be team names with underscores replacing spaces, ending with '_logo.png'.
     """
-    base_dir = "ncaa_images"  # Adjust the directory name if needed
+    base_dir = "ncaa_images"  # Adjust directory as needed
 
     def get_logo(team_name):
         expected = team_name.strip().replace(" ", "_") + "_logo.png"
@@ -101,7 +101,7 @@ def merge_ncaa_team_logos(team1, team2, output_path="merged_ncaa_logo.png", targ
     logo2_path = get_logo(team2)
     if not logo1_path or not logo2_path:
         return None
-    from PIL import Image  # Import here to limit scope
+    from PIL import Image
     img1 = Image.open(logo1_path)
     img2 = Image.open(logo2_path)
     img1_ratio = img1.width / img1.height
@@ -132,7 +132,7 @@ def merge_team_logos(team1, team2, output_path="merged_logo.png", target_height=
     logo2_path = get_logo(team2)
     if not logo1_path or not logo2_path:
         return None
-    from PIL import Image  # Import here to limit scope
+    from PIL import Image
     img1 = Image.open(logo1_path)
     img2 = Image.open(logo2_path)
     img1_ratio = img1.width / img1.height
@@ -147,7 +147,7 @@ def merge_team_logos(team1, team2, output_path="merged_logo.png", target_height=
     return output_path
 
 ################################################################################
-# CSV HELPER FUNCTIONS (Merged from test script)
+# CSV HELPER FUNCTIONS
 ################################################################################
 def load_csv_data_safe(file_path, default_df=None):
     try:
@@ -186,11 +186,14 @@ def save_prediction_to_csv(prediction, csv_file=CSV_FILE):
         df_combined.to_csv(csv_file, index=False)
     st.success("Prediction saved to CSV!")
 
+################################################################################
+# MONTE CARLO SIMULATION & DISTRIBUTION FITTING
+################################################################################
 @st.cache_data(show_spinner=False, hash_funcs={np.ndarray: lambda x: x.tobytes()})
 def fit_distribution(simulation_array):
     """
     Fit a probability distribution to the simulation results using the fitter library.
-    Returns the best‐fitting distribution based on sum‑of‐squares error.
+    Returns the best‑fitting distribution based on sum‑of‑squares error.
     """
     try:
         from fitter import Fitter
@@ -201,33 +204,10 @@ def fit_distribution(simulation_array):
         print(f"Error fitting distribution: {e}")
         return None
 
-
 def monte_carlo_simulation_margin(model_home, model_away, X_home, X_away, n_simulations=10000,
                                   error_std_home=5, error_std_away=5, random_seed=42, run_fitter=False):
     """
     Run a Monte Carlo simulation on the point margin (home minus away).
-    
-    Args:
-        model_home: Trained model for the home team.
-        model_away: Trained model for the away team.
-        X_home: Feature array for the home team.
-        X_away: Feature array for the away team.
-        n_simulations: Number of simulation iterations.
-        error_std_home: Standard deviation for home team noise.
-        error_std_away: Standard deviation for away team noise.
-        random_seed: Seed for reproducibility.
-        run_fitter: If True, fit a distribution to the simulation outcomes.
-    
-    Returns:
-        A dictionary with the following keys:
-          - mean_diff: Mean simulated margin.
-          - ci: A tuple (lower, upper) representing the 95% confidence interval.
-          - median_diff: Median simulated margin.
-          - std_diff: Standard deviation of the simulated margins.
-          - win_rate: Percentage of simulations favoring the predicted winner.
-          - win_margin_rate: Percentage of simulations exceeding the mean margin.
-          - simulated_diffs: The raw simulated differences as a NumPy array.
-          - fitted_distribution: The best‑fitting distribution (if run_fitter is True).
     """
     np.random.seed(random_seed)
     base_pred_home = model_home.predict(X_home)
@@ -259,32 +239,10 @@ def monte_carlo_simulation_margin(model_home, model_away, X_home, X_away, n_simu
         "fitted_distribution": fit_distribution(simulated_diffs) if run_fitter else None
     }
 
-
 def monte_carlo_simulation_totals(model_home, model_away, X_home, X_away, n_simulations=10000,
                                   error_std_home=5, error_std_away=5, random_seed=42, run_fitter=False):
     """
     Run a Monte Carlo simulation on the game total (sum of home and away scores).
-    
-    Args:
-        model_home: Trained model for the home team.
-        model_away: Trained model for the away team.
-        X_home: Feature array for the home team.
-        X_away: Feature array for the away team.
-        n_simulations: Number of simulation iterations.
-        error_std_home: Standard deviation for home team noise.
-        error_std_away: Standard deviation for away team noise.
-        random_seed: Seed for reproducibility.
-        run_fitter: If True, fit a distribution to the simulation outcomes.
-    
-    Returns:
-        A dictionary with the following keys:
-          - mean_total: Mean simulated total points.
-          - median_total: Median simulated total.
-          - std_total: Standard deviation of the totals.
-          - over_threshold: 5th percentile of totals.
-          - under_threshold: 95th percentile of totals.
-          - simulated_totals: The raw simulated totals as a NumPy array.
-          - fitted_distribution: The best‑fitting distribution (if run_fitter is True).
     """
     np.random.seed(random_seed)
     base_pred_home = model_home.predict(X_home)
@@ -305,23 +263,12 @@ def monte_carlo_simulation_totals(model_home, model_away, X_home, X_away, n_simu
         "fitted_distribution": fit_distribution(simulated_totals) if run_fitter else None
     }
 
-
+################################################################################
+# UPDATE PREDICTIONS WITH RESULTS
+################################################################################
 def update_predictions_with_results(predictions_csv="predictions.csv", league="NBA"):
     """
-    Update the predictions CSV file with actual game outcomes and compute the differences
-    between predicted and actual margins and totals.
-    
-    This function reads in the predictions, matches them with historical game data
-    (using the appropriate data loader for the given league), and then updates each prediction
-    with the actual home score, away score, margin, total, deltas, and whether the predicted
-    winner matches the actual winner.
-    
-    Args:
-        predictions_csv (str): Path to the CSV file containing predictions.
-        league (str): League identifier ("NBA", "NFL", or "NCAAB").
-    
-    Returns:
-        pd.DataFrame: The updated predictions DataFrame.
+    Update the predictions CSV file with actual game outcomes and compute differences.
     """
     try:
         df_preds = pd.read_csv(predictions_csv, parse_dates=["date"])
@@ -390,7 +337,7 @@ def update_predictions_with_results(predictions_csv="predictions.csv", league="N
     return updated_df
 
 ################################################################################
-# ENHANCED DETAILED INSIGHTS FUNCTIONS (Merged from test script)
+# INSIGHT FUNCTIONS
 ################################################################################
 def updated_confidence(baseline_conf, monte_mean_diff, monte_std, win_probability, K=10, epsilon=1e-6):
     """
@@ -402,7 +349,7 @@ def updated_confidence(baseline_conf, monte_mean_diff, monte_std, win_probabilit
 
 def generate_betting_insights(bet):
     """
-    Generate a text summary of detailed betting insights based on the bet metrics.
+    Generate a text summary of detailed betting insights based on bet metrics.
     """
     from scipy.stats import skew, kurtosis
     insights = []
@@ -433,7 +380,7 @@ def generate_betting_insights(bet):
         rel_ci = ci_width / (abs(bet['monte_mean_diff']) + 1e-6)
         value_score = (bet['win_probability'] / 100) * (bet['confidence'] / 100) * snr / rel_ci
         value_score_text = f"Composite Value Score: {value_score:.2f}."
-        new_rel_ci = rel_ci * 0.9  # if CI narrows by 10%
+        new_rel_ci = rel_ci * 0.9
         new_value_score = (bet['win_probability'] / 100) * (bet['confidence'] / 100) * snr / new_rel_ci
         percent_increase = ((new_value_score - value_score) / value_score) * 100
         value_score_text += f" (Would increase by {percent_increase:.1f}% if CI were 10% narrower.)"
@@ -492,7 +439,7 @@ def recommended_betting_strategy(bet, bankroll=1000, fraction=0.5):
     return strategy
 
 ################################################################################
-# SOCIAL MEDIA POST GENERATION (Merged from test script)
+# SOCIAL MEDIA POST GENERATION
 ################################################################################
 def generate_social_media_post(bet):
     """
@@ -535,10 +482,9 @@ def display_generated_post(bet):
     st.text(post_text)
 
 ################################################################################
-# INSTAGRAM SCHEDULER FUNCTIONS (Merged from test script)
+# INSTAGRAM SCHEDULER FUNCTIONS
 ################################################################################
 from instagrapi import Client
-import time
 
 def login_to_instagram(username, password):
     """
@@ -578,7 +524,6 @@ def show_instagram_scheduler_section(current_league):
         if client:
             st.session_state['instagram_client'] = client
     if st.button("Load Today's Predictions"):
-        # Here we assume load_todays_predictions is available (e.g. from CSV helpers)
         predictions = load_csv_data_safe(CSV_FILE)
         if not predictions.empty:
             st.session_state['todays_predictions'] = predictions.to_dict('records')
@@ -586,7 +531,6 @@ def show_instagram_scheduler_section(current_league):
         else:
             st.info("No predictions available for today.")
     if st.button("Show Historical Performance"):
-        # Reusing production CSV display function (if available)
         try:
             df = pd.read_csv(CSV_FILE)
             st.markdown("### Historical Performance Summary")
@@ -631,11 +575,110 @@ def show_instagram_scheduler_section(current_league):
                     post_to_instagram(client, generate_social_media_post(selected_prediction), image_path)
 
 ################################################################################
-# (REMAINING CODE FROM PRODUCTION SCRIPT BELOW – UNCHANGED)
+# TIKTOK VIDEO GENERATION FUNCTIONS
 ################################################################################
+def generate_audio_from_text(text, audio_output="generated_audio.mp3"):
+    """
+    Generate an audio file from text using gTTS.
+    """
+    try:
+        tts = gTTS(text=text, lang="en")
+        tts.save(audio_output)
+        return audio_output
+    except Exception as e:
+        print(f"Error generating audio: {e}")
+        return None
+
+@contextmanager
+def smooth_transition(label=""):
+    """
+    Context manager for smooth transitions (for video editing).
+    """
+    start = time.time()
+    yield
+    end = time.time()
+    print(f"Transition '{label}' took {end - start:.2f} seconds.")
+
+def generate_tiktok_video(bet, output_file: str = None, default_duration: int = 10, video_width: int = 1080, video_height: int = 1920, bg_color: tuple = (0, 0, 0)) -> str:
+    """
+    Generate a TikTok video for the given bet prediction.
+    """
+    if output_file is None:
+        bet_date = bet.get('date')
+        if isinstance(bet_date, datetime):
+            date_str = bet_date.strftime('%Y%m%d')
+        else:
+            date_str = "unknown_date"
+        home_team = bet.get('home_team', 'Home').replace(" ", "_")
+        away_team = bet.get('away_team', 'Away').replace(" ", "_")
+        output_file = f"tiktok_{date_str}_{home_team}_vs_{away_team}.mp4"
+    
+    def generate_social_media_texts(bet):
+        conf = bet.get('confidence', 50)
+        tone_visual = "Bet Now! Get in on this play!" if conf >= 80 else "Value Pick Alert. Check it out."
+        tone_audio = "High confidence play." if conf >= 80 else "This play shows promising value."
+        visual_text = (
+            f"{bet.get('away_team', 'Away')} @ {bet.get('home_team', 'Home')}\n"
+            f"Model Pick: {bet.get('predicted_winner', 'Unknown')}\n"
+            f"Spread: {bet.get('spread_suggestion', 'N/A')}\n"
+            f"Total: {bet.get('predicted_total', 'N/A')}\n"
+            f"Confidence: {conf:.1f}%\n"
+            f"{tone_visual}"
+        )
+        audio_text = (
+            f"Upcoming game: {bet.get('away_team', 'Away')} at {bet.get('home_team', 'Home')}. "
+            f"Our model predicts {bet.get('predicted_winner', 'Unknown')} to cover the spread, "
+            f"with a projected total of {bet.get('predicted_total', 'N/A')} points and a confidence of {conf:.1f} percent. "
+            f"{tone_audio}"
+        )
+        return visual_text, audio_text
+
+    visual_text, audio_text = generate_social_media_texts(bet)
+    audio_file = generate_audio_from_text(audio_text, "generated_audio.mp3")
+    try:
+        audio_clip = AudioFileClip(audio_file)
+        video_duration = audio_clip.duration
+    except Exception as e:
+        print(f"Error loading audio clip: {e}")
+        video_duration = default_duration
+
+    background = ColorClip(size=(video_width, video_height), color=bg_color, duration=video_duration)
+    with smooth_transition("Text Overlay"):
+        text_clip = (TextClip(visual_text, fontsize=50, color='white', font='Arial-Bold', method='caption', size=(video_width - 100, None))
+                     .set_position('center')
+                     .set_duration(video_duration)
+                     .crossfadein(0.5))
+    if bet.get('league') == "NCAAB":
+        merged_logo_path = merge_ncaa_team_logos(bet.get('home_team', ''), bet.get('away_team', ''))
+    else:
+        merged_logo_path = merge_team_logos(bet.get('home_team', ''), bet.get('away_team', ''))
+    logo_clip = None
+    if merged_logo_path and os.path.exists(merged_logo_path):
+        with smooth_transition("Logo Overlay"):
+            logo_clip = (ImageClip(merged_logo_path)
+                         .resize(height=300)
+                         .set_position(('center', 100))
+                         .set_duration(video_duration)
+                         .crossfadein(0.7))
+    with smooth_transition("CTA Overlay"):
+        final_cta = (TextClip("💰 DOUBLE TAP IF TAILING! 💰", fontsize=60, color="yellow", font="Arial-Bold", method="caption", size=(video_width - 100, None))
+                     .set_position(('center', video_height - 300))
+                     .set_duration(3)
+                     .crossfadein(0.5))
+    if logo_clip:
+        final_clip = CompositeVideoClip([background, logo_clip, text_clip, final_cta])
+    else:
+        final_clip = CompositeVideoClip([background, text_clip, final_cta])
+    if audio_file and os.path.exists(audio_file):
+        try:
+            final_clip = final_clip.set_audio(audio_clip)
+        except Exception as e:
+            print(f"Error setting audio: {e}")
+    final_clip.write_videofile(output_file, fps=24, codec='libx264')
+    return output_file
 
 ################################################################################
-# HELPER FUNCTION TO ENSURE TZ-NAIVE DATETIMES
+# HELPER: Ensure Timezone-Naive Datetimes
 ################################################################################
 def to_naive(dt):
     if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
@@ -643,7 +686,7 @@ def to_naive(dt):
     return dt
 
 ################################################################################
-# FIREBASE CONFIGURATION
+# FIREBASE CONFIGURATION & AUTH
 ################################################################################
 try:
     FIREBASE_API_KEY = st.secrets["general"]["firebaseApiKey"]
@@ -716,14 +759,11 @@ def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
     st.success("Predictions have been saved to CSV!")
 
 ################################################################################
-# UTILITY
+# UTILITY FUNCTIONS
 ################################################################################
 def round_half(number):
     return round(number * 2) / 2
 
-################################################################################
-# HELPER FUNCTION FOR EARLY STOPPING
-################################################################################
 def supports_early_stopping(model):
     try:
         sig = inspect.signature(model.fit)
@@ -732,7 +772,7 @@ def supports_early_stopping(model):
         return False
 
 ################################################################################
-# BAYESIAN HYPERPARAMETER OPTIMIZATION VIA OPTUNA
+# MODEL TUNING FUNCTIONS
 ################################################################################
 def optuna_tune_model(model, param_grid, X_train, y_train, n_trials=20, early_stopping=False):
     cv = TimeSeriesSplit(n_splits=3)
@@ -798,9 +838,6 @@ def tune_model(model, param_grid, X_train, y_train, use_randomized=False, early_
         search.fit(X_train, y_train, **fit_params)
         return search.best_estimator_
 
-################################################################################
-# NESTED CROSS-VALIDATION EVALUATION
-################################################################################
 def nested_cv_evaluation(model, param_grid, X, y, use_randomized=False, early_stopping=False):
     from sklearn.model_selection import KFold
     outer_cv = KFold(n_splits=5, shuffle=False)
@@ -1073,7 +1110,7 @@ def fetch_upcoming_nfl_games(schedule, days_ahead=7):
     return upcoming[['gameday', 'home_team', 'away_team']]
 
 ################################################################################
-# NBA DATA LOADING (ADVANCED LOGIC IMPLEMENTED)
+# NBA DATA LOADING
 ################################################################################
 @st.cache_data(ttl=14400)
 def load_nba_data():
@@ -1145,7 +1182,6 @@ def fetch_upcoming_nba_games(days_ahead=3):
     pt_timezone = pytz.timezone('America/Los_Angeles')
     now = datetime.now(pt_timezone)
     upcoming_rows = []
-    # Increase the range slightly to cover extra days if needed.
     for offset in range(days_ahead + 7):
         date_target = now + timedelta(days=offset)
         date_str = date_target.strftime('%Y-%m-%d')
@@ -1158,7 +1194,6 @@ def fetch_upcoming_nba_games(days_ahead=3):
         games['AWAY_TEAM_ABBREV'] = games['VISITOR_TEAM_ID'].map(nba_team_dict)
         upcoming_df = games[~games['GAME_STATUS_TEXT'].str.contains("Final", case=False, na=False)]
         for _, g in upcoming_df.iterrows():
-            # Convert the date string to datetime and localize it to PT.
             game_date = pd.to_datetime(date_str)
             if game_date.tzinfo is None:
                 game_date = pt_timezone.localize(game_date)
@@ -1256,12 +1291,11 @@ def fetch_upcoming_ncaab_games() -> pd.DataFrame:
     return df
 
 ################################################################################
-# NEW FUNCTION: COMPARE PREDICTIONS WITH BOOKMAKER ODDS (PER-GAME MANUAL UPDATE)
+# ODDS COMPARISON FUNCTIONS
 ################################################################################
 def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
     """
-    Fetches bookmaker odds for spreads and compares them to model predictions.
-    Adds a 'bookmaker_spread' key for each prediction.
+    Fetch bookmaker odds for spreads and compare them to model predictions.
     """
     sport_key_map = {
         "NFL": "americanfootball_nfl",
@@ -1273,10 +1307,6 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
     odds_data = fetch_odds(odds_api_key, sport_key, selected_market)
     
     def map_team_name(team_name):
-        """
-        Maps a team name from predictions to the odds API convention.
-        For NBA, the app shows abbreviations while the API returns full names.
-        """
         default_mapping = {
             "New England Patriots": "New England Patriots",
             "Dallas Cowboys": "Dallas Cowboys"
@@ -1319,9 +1349,6 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
             return default_mapping.get(team_name, team_name)
     
     def get_bookmaker_spread(mapped_team_name, odds_data):
-        """
-        Extracts the bookmaker spread for the specified team.
-        """
         for event in odds_data:
             home_api_name = map_team_name(event.get("home_team", ""))
             away_api_name = map_team_name(event.get("away_team", ""))
@@ -1400,28 +1427,22 @@ def generate_writeup(bet, team_stats_global):
   - **Recent Form (Last 5 Games):** {away_recent}
 
 - **Prediction Insight:**
-  Based on the recent performance and statistical analysis, **{predicted_winner}** is predicted to win with a confidence level of **{confidence}%**.
+  Based on recent performance and statistical analysis, **{predicted_winner}** is predicted to win with a confidence level of **{confidence}%**.
   The projected score difference is **{bet['predicted_diff']} points**, leading to a spread suggestion of **{bet['spread_suggestion']}**.
   Additionally, the total predicted points for the game are **{bet['predicted_total']}**, indicating a suggestion to **{bet['ou_suggestion']}**.
 
 - **Statistical Edge:**
-  The confidence reflects the statistical edge derived from the combined performance metrics.
+  The confidence reflects the statistical edge derived from combined performance metrics.
 """
     return writeup
 
 def generate_social_media_post_prod(bet):
-    # Note: This function is now overridden by the test-script version above.
+    # Note: This function is overridden by generate_social_media_post.
     return generate_social_media_post(bet)
 
 def display_bet_card(bet, team_stats_global, team_data=None):
     """
     Display a bet card with detailed insights, analysis, and performance trends.
-    The game date/time is converted and displayed in Pacific Time (PT).
-    
-    Args:
-        bet (dict): Dictionary containing bet details.
-        team_stats_global (dict): Global team stats used for analysis.
-        team_data (pd.DataFrame, optional): DataFrame containing team performance data.
     """
     conf = bet['confidence']
     if conf >= 80:
@@ -1431,7 +1452,6 @@ def display_bet_card(bet, team_stats_global, team_data=None):
     else:
         confidence_color = "orange"
     
-    # Define Pacific Time timezone
     pt_timezone = pytz.timezone('America/Los_Angeles')
     
     with st.container():
@@ -1441,7 +1461,6 @@ def display_bet_card(bet, team_stats_global, team_data=None):
             st.markdown(f"### **{bet['away_team']} @ {bet['home_team']}**")
             date_obj = bet['date']
             if isinstance(date_obj, datetime):
-                # If datetime is naive, assume it's in PT; otherwise, convert it to PT.
                 if date_obj.tzinfo is None:
                     date_obj = pt_timezone.localize(date_obj)
                 else:
@@ -1453,8 +1472,7 @@ def display_bet_card(bet, team_stats_global, team_data=None):
             st.markdown(f"**Spread Suggestion:** {bet['spread_suggestion']}")
             st.markdown(f"**Total Suggestion:** {bet['ou_suggestion']}")
         with col3:
-            tooltip_text = ("Confidence indicates the statistical edge derived from the "
-                            "combined performance metrics.")
+            tooltip_text = ("Confidence indicates the statistical edge derived from combined performance metrics.")
             st.markdown(
                 f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>"
                 f"{bet['confidence']:.1f}% Confidence</h3>",
@@ -1486,9 +1504,18 @@ def display_bet_card(bet, team_stats_global, team_data=None):
     with st.expander("Generate Social Media Post", expanded=False):
         if st.button("Generate Post", key=f"social_post_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
             display_generated_post(bet)
+    
+    # New: TikTok video generation button under each bet.
+    if st.button("Generate TikTok Video for This Game", key=f"tiktok_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
+        try:
+            video_path = generate_tiktok_video(bet)
+            st.success(f"TikTok video saved to: {video_path}")
+            st.video(video_path)
+        except Exception as e:
+            st.error(f"Error generating TikTok video: {e}")
 
 ################################################################################
-# GLOBALS
+# GLOBAL VARIABLES
 ################################################################################
 results = []
 team_stats_global = {}
@@ -1788,8 +1815,8 @@ def run_league_pipeline(league_choice, odds_api_key):
     if st.button("Save Predictions to CSV"):
         if results:
             save_predictions_to_csv(results, csv_file=CSV_FILE)
-            csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
-            st.download_button(label="Download Predictions as CSV", data=csv,
+            csv_data = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
+            st.download_button(label="Download Predictions as CSV", data=csv_data,
                                file_name='predictions.csv', mime='text/csv')
         else:
             st.warning("No predictions to save.")
@@ -1803,7 +1830,7 @@ def run_league_pipeline(league_choice, odds_api_key):
     show_instagram_scheduler_section(league_choice)
 
 ################################################################################
-# STREAMLIT MAIN FUNCTION & SCHEDULING IMPLEMENTATION
+# SCHEDULED TASK (OPTIONAL)
 ################################################################################
 def scheduled_task():
     st.write("🕒 Scheduled task running: Fetching and updating predictions...")
@@ -1833,8 +1860,10 @@ def scheduled_task():
     if os.path.exists("ncaab_games.csv"):
         joblib.dump(ncaab_df, "models/ncaab_model.pkl")
     st.success("✅ Scheduled task completed successfully!")
-    st.success("Scheduled task completed successfully.")
 
+################################################################################
+# MAIN FUNCTION
+################################################################################
 def main():
     st.set_page_config(page_title="FoxEdge Sports Betting Edge", page_icon="🦊", layout="centered")
     st.title("🦊 FoxEdge Sports Betting Insights")
@@ -1880,8 +1909,8 @@ def main():
     if st.button("Save Predictions to CSV"):
         if results:
             save_predictions_to_csv(results)
-            csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
-            st.download_button(label="Download Predictions as CSV", data=csv,
+            csv_data = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
+            st.download_button(label="Download Predictions as CSV", data=csv_data,
                                file_name='predictions.csv', mime='text/csv')
         else:
             st.warning("No predictions to save.")
