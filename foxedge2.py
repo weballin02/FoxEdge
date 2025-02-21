@@ -1137,7 +1137,7 @@ def update_predictions_with_results(predictions_csv="predictions.csv", league="N
         df_preds = pd.read_csv(predictions_csv, parse_dates=["date"])
     except Exception as e:
         print(f"Error loading predictions CSV: {e}")
-        return None
+        return pd.DataFrame()  # Return empty DataFrame if CSV load fails
     if league == "NBA":
         df_history = load_nba_data()
         if "pts" in df_history.columns:
@@ -1149,7 +1149,7 @@ def update_predictions_with_results(predictions_csv="predictions.csv", league="N
         df_history = load_ncaab_data_current_season(season=2025)
     else:
         print("Unsupported league specified.")
-        return None
+        return pd.DataFrame()
     updated_rows = []
     for idx, pred in df_preds.iterrows():
         try:
@@ -1776,6 +1776,8 @@ def run_league_pipeline(league_choice, odds_api_key):
         st.warning(f"No upcoming {league_choice} data available.")
         return
     if league_choice == "NBA":
+        # Make a copy to allow mutation of the cached DataFrame
+        team_data = team_data.copy()
         # Check for 'def_rating' column; if missing, set default value
         if 'def_rating' not in team_data.columns:
             st.warning("def_rating column is missing. Defaulting to baseline value (e.g., 110) for all teams.")
@@ -2259,7 +2261,7 @@ if __name__ == "__main__":
     for sport in ["NBA", "NFL", "NCAAB"]:
         print(f"\nUpdating predictions for {sport}...")
         updated_df = update_predictions_with_results("predictions.csv", league=sport)
-        if updated_df is not None:
+        if not updated_df.empty:
             print(f"Updated {sport} predictions:")
             print(updated_df.head())
         else:
