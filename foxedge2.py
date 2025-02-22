@@ -6,7 +6,15 @@ import pandas as pd
 import numpy as np
 import pytz
 import random
+import re
+import requests
+import time
+import json
+import csv
+import inspect
+import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
 import nfl_data_py as nfl
 from nba_api.stats.endpoints import LeagueGameLog, ScoreboardV2, TeamGameLog
 from nba_api.stats.static import teams as nba_teams
@@ -16,21 +24,15 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 from pmdarima import auto_arima
-from pathlib import Path
-import requests
-import firebase_admin
-from firebase_admin import credentials, auth
 import joblib
 import optuna
-import inspect
 import cbbpy.mens_scraper as cbb
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, RandomizedSearchCV
 from instagrapi import Client
-import time
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 from scipy.stats import skew, kurtosis
-from moviepy.editor import ColorClip, TextClip, ImageClip, CompositeVideoClip, AudioFileClip
+from moviepy.editor import ColorClip, TextClip, ImageClip, CompositeVideoClip, AudioFileClip, VideoFileClip, concatenate_videoclips
 from gtts import gTTS
 from contextlib import contextmanager
 
@@ -129,18 +131,310 @@ def add_additional_features(team_data: pd.DataFrame) -> pd.DataFrame:
     return team_data
 
 # =============================================================================
-# Dummy Odds Fetcher
+# Odds Scraper Functions and CSV Integration
 # =============================================================================
+def fetch_live_odds_page(url):
+    """
+    Fetch the HTML content of the live odds page.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/91.0.4472.114 Safari/537.36"
+        )
+    }
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response.text
+
+def split_teams(team_list):
+    """
+    Split the raw teams list into home and away teams using three-letter abbreviations.
+    """
+    def get_abbr(candidates):
+        for candidate in candidates:
+            if re.fullmatch(r"[A-Z]{3}", candidate):
+                return candidate
+        return candidates[0] if candidates else "N/A"
+    if len(team_list) >= 4:
+        home_candidates = team_list[:2]
+        away_candidates = team_list[2:4]
+        home = get_abbr(home_candidates)
+        away = get_abbr(away_candidates)
+    elif len(team_list) >= 2:
+        home = team_list[0] if re.fullmatch(r"[A-Z]{3}", team_list[0]) else team_list[1]
+        away = team_list[1] if re.fullmatch(r"[A-Z]{3}", team_list[1]) else team_list[0]
+    else:
+        home = team_list[0] if team_list else "N/A"
+        away = "N/A"
+    return home, away
+
+def parse_spread(raw_spread):
+    """
+    Parse the raw spread string to separate the spread value and spread odds.
+    """
+    numbers = re.findall(r"(-?\d+(?:\.\d+)?)", raw_spread)
+    if len(numbers) >= 2:
+        return numbers[0], numbers[1]
+    return raw_spread, "N/A"
+
+def parse_total(raw_total):
+    """
+    Parse the raw total string to separate the total value and total odds.
+    """
+    cleaned = re.sub(r"^[OU]\s*", "", raw_total, flags=re.IGNORECASE)
+    numbers = re.findall(r"(-?\d+(?:\.\d+)?)", cleaned)
+    if len(numbers) >= 2:
+        return numbers[0], numbers[1]
+    return cleaned, "N/A"
+
+def parse_live_odds(html, target_day):
+    """
+    Parse the live HTML content to extract odds for games on the target day.
+    """
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    odds_data = []
+    containers = soup.select("div.odds--group__container")
+    for container in containers:
+        date_elem = container.select_one(
+            "div.odds--group__details-date-container div.odds--group__details-date h3 span.long-date"
+        )
+        if not date_elem:
+            date_elem = container.select_one(
+                "div.odds--group__details-date-container div.odds--group__details-date h3 span.short-date"
+            )
+        if not date_elem:
+            continue
+        day_text = date_elem.get_text(strip=True)
+        if target_day.lower() not in day_text.lower():
+            continue
+        event_containers = container.select("div.odds--group__event-container")
+        for event in event_containers:
+            game = {"date": day_text}
+            time_elem = event.select_one("div.odds--group__event-time")
+            game["game_time"] = time_elem.get_text(strip=True) if time_elem else "N/A"
+            teams = []
+            for team_elem in event.select("div.participant-name a.odds-link span"):
+                team_name = team_elem.get_text(strip=True)
+                if team_name and team_name not in teams:
+                    teams.append(team_name)
+            game["teams"] = teams
+            opening_elem = event.find("div", class_=lambda c: c and "opening" in c)
+            if opening_elem:
+                spread_elem = opening_elem.select_one("div.odds-spread")
+                moneyline_elem = opening_elem.select_one("div.odds-moneyline")
+                total_elem = opening_elem.select_one("div.odds-total")
+                game["spread"] = spread_elem.get_text(strip=True) if spread_elem else "N/A"
+                game["moneyline"] = moneyline_elem.get_text(strip=True) if moneyline_elem else "N/A"
+                game["total"] = total_elem.get_text(strip=True) if total_elem else "N/A"
+            else:
+                game["spread"] = game["moneyline"] = game["total"] = "N/A"
+            odds_data.append(game)
+    return odds_data
+
+def get_standardized_odds(sport_key):
+    """
+    Fetch and standardize live odds for NBA or NCAAB.
+    """
+    if sport_key == "basketball_nba":
+        url = "https://www.oddsshark.com/nba/odds"
+    elif sport_key == "basketball_ncaab":
+        url = "https://www.oddsshark.com/ncaab/odds"
+    else:
+        return []
+    target_day = datetime.now().strftime("%A, %B %d")
+    try:
+        html = fetch_live_odds_page(url)
+        odds_list = parse_live_odds(html, target_day)
+    except Exception as e:
+        print(f"Error fetching odds: {e}")
+        return []
+    standardized = []
+    for game in odds_list:
+        teams = game.get("teams", [])
+        if len(teams) >= 2:
+            home_team, away_team = split_teams(teams)
+        else:
+            home_team, away_team = "N/A", "N/A"
+        spread_val, spread_odds = parse_spread(game.get("spread", ""))
+        total_val, total_odds = parse_total(game.get("total", ""))
+        standardized.append({
+            "date": game.get("date"),
+            "game_time": game.get("game_time"),
+            "home_team": home_team,
+            "away_team": away_team,
+            "spread": spread_val,
+            "spread_odds": spread_odds,
+            "moneyline": game.get("moneyline", "N/A"),
+            "total": total_val,
+            "total_odds": total_odds,
+            "League": "NBA" if sport_key == "basketball_nba" else "NCAAB"
+        })
+    return standardized
+
 def fetch_odds(api_key, sport_key, market):
-    """Dummy function: Returns an empty list."""
-    return []
+    """
+    (Not used for single-game odds; kept for legacy.)
+    """
+    odds_df = load_odds_csv()
+    if odds_df.empty:
+        return []
+    return odds_df.to_dict('records')
+
+# New: Functions for odds CSV integration
+def fetch_and_save_odds():
+    """
+    Runs scraper.py to fetch live odds and save them as odds.csv.
+    """
+    try:
+        result = subprocess.run(["python", "scraper.py"], capture_output=True, text=True, check=True)
+        st.success("Odds successfully fetched and saved to odds.csv!")
+        st.write("Scraper output:", result.stdout)
+    except subprocess.CalledProcessError as e:
+        st.error(f"Error running scraper.py: {e.stderr}")
+    except Exception as ex:
+        st.error(f"Unexpected error: {ex}")
+
+def load_odds_csv(csv_file="odds.csv"):
+    """
+    Loads odds data from a CSV file.
+    """
+    file = Path(csv_file)
+    if not file.exists():
+        st.warning("Odds CSV file not found. Please fetch odds first.")
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(csv_file)
+        return df
+    except Exception as e:
+        st.error(f"Error loading odds CSV: {e}")
+        return pd.DataFrame()
+
+def normalize_team_name(name: str) -> str:
+    """
+    Normalize a raw team name using TEAM_MAP.
+    """
+    key = name.strip().lower()
+    return nba_mapping.get(key, key)
+
+def fetch_odds_for_game(bet):
+    """
+    Fetch odds for a single game (using bet’s home and away team names)
+    from the locally saved odds CSV. This function handles:
+      1. Mismatched team naming via TEAM_MAP.
+      2. Home/away reversal in the CSV versus the prediction.
+    
+    Returns:
+        dict: {'spread': <float or None>, 'total': <float or None>}
+              if a matching row is found, otherwise None.
+    """
+    odds_df = load_odds_csv()
+    if odds_df.empty:
+        st.error("No odds data available. Please fetch odds first.")
+        return None
+
+    odds_data = odds_df.to_dict('records')
+    
+    # Normalize the predicted team names.
+    bet_home = normalize_team_name(bet.get("home_team", ""))
+    bet_away = normalize_team_name(bet.get("away_team", ""))
+    
+    for event in odds_data:
+        # Normalize CSV team names.
+        csv_home = normalize_team_name(event.get("home_team", ""))
+        csv_away = normalize_team_name(event.get("away_team", ""))
+        
+        # Check for direct or reversed match.
+        if ((csv_home == bet_home and csv_away == bet_away) or 
+            (csv_home == bet_away and csv_away == bet_home)):
+            try:
+                spread = float(event.get("spread", 0))
+            except Exception:
+                spread = None
+            try:
+                total = float(event.get("total", 0))
+            except Exception:
+                total = None
+            return {'spread': spread, 'total': total}
+    return None
 
 # =============================================================================
-# Cached Distribution Fitting Helper
+# Calibration Helper Functions
+# =============================================================================
+def implied_probability(odds_list):
+    """
+    Convert a list of decimal odds into implied probabilities.
+    
+    Args:
+        odds_list (list of float): Bookmaker odds for the outcomes.
+        
+    Returns:
+        list of float: Normalized implied probabilities.
+    """
+    inverses = [1 / o for o in odds_list if o > 0]
+    total = sum(inverses)
+    return [inv / total for inv in inverses]
+
+def calibrate_probability(model_prob, implied_prob, calibration_factor=0.5):
+    """
+    Adjust the model's probability toward the bookmaker's implied probability.
+    
+    Args:
+        model_prob (float): Model-predicted probability (as a fraction, e.g., 0.6 for 60%).
+        implied_prob (float): Bookmaker's implied probability (as a fraction).
+        calibration_factor (float): Factor controlling the adjustment magnitude.
+    
+    Returns:
+        float: Calibrated probability, between 0 and 1.
+    """
+    # Move the model probability toward the bookmaker's probability.
+    adjustment = calibration_factor * (implied_prob - model_prob)
+    calibrated = model_prob + adjustment
+    return max(0, min(1, calibrated))
+
+def evaluate_bet_with_calibration(bet, bookmaker_odds):
+    """
+    Update the bet evaluation by calibrating the model's win probability using
+    the bookmaker's implied probability, then recalculate expected value (EV).
+    
+    Args:
+        bet (dict): Dictionary containing your model's predictions.
+                    Must include 'win_probability' (as percent) for the favored outcome.
+        bookmaker_odds (list of float): List of decimal odds for the outcomes 
+                                        (e.g., [odds_home, odds_away]).
+    
+    Returns:
+        dict: The updated bet dictionary with additional keys:
+              - 'calibrated_probability' (in percent)
+              - 'expected_value'
+    """
+    # Convert odds to implied probabilities.
+    implied_probs = implied_probability(bookmaker_odds)
+    
+    # Assume bet['win_probability'] is for the home team (first outcome).
+    model_prob = bet['win_probability'] / 100.0  # Convert from percent to fraction.
+    implied_prob = implied_probs[0]
+    
+    # Calibrate the model probability.
+    calibrated_prob = calibrate_probability(model_prob, implied_prob, calibration_factor=0.5)
+    
+    # Calculate EV: EV = (odds * calibrated_probability) - (1 - calibrated_probability)
+    ev = (bookmaker_odds[0] * calibrated_prob) - (1 - calibrated_prob)
+    
+    # Update the bet dictionary.
+    bet.update({
+        'calibrated_probability': round(calibrated_prob * 100, 2),  # as percent.
+        'expected_value': round(ev, 3)
+    })
+    return bet
+
+# =============================================================================
+# Cached Distribution Fitting Helper (duplicate for caching)
 # =============================================================================
 @st.cache_data(show_spinner=False, hash_funcs={np.ndarray: lambda x: x.tobytes()})
 def fit_distribution(simulation_array):
-    """Fit a distribution to simulation results using Fitter."""
     from fitter import Fitter
     f = Fitter(simulation_array.flatten(), distributions=['norm', 't', 'lognorm'])
     f.fit()
@@ -151,7 +445,6 @@ def fit_distribution(simulation_array):
 # =============================================================================
 def monte_carlo_simulation_margin(model_home, model_away, X_home, X_away, n_simulations=10000,
                                   error_std_home=5, error_std_away=5, random_seed=42, run_fitter=False):
-    """Run Monte Carlo simulation on the point margin (home minus away)."""
     np.random.seed(random_seed)
     base_pred_home = model_home.predict(X_home)
     base_pred_away = model_away.predict(X_away)
@@ -182,7 +475,6 @@ def monte_carlo_simulation_margin(model_home, model_away, X_home, X_away, n_simu
 
 def monte_carlo_simulation_totals(model_home, model_away, X_home, X_away, n_simulations=10000,
                                   error_std_home=5, error_std_away=5, random_seed=42, run_fitter=False):
-    """Run Monte Carlo simulation on the game total (home plus away)."""
     np.random.seed(random_seed)
     base_pred_home = model_home.predict(X_home)
     base_pred_away = model_away.predict(X_away)
@@ -393,87 +685,71 @@ def compute_drar(predictions_df):
 # =============================================================================
 # CSV Data Functions (UPDATED)
 # =============================================================================
-def initialize_csv(csv_file=CSV_FILE):
-    csv_columns = [
-        "date", "league", "home_team", "away_team", "home_pred", "away_pred",
-        "predicted_winner", "predicted_diff", "predicted_total", "spread_suggestion", "ou_suggestion",
-        "monte_mean_diff", "monte_ci", "win_probability", "win_margin_rate",
-        "monte_median", "monte_std", "mean_total", "over_threshold", "under_threshold",
-        "median_total", "std_total",
-        "margin_confidence", "totals_confidence", "overall_confidence",
-        "actual_home_score", "actual_away_score", "actual_margin", "actual_total",
-        "margin_delta", "total_delta", "prediction_correct",
-        "mcciw", "psnr", "aser", "rosa", "evr", "pmdcr", "drar"
-    ]
+PREDICTIONS_CSV = "predictions.csv"
+CSV_COLUMNS = [
+    "date", "league", "home_team", "away_team", "home_pred", "away_pred",
+    "predicted_winner", "predicted_diff", "predicted_total", "spread_suggestion", "ou_suggestion",
+    "monte_mean_diff", "monte_ci", "win_probability", "win_margin_rate",
+    "monte_median", "monte_std", "mean_total", "over_threshold", "under_threshold",
+    "median_total", "std_total",
+    "margin_confidence", "totals_confidence", "overall_confidence",
+    "actual_home_score", "actual_away_score", "actual_margin", "actual_total",
+    "margin_delta", "total_delta", "prediction_correct",
+    "mcciw", "psnr", "aser", "rosa", "evr", "pmdcr", "drar"
+]
+
+def initialize_csv(csv_file: str = "top_bets.csv"):
     file = Path(csv_file)
     if not file.exists():
-        pd.DataFrame(columns=csv_columns).to_csv(csv_file, index=False)
+        pd.DataFrame(columns=CSV_COLUMNS).to_csv(csv_file, index=False)
+        st.info(f"Created new CSV file: {csv_file}")
 
-def save_prediction_to_csv(prediction, csv_file="top_bets.csv"):
-    prediction_copy = prediction.copy()
-    if isinstance(prediction_copy.get('date'), datetime):
-        prediction_copy['date'] = prediction_copy['date'].strftime('%m/%d/%y')
-    elif isinstance(prediction_copy.get('date'), str):
+def format_prediction(prediction: dict) -> dict:
+    pred = prediction.copy()
+    if isinstance(pred.get("date"), datetime):
+        pred["date"] = pred["date"].strftime('%m/%d/%y')
+    elif isinstance(pred.get("date"), str):
         try:
-            d = datetime.strptime(prediction_copy['date'], '%Y-%m-%d')
-            prediction_copy['date'] = d.strftime('%m/%d/%y')
+            d = datetime.strptime(pred["date"], '%Y-%m-%d')
+            pred["date"] = d.strftime('%m/%d/%y')
         except Exception:
             pass
-    if prediction_copy.get("monte_ci") is not None:
-        prediction_copy["monte_ci"] = str(prediction_copy["monte_ci"])
-    csv_columns = [
-        "date", "league", "home_team", "away_team", "home_pred", "away_pred",
-        "predicted_winner", "predicted_diff", "predicted_total", "spread_suggestion", "ou_suggestion",
-        "monte_mean_diff", "monte_ci", "win_probability", "win_margin_rate",
-        "monte_median", "monte_std", "mean_total", "over_threshold", "under_threshold",
-        "median_total", "std_total",
-        "margin_confidence", "totals_confidence", "overall_confidence",
-        "actual_home_score", "actual_away_score", "actual_margin", "actual_total",
-        "margin_delta", "total_delta", "prediction_correct",
-        "mcciw", "psnr", "aser", "rosa", "evr", "pmdcr", "drar"
-    ]
+    if pred.get("monte_ci") is not None:
+        pred["monte_ci"] = str(pred["monte_ci"])
+    for col in CSV_COLUMNS:
+        if col not in pred:
+            pred[col] = None
+    pred = {col: pred[col] for col in CSV_COLUMNS}
+    return pred
+
+def save_prediction_to_csv(prediction: dict, csv_file: str = "top_bets.csv"):
+    pred_formatted = format_prediction(prediction)
     file = Path(csv_file)
     if not file.exists():
-        df = pd.DataFrame([prediction_copy], columns=csv_columns)
-        df.to_csv(csv_file, index=False)
+        df_new = pd.DataFrame([pred_formatted], columns=CSV_COLUMNS)
+        df_new.to_csv(csv_file, index=False)
     else:
         try:
             df_existing = pd.read_csv(csv_file)
         except Exception as e:
-            print(f"Warning: Could not read existing CSV due to: {e}")
-            df_existing = pd.DataFrame(columns=csv_columns)
-        df_new = pd.DataFrame([prediction_copy])
-        for col in csv_columns:
+            st.error(f"Warning: Could not read existing CSV due to: {e}")
+            df_existing = pd.DataFrame(columns=CSV_COLUMNS)
+        df_new = pd.DataFrame([pred_formatted])
+        for col in CSV_COLUMNS:
             if col not in df_new.columns:
                 df_new[col] = None
         df_combined = pd.concat([df_existing, df_new], ignore_index=True)
         df_combined['date'] = pd.to_datetime(df_combined['date'], errors='coerce').dt.strftime('%m/%d/%y')
-        df_combined = df_combined[csv_columns]
+        df_combined = df_combined[CSV_COLUMNS]
         df_combined.to_csv(csv_file, index=False)
-    st.success("Prediction saved to CSV!")
+    st.success(f"Prediction saved to {csv_file}!")
 
-def save_predictions_to_csv(predictions, csv_file=CSV_FILE):
-    csv_columns = [
-        "date", "league", "home_team", "away_team", "home_pred", "away_pred",
-        "predicted_winner", "predicted_diff", "predicted_total", "spread_suggestion", "ou_suggestion",
-        "monte_mean_diff", "monte_ci", "win_probability", "win_margin_rate",
-        "monte_median", "monte_std", "mean_total", "over_threshold", "under_threshold",
-        "median_total", "std_total",
-        "margin_confidence", "totals_confidence", "overall_confidence",
-        "actual_home_score", "actual_away_score", "actual_margin", "actual_total",
-        "margin_delta", "total_delta", "prediction_correct",
-        "mcciw", "psnr", "aser", "rosa", "evr", "pmdcr", "drar"
-    ]
-    df = pd.DataFrame(predictions)
-    if "monte_ci" in df.columns:
-        df["monte_ci"] = df["monte_ci"].apply(lambda x: str(x) if pd.notnull(x) else x)
+def save_predictions_to_csv(predictions: list, csv_file: str = PREDICTIONS_CSV):
+    formatted_preds = [format_prediction(pred) for pred in predictions]
+    df = pd.DataFrame(formatted_preds, columns=CSV_COLUMNS)
     df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.strftime('%m/%d/%y')
-    for col in csv_columns:
-        if col not in df.columns:
-            df[col] = None
-    df = df[csv_columns]
     df.to_csv(csv_file, index=False)
-    st.success("All predictions saved to CSV!")
+    st.success(f"All predictions saved to {csv_file}!")
 
 # =============================================================================
 # Team Models & Prediction Functions
@@ -628,6 +904,21 @@ def predict_team_score(team, stack_models, arima_models, team_stats, team_data):
     return round_half(ensemble_calibrated), (conf_low, conf_high)
 
 def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
+    """
+    Evaluate the matchup by calculating the predicted margin, total points, 
+    and a baseline confidence metric. Then, if available, update the bet using
+    live bookmaker odds via calibration.
+    
+    Args:
+        home_team (str): Home team abbreviation.
+        away_team (str): Away team abbreviation.
+        home_pred (float): Predicted score for the home team.
+        away_pred (float): Predicted score for the away team.
+        team_stats (dict): Dictionary of team statistics.
+    
+    Returns:
+        dict: A dictionary containing matchup evaluation metrics.
+    """
     if home_pred is None or away_pred is None:
         return None
     diff = home_pred - away_pred
@@ -645,16 +936,39 @@ def evaluate_matchup(home_team, away_team, home_pred, away_pred, team_stats):
     baseline_conf = max(1, min(99, baseline_conf - penalty))
     winner = home_team if diff > 0 else away_team
     ou_threshold = 145
-    spread_suggestion = f"Lean {winner} by {round_half(diff):.1f}"
-    ou_suggestion = f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round_half(total_points):.1f} points"
-    return {
+    spread_suggestion = f"Lean {winner} by {round(diff,1)}"
+    ou_suggestion = f"Take the {'Over' if total_points > ou_threshold else 'Under'} {round(total_points,1)} points"
+    
+    # Create the initial bet dictionary with model predictions.
+    bet = {
+        'home_team': home_team,
+        'away_team': away_team,
         'predicted_winner': winner,
-        'diff': round_half(diff),
-        'total_points': round_half(total_points),
+        'predicted_diff': diff,
+        'predicted_total': total_points,
         'confidence': baseline_conf,
+        'win_probability': baseline_conf  # Example: using baseline_conf as a proxy; adjust as needed.
+    }
+    
+    # Fetch live bookmaker odds for the game.
+    # For example, use your fetch_odds_for_game function:
+    bookmaker_data = fetch_odds_for_game(bet)
+    if bookmaker_data is not None and 'spread' in bookmaker_data:
+        # For illustration, suppose the moneyline odds are available.
+        # Here, we assume bookmaker_odds = [odds_home, odds_away].
+        bookmaker_odds = [1.90, 2.00]  # Replace this with actual fetched odds if available.
+        
+        # Calibrate the bet using the bookmaker odds.
+        bet = evaluate_bet_with_calibration(bet, bookmaker_odds)
+    
+    # Add additional matchup evaluation metrics.
+    bet.update({
+        'diff': round(diff, 1),
+        'total_points': round(total_points, 1),
         'spread_suggestion': spread_suggestion,
         'ou_suggestion': ou_suggestion
-    }
+    })
+    return bet
 
 # =============================================================================
 # Social Media Post Generation Functions
@@ -764,7 +1078,7 @@ def display_generated_post(bet):
 # =============================================================================
 # Logo Merge Functions
 # =============================================================================
-def merge_ncaa_team_logos(team1, team2, output_path="merged_ncaa_logo.png", target_height=200, bg_color=(0,0,0)):
+def merge_ncaa_team_logos(team1, team2, output_path="merged_ncaa_logo.png", target_height=200, bg_color=(255,255,255)):
     base_dir = "ncaa_image"
     def get_logo(team_name):
         expected = team_name.strip().replace(" ", "_") + "_logo.png"
@@ -827,8 +1141,18 @@ def generate_audio_from_text(text, audio_output="generated_audio.mp3"):
         print(f"Error generating audio from text: {e}")
         return None
 
+def get_random_video(directory: str) -> str:
+    video_files = [
+        os.path.join(directory, file)
+        for file in os.listdir(directory)
+        if file.lower().endswith((".mp4", ".mov", ".avi"))
+    ]
+    if not video_files:
+        raise FileNotFoundError(f"No video files found in the '{directory}' directory.")
+    return random.choice(video_files)
+
 def generate_tiktok_video(bet: dict, output_file: str = None, default_duration: int = 10,
-                          video_width: int = 1080, video_height: int = 1920, bg_color: tuple = (0, 0, 0)) -> str:
+                          video_width: int = 1080, video_height: int = 1920, bg_color: tuple = (255, 255, 255)) -> str:
     if output_file is None:
         bet_date = bet.get('date')
         if isinstance(bet_date, datetime):
@@ -852,21 +1176,28 @@ def generate_tiktok_video(bet: dict, output_file: str = None, default_duration: 
         video_duration = default_duration
     background = ColorClip(size=(video_width, video_height), color=bg_color, duration=video_duration)
     with smooth_transition("Text Glitch Effect"):
-        text_clip = (TextClip(visual_text, fontsize=50, color='white', font='Arial-Bold',
+        text_clip = (TextClip(visual_text, fontsize=50, color='black', font='Arial-Bold',
                               method='caption', size=(video_width - 100, None))
-                     .set_position(('center', 'center')).set_duration(video_duration).crossfadein(0.5))
+                     .set_position(('center', 'center'))
+                     .set_duration(video_duration)
+                     .crossfadein(0.5))
     if bet.get('league') == "NCAAB":
         merged_logo_path = merge_ncaa_team_logos(bet.get('home_team', ''), bet.get('away_team', ''))
     else:
         merged_logo_path = merge_team_logos(bet.get('home_team', ''), bet.get('away_team', ''))
     with smooth_transition("Logo Swipe In"):
         if merged_logo_path and Path(merged_logo_path).exists():
-            logo_clip = (ImageClip(merged_logo_path).resize(height=300)
-                         .set_position(('center', 100)).set_duration(video_duration).crossfadein(0.7))
+            logo_clip = (ImageClip(merged_logo_path)
+                         .resize(height=300)
+                         .set_position(('center', 100))
+                         .set_duration(video_duration)
+                         .crossfadein(0.7))
     with smooth_transition("Final CTA Explosion"):
         final_cta = (TextClip("💰 DOUBLE TAP IF TAILING! 💰", fontsize=60, color="yellow", font="Arial-Bold",
                               method="caption", size=(video_width - 100, None))
-                     .set_position(('center', video_height - 300)).set_duration(3).crossfadein(0.5))
+                     .set_position(('center', video_height - 300))
+                     .set_duration(3)
+                     .crossfadein(0.5))
     if merged_logo_path and Path(merged_logo_path).exists():
         final_clip = CompositeVideoClip([background, logo_clip, text_clip, final_cta])
     else:
@@ -878,7 +1209,17 @@ def generate_tiktok_video(bet: dict, output_file: str = None, default_duration: 
             print(f"Error setting audio: {e}")
     else:
         print("No audio to attach.")
-    final_clip.write_videofile(output_file, fps=24, codec='libx264')
+    try:
+        intro_dir = "intro_vids"
+        outro_dir = "outro_vids"
+        intro_video_path = get_random_video(intro_dir)
+        outro_video_path = get_random_video(outro_dir)
+        intro_clip = VideoFileClip(intro_video_path)
+        outro_clip = VideoFileClip(outro_video_path)
+        final_clip = concatenate_videoclips([intro_clip, final_clip, outro_clip])
+    except Exception as e:
+        print(f"Error appending intro/outro videos: {e}")
+    final_clip.write_videofile(output_file, fps=24, codec='libx264', audio_codec='aac')
     return output_file
 
 # =============================================================================
@@ -890,6 +1231,21 @@ def smooth_transition(label=""):
     yield
     end = time.time()
     print(f"⏳ Transition '{label}' took {end - start:.2f} seconds.")
+
+if not hasattr(st, "status"):
+    @contextmanager
+    def status(label, expanded=True):
+        placeholder = st.empty()
+        placeholder.info(label)
+        class Status:
+            def update(self, label, state):
+                placeholder.info(label)
+        status_obj = Status()
+        try:
+            yield status_obj
+        finally:
+            placeholder.empty()
+    st.status = status
 
 # =============================================================================
 # NFL, NBA, and NCAAB Data Functions
@@ -1022,7 +1378,7 @@ def fetch_upcoming_nba_games(days_ahead=3):
     pt_timezone = pytz.timezone('America/Los_Angeles')
     now = datetime.now(pt_timezone)
     upcoming_rows = []
-    for offset in range(days_ahead + 7):
+    for offset in range(days_ahead + 1):
         date_target = now + timedelta(days=offset)
         date_str = date_target.strftime('%Y-%m-%d')
         scoreboard = ScoreboardV2(game_date=date_str)
@@ -1137,7 +1493,7 @@ def update_predictions_with_results(predictions_csv="predictions.csv", league="N
         df_preds = pd.read_csv(predictions_csv, parse_dates=["date"])
     except Exception as e:
         print(f"Error loading predictions CSV: {e}")
-        return pd.DataFrame()  # Return empty DataFrame if CSV load fails
+        return None
     if league == "NBA":
         df_history = load_nba_data()
         if "pts" in df_history.columns:
@@ -1149,7 +1505,7 @@ def update_predictions_with_results(predictions_csv="predictions.csv", league="N
         df_history = load_ncaab_data_current_season(season=2025)
     else:
         print("Unsupported league specified.")
-        return pd.DataFrame()
+        return None
     updated_rows = []
     for idx, pred in df_preds.iterrows():
         try:
@@ -1200,29 +1556,33 @@ def update_predictions_with_results(predictions_csv="predictions.csv", league="N
     return updated_df
 
 def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
-    sport_key_map = {"NFL": "americanfootball_nfl", "NBA": "basketball_nba", "NCAAB": "basketball_ncaab"}
-    sport_key = sport_key_map.get(league_choice, "")
-    selected_market = "spreads"
-    odds_data = fetch_odds(odds_api_key, sport_key, selected_market)
+    """
+    Updates the predictions with odds data by loading the odds CSV file.
+    """
+    odds_df = load_odds_csv()
+    if odds_df.empty:
+        st.warning("No odds data available from CSV. Please fetch odds first.")
+        return predictions
+    odds_data = odds_df.to_dict('records')
+    
     def map_team_name(team_name):
         default_mapping = {"New England Patriots": "New England Patriots", "Dallas Cowboys": "Dallas Cowboys"}
         if league_choice == "NBA":
             return nba_mapping.get(team_name, team_name)
         else:
             return default_mapping.get(team_name, team_name)
+    
     def get_bookmaker_spread(mapped_team_name, odds_data):
         for event in odds_data:
             home_api_name = map_team_name(event.get("home_team", ""))
             away_api_name = map_team_name(event.get("away_team", ""))
             if mapped_team_name in (home_api_name, away_api_name):
-                for bm in event.get("bookmakers", []):
-                    if bm.get("key") == "bovada":
-                        for market in bm.get("markets", []):
-                            if market.get("key") == "spreads":
-                                for outcome in market.get("outcomes", []):
-                                    if mapped_team_name == map_team_name(outcome.get("name", "")):
-                                        return outcome.get("point")
+                try:
+                    return float(event.get("spread", 0))
+                except:
+                    return None
         return None
+    
     for pred in predictions:
         home_mapped = map_team_name(pred["home_team"])
         away_mapped = map_team_name(pred["away_team"])
@@ -1235,6 +1595,9 @@ def compare_predictions_with_odds(predictions, league_choice, odds_api_key):
         pred["bookmaker_spread"] = bookmaker_spread
     return predictions
 
+# =============================================================================
+# Instagram & Scheduler Functions
+# =============================================================================
 def login_to_instagram(username, password):
     client = Client()
     try:
@@ -1271,30 +1634,46 @@ def show_instagram_scheduler_section(current_league):
         else:
             st.info("No predictions available for today.")
     if "todays_predictions" in st.session_state:
-        selected_prediction = st.selectbox("Select a game to generate post content",
-                                             st.session_state['todays_predictions'],
-                                             format_func=lambda p: f"{p['away_team']} @ {p['home_team']} - Winner: {p['predicted_winner']}")
+        selected_prediction = st.selectbox(
+            "Select a game to generate post content",
+            st.session_state['todays_predictions'],
+            format_func=lambda p: f"{p['away_team']} @ {p['home_team']} - Winner: {p['predicted_winner']}"
+        )
         if selected_prediction:
             display_generated_post(selected_prediction)
             if current_league == "NCAAB":
                 merged_image_path = merge_ncaa_team_logos(selected_prediction['home_team'], selected_prediction['away_team'])
             else:
                 merged_image_path = merge_team_logos(selected_prediction['home_team'], selected_prediction['away_team'])
-            if merged_image_path:
+            if merged_image_path and Path(merged_image_path).exists():
                 st.markdown("Automatically merged team logos:")
                 st.image(merged_image_path, width=300)
+                image_path_default = merged_image_path
             else:
-                st.info("Could not automatically merge logos; please provide an image path manually.")
+                st.info("Merged logo not found; generating fallback image using prediction text.")
+                fallback_text = generate_social_media_post(selected_prediction)
+                fallback_img = Image.new('RGB', (1080, 1080), color=(255, 255, 255))
+                draw = ImageDraw.Draw(fallback_img)
+                try:
+                    font = ImageFont.truetype("arial.ttf", 40)
+                except Exception:
+                    font = ImageFont.load_default()
+                draw.multiline_text((50, 50), fallback_text, fill=(0, 0, 0), font=font)
+                fallback_img_path = "fallback_post.png"
+                fallback_img.save(fallback_img_path)
+                st.image(fallback_img_path, width=300)
+                image_path_default = fallback_img_path
+            
             st.markdown("### Schedule / Post Now")
             scheduled_date = st.date_input("Scheduled Date", datetime.now().date())
             scheduled_time = st.time_input("Scheduled Time", datetime.now().time())
-            image_path = st.text_input("Image Path (local file path)", value=merged_image_path if merged_image_path else "", key="img_path")
+            image_path_input = st.text_input("Image Path (local file path)", value=image_path_default, key="img_path")
             if st.button("Schedule Post"):
                 scheduled_datetime = datetime.combine(scheduled_date, scheduled_time)
                 client = st.session_state.get('instagram_client')
                 if client is None:
                     st.error("Please log in to Instagram first.")
-                elif not image_path or not Path(image_path).exists():
+                elif not image_path_input or not Path(image_path_input).exists():
                     st.error("Please provide a valid image file path.")
                 else:
                     st.info("Scheduling post...")
@@ -1305,35 +1684,24 @@ def show_instagram_scheduler_section(current_league):
                         delay = 0
                     st.info(f"Post will be submitted in {int(delay)} seconds.")
                     time.sleep(delay)
-                    post_to_instagram(client, generate_social_media_post(selected_prediction), image_path)
+                    post_to_instagram(client, generate_social_media_post(selected_prediction), image_path_input)
 
-def login_with_rest(email, password):
-    try:
-        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={st.secrets['general']['firebaseApiKey']}"
-        payload = {"email": email, "password": password, "returnSecureToken": True}
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error("Invalid credentials.")
-            return None
-    except Exception as e:
-        st.error(f"Error during login: {e}")
-        return None
+# =============================================================================
+# New: Single-Game Odds Fetch Button Functionality
+# =============================================================================
+def fetch_odds_for_prediction(bet):
+    """Fetch odds for a single game and update the bet dictionary."""
+    new_odds = fetch_odds_for_game(bet)
+    if new_odds is not None:
+        bet["bookmaker_spread"] = new_odds
+        st.success(f"Fetched Odds for this game: {new_odds}")
+    else:
+        st.warning("No odds data found for this game.")
+    return bet
 
-def signup_user(email, password):
-    try:
-        user = auth.create_user(email=email, password=password)
-        st.success(f"User {email} created successfully!")
-        return user
-    except Exception as e:
-        st.error(f"Error: {e}")
-
-def logout_user():
-    for key in ['email', 'logged_in']:
-        if key in st.session_state:
-            del st.session_state[key]
-
+# =============================================================================
+# Display Bet Card (updated with single-game odds button)
+# =============================================================================
 def display_bet_card(bet, team_stats_global, team_data=None):
     conf = bet['confidence']
     if conf >= 80:
@@ -1361,6 +1729,10 @@ def display_bet_card(bet, team_stats_global, team_data=None):
                 f"<h3 style='color:{confidence_color};' title='{tooltip_text}'>{bet['overall_confidence']:.1f}% Confidence</h3>",
                 unsafe_allow_html=True,
             )
+    # NEW: Display fetched odds if available.
+    if bet.get("bookmaker_spread") is not None or bet.get("bookmaker_total") is not None:
+        st.markdown(f"**Fetched Odds:** Spread: {bet.get('bookmaker_spread', 'N/A')}, Total: {bet.get('bookmaker_total', 'N/A')}")
+    
     st.expander("Detailed Insights", expanded=False).write(
         f"**Predicted Winner:** {bet['predicted_winner']}\n\n"
         f"**Predicted Total Points:** {bet['predicted_total']}\n\n"
@@ -1396,6 +1768,15 @@ def display_bet_card(bet, team_stats_global, team_data=None):
     if st.button("Manual Odds Update", key=f"manual_odds_{bet['date']}_{bet['home_team']}_{bet['away_team']}"):
         st.text_input("Enter Home Spread", key=f"manual_home_{bet['date']}_{bet['home_team']}_{bet['away_team']}")
         st.text_input("Enter Game Total", key=f"manual_total_{bet['date']}_{bet['home_team']}_{bet['away_team']}")
+    # NEW: Single-Game Odds Fetch button.
+    if st.button("Fetch Odds for this Game", key=f"fetch_odds_{bet['home_team']}_{bet['away_team']}_{bet['date']}"):
+        odds = fetch_odds_for_game(bet)
+        if odds is not None:
+            bet["bookmaker_spread"] = odds.get("spread")
+            bet["bookmaker_total"] = odds.get("total")
+            st.success(f"Fetched Odds - Spread: {bet['bookmaker_spread']}, Total: {bet['bookmaker_total']}")
+        else:
+            st.warning("No odds data found for this game.")
     if st.button("Save This Prediction", key=f"save_{bet['date']}_{bet['home_team']}_{bet['away_team']}"):
         save_prediction_to_csv(bet)
     if team_data is not None:
@@ -1568,155 +1949,10 @@ def display_additional_analytics():
         ax8.set_title("Correlation Matrix of KPIs and Errors", pad=20)
         st.pyplot(fig8)
 
-def display_performance_dashboard():
-    st.title("Performance Dashboard")
-    file = Path(CSV_FILE)
-    if not file.exists():
-        st.info("No predictions file found.")
-        return
-    try:
-        df = pd.read_csv(CSV_FILE, parse_dates=["date"])
-    except Exception as e:
-        st.error(f"Error loading predictions CSV: {e}")
-        return
-    df['date'] = pd.to_datetime(df['date'], errors='coerce')
-    df = df.sort_values('date')
-    if 'prediction_correct' in df.columns:
-        win_rate = df['prediction_correct'].mean() * 100
-    else:
-        win_rate = 0
-    avg_confidence = df['overall_confidence'].mean() if 'overall_confidence' in df.columns else 0
-    pred_count = df.shape[0]
-    tab_overview, tab_historical, tab_distribution, tab_bookmaker, tab_high_confidence, tab_team_insights, tab_betting_insights, tab_additional = st.tabs(
-        ["Overview", "Historical Trends", "Prediction Distribution", "Performance vs. Bookmaker", "High-Confidence Picks", "League & Team Insights", "Betting Insights", "Post-Game Analysis & KPIs"]
-    )
-    with tab_overview:
-        st.header("Overview")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Win Rate", f"{win_rate:.1f}%")
-        col2.metric("Avg. Overall Confidence", f"{avg_confidence:.1f}%")
-        col3.metric("Total Predictions", pred_count)
-        st.subheader("Summary Table")
-        st.dataframe(df)
-        st.subheader("Performance & Betting Insights Summary")
-        if 'actual_total' in df.columns and df['actual_total'].notna().all() and 'predicted_total' in df.columns:
-            mae_val = np.mean(np.abs(df['actual_total'] - df['predicted_total']))
-            rmse_val = np.sqrt(np.mean((df['actual_total'] - df['predicted_total'])**2))
-            mape_val = np.mean(np.abs((df['actual_total'] - df['predicted_total']) / df['actual_total'])) * 100
-            error_metrics_str = (
-                f"Total Points Prediction Error Metrics:\n"
-                f"• MAE: {mae_val:.2f}\n"
-                f"• RMSE: {rmse_val:.2f}\n"
-                f"• MAPE: {mape_val:.2f}%\n"
-            )
-        else:
-            error_metrics_str = ""
-        summary_text = (
-            f"Aggregated Model Performance Summary:\n"
-            f"• Overall Win Rate: {win_rate:.1f}% based on {pred_count} predictions.\n"
-            f"• Average Overall Confidence: {avg_confidence:.1f}%.\n"
-            f"{error_metrics_str}\n"
-        )
-        if win_rate >= 70 and avg_confidence >= 75:
-            summary_text += "The model exhibits robust performance, indicating strong betting opportunities. Consider leveraging aggressive wagering strategies."
-        elif win_rate >= 50 and avg_confidence >= 60:
-            summary_text += "The model shows moderate performance; adjusting wager sizes and further analysis on select picks may optimize returns."
-        else:
-            summary_text += "Model performance appears limited; proceed with caution or conduct additional research to validate predictions before wagering."
-        st.text(summary_text)
-    with tab_historical:
-        st.header("Historical Trends")
-        if 'prediction_correct' in df.columns:
-            daily_win_rate = df.groupby(df['date'].dt.date)['prediction_correct'].mean() * 100
-            st.subheader("Win Rate Over Time")
-            st.line_chart(daily_win_rate)
-        if 'overall_confidence' in df.columns:
-            daily_confidence = df.groupby(df['date'].dt.date)['overall_confidence'].mean()
-            st.subheader("Average Confidence Over Time")
-            st.line_chart(daily_confidence)
-    with tab_distribution:
-        st.header("Prediction Distribution")
-        if 'predicted_diff' in df.columns:
-            st.subheader("Histogram of Predicted Margin")
-            fig, ax = plt.subplots()
-            ax.hist(df['predicted_diff'], bins=20, color='skyblue', edgecolor='white')
-            if 'monte_mean_diff' in df.columns and df['monte_mean_diff'].notna().all():
-                ax.axvline(df['monte_mean_diff'].mean(), color='red', linestyle='--', label='Mean Margin')
-                ax.legend()
-            st.pyplot(fig)
-        if 'actual_margin' in df.columns and df['actual_margin'].notna().all() and 'predicted_diff' in df.columns:
-            st.subheader("Predicted vs. Actual Margin")
-            fig2, ax2 = plt.subplots()
-            ax2.scatter(df['predicted_diff'], df['actual_margin'], color='green', alpha=0.6)
-            ax2.set_xlabel("Predicted Margin")
-            ax2.set_ylabel("Actual Margin")
-            ax2.set_title("Scatter Plot of Predicted vs. Actual Margin")
-            st.pyplot(fig2)
-    with tab_bookmaker:
-        st.header("Performance vs. Bookmaker")
-        if 'bookmaker_spread' in df.columns:
-            st.subheader("Predicted Spread vs. Bookmaker Spread")
-            fig3, ax3 = plt.subplots()
-            ax3.scatter(df['predicted_diff'], df['bookmaker_spread'], color='purple', alpha=0.6)
-            ax3.plot([df['predicted_diff'].min(), df['predicted_diff'].max()],
-                     [df['predicted_diff'].min(), df['predicted_diff'].max()],
-                     color='black', linestyle='--')
-            ax3.set_xlabel("Predicted Spread")
-            ax3.set_ylabel("Bookmaker Spread")
-            ax3.set_title("Predicted vs. Bookmaker Spread")
-            st.pyplot(fig3)
-            st.subheader("Detailed Comparison")
-            st.dataframe(df[['home_team','away_team','predicted_diff','bookmaker_spread']])
-        else:
-            st.info("Bookmaker odds data not available in predictions.")
-    with tab_high_confidence:
-        st.header("High-Confidence Picks & Upset Alerts")
-        conf_threshold = st.slider("Minimum Confidence Level", 50.0, 99.0, 75.0, 5.0)
-        top_bets = find_top_bets(df.to_dict('records'), threshold=conf_threshold)
-        if not top_bets.empty:
-            st.dataframe(top_bets)
-        else:
-            st.info("No high-confidence picks found. Try lowering the threshold.")
-    with tab_team_insights:
-        st.header("League & Team Insights")
-        if 'home_team' in df.columns and 'predicted_diff' in df.columns:
-            team_perf = df.groupby('home_team')['predicted_diff'].mean().reset_index()
-            st.subheader("Average Predicted Margin by Home Team")
-            fig4, ax4 = plt.subplots()
-            ax4.bar(team_perf['home_team'], team_perf['predicted_diff'], color='teal')
-            ax4.set_xlabel("Team")
-            ax4.set_ylabel("Average Predicted Margin")
-            ax4.set_title("Team Performance Overview")
-            plt.xticks(rotation=45, ha='right')
-            st.pyplot(fig4)
-    with tab_betting_insights:
-        st.header("Betting Insights")
-        from sklearn.metrics import mean_absolute_error, mean_squared_error
-        if 'predicted_total' in df.columns and 'actual_total' in df.columns and df['actual_total'].notna().all():
-            mae = mean_absolute_error(df['actual_total'], df['predicted_total'])
-            rmse = np.sqrt(mean_squared_error(df['actual_total'], df['predicted_total']))
-            mape = np.mean(np.abs((df['actual_total'] - df['predicted_total']) / df['actual_total'])) * 100
-            st.subheader("Error Metrics for Total Points Predictions")
-            st.write(f"MAE: {mae:.2f}")
-            st.write(f"RMSE: {rmse:.2f}")
-            st.write(f"MAPE: {mape:.2f}%")
-        if 'predicted_diff' in df.columns and 'bookmaker_spread' in df.columns:
-            df['spread_deviation'] = df['predicted_diff'] - df['bookmaker_spread']
-            st.subheader("Spread Deviation Analysis")
-            st.write("The spread deviation highlights potential value plays when the predicted spread significantly differs from the bookmaker spread.")
-            st.dataframe(df[['home_team','away_team','predicted_diff','bookmaker_spread','spread_deviation']])
-        else:
-            st.info("Spread deviation analysis not available.")
-        st.subheader("Aggregated Betting Insights")
-        insights_list = []
-        for idx, row in df.iterrows():
-            insights = generate_betting_insights(row.to_dict())
-            insights_list.append(insights)
-        st.write("\n\n".join(insights_list))
-    with tab_additional:
-        display_additional_analytics()
-
-def load_todays_predictions(csv_file="predictions.csv"):
+def load_todays_predictions(csv_file="top_bets.csv"):
+    from pathlib import Path
+    import pandas as pd
+    from datetime import datetime
     file = Path(csv_file)
     if not file.exists():
         st.info("No predictions file found in the project directory.")
@@ -1726,22 +1962,29 @@ def load_todays_predictions(csv_file="predictions.csv"):
     except Exception as e:
         st.error(f"Error loading predictions: {e}")
         return []
-    try:
-        df['date'] = pd.to_datetime(df['date'], format='%m/%d/%y', errors='coerce')
-        df['date'] = df['date'].apply(lambda d: d.replace(year=d.year + 100) if d.year < 2000 else d)
-        df['date'] = df['date'].dt.date
-    except Exception as e:
-        st.error(f"Error parsing dates: {e}")
+    if 'date' not in df.columns:
+        st.error("The CSV file does not contain a 'date' column.")
         return []
-    if TEST_FIRST_PREDICTION_FROM_CSV:
-        if not df.empty:
-            return df.iloc[[0]].to_dict('records')
-        else:
-            return []
-    else:
-        today = datetime.now().date()
-        todays_df = df[df['date'] == today]
-        return todays_df.to_dict('records')
+    df['parsed_date'] = pd.to_datetime(df['date'], format='%m/%d/%y', errors='coerce')
+    if df['parsed_date'].isnull().mean() > 0.5:
+        df['parsed_date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
+    if df['parsed_date'].isnull().mean() > 0.5:
+        df['parsed_date'] = pd.to_datetime(df['date'], errors='coerce')
+    def adjust_year(d):
+        if pd.isnull(d):
+            return d
+        return d.replace(year=d.year + 100) if d.year < 2000 else d
+    df['parsed_date'] = df['parsed_date'].apply(adjust_year)
+    df['parsed_date'] = df['parsed_date'].dt.date
+    today = datetime.now().date()
+    todays_df = df[df['parsed_date'] == today]
+    return todays_df.to_dict('records')
+
+# =============================================================================
+# GLOBAL VARIABLES
+# =============================================================================
+results = []
+team_stats_global = {}
 
 # =============================================================================
 # run_league_pipeline Function
@@ -1776,12 +2019,6 @@ def run_league_pipeline(league_choice, odds_api_key):
         st.warning(f"No upcoming {league_choice} data available.")
         return
     if league_choice == "NBA":
-        # Make a copy to allow mutation of the cached DataFrame
-        team_data = team_data.copy()
-        # Check for 'def_rating' column; if missing, set default value
-        if 'def_rating' not in team_data.columns:
-            st.warning("def_rating column is missing. Defaulting to baseline value (e.g., 110) for all teams.")
-            team_data['def_rating'] = 110
         def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
         sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
         top_10 = set([t for t, r in sorted_def[:10]])
@@ -2179,10 +2416,11 @@ def display_performance_dashboard():
             insights = generate_betting_insights(row.to_dict())
             insights_list.append(insights)
         st.write("\n\n".join(insights_list))
-    with tab_additional:
-        display_additional_analytics()
 
-def load_todays_predictions(csv_file="predictions.csv"):
+def load_todays_predictions(csv_file="top_bets.csv"):
+    from pathlib import Path
+    import pandas as pd
+    from datetime import datetime
     file = Path(csv_file)
     if not file.exists():
         st.info("No predictions file found in the project directory.")
@@ -2192,27 +2430,963 @@ def load_todays_predictions(csv_file="predictions.csv"):
     except Exception as e:
         st.error(f"Error loading predictions: {e}")
         return []
-    try:
-        df['date'] = pd.to_datetime(df['date'], format='%m/%d/%y', errors='coerce')
-        df['date'] = df['date'].apply(lambda d: d.replace(year=d.year + 100) if d.year < 2000 else d)
-        df['date'] = df['date'].dt.date
-    except Exception as e:
-        st.error(f"Error parsing dates: {e}")
+    if 'date' not in df.columns:
+        st.error("The CSV file does not contain a 'date' column.")
         return []
-    if TEST_FIRST_PREDICTION_FROM_CSV:
-        if not df.empty:
-            return df.iloc[[0]].to_dict('records')
-        else:
-            return []
+    df['parsed_date'] = pd.to_datetime(df['date'], format='%m/%d/%y', errors='coerce')
+    if df['parsed_date'].isnull().mean() > 0.5:
+        df['parsed_date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
+    if df['parsed_date'].isnull().mean() > 0.5:
+        df['parsed_date'] = pd.to_datetime(df['date'], errors='coerce')
+    def adjust_year(d):
+        if pd.isnull(d):
+            return d
+        return d.replace(year=d.year + 100) if d.year < 2000 else d
+    df['parsed_date'] = df['parsed_date'].apply(adjust_year)
+    df['parsed_date'] = df['parsed_date'].dt.date
+    today = datetime.now().date()
+    todays_df = df[df['parsed_date'] == today]
+    return todays_df.to_dict('records')
+
+# =============================================================================
+# GLOBAL VARIABLES
+# =============================================================================
+results = []
+team_stats_global = {}
+
+# =============================================================================
+# run_league_pipeline Function
+# =============================================================================
+def run_league_pipeline(league_choice, odds_api_key):
+    st.header(f"Today's {league_choice} Best Bets")
+    run_fitter = st.sidebar.checkbox("Enable Distribution Fitting (Manual Trigger)", value=False, key="run_fitter")
+    if league_choice == "NFL":
+        schedule = load_nfl_schedule()
+        if schedule.empty:
+            st.error("Unable to load NFL schedule.")
+            return
+        team_data = preprocess_nfl_data(schedule)
+        upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
+    elif league_choice == "NBA":
+        team_data = load_nba_data()
+        if team_data.empty:
+            st.error("Unable to load NBA data.")
+            return
+        try:
+            upcoming = fetch_upcoming_nba_games(days_ahead=3)
+        except Exception as e:
+            st.error(f"Failed to fetch upcoming NBA games: {e}")
+            upcoming = pd.DataFrame()
     else:
-        today = datetime.now().date()
-        todays_df = df[df['date'] == today]
-        return todays_df.to_dict('records')
+        team_data = load_ncaab_data_current_season(season=2025)
+        if team_data.empty:
+            st.error("Unable to load NCAAB data.")
+            return
+        upcoming = fetch_upcoming_ncaab_games()
+    if team_data.empty or upcoming.empty:
+        st.warning(f"No upcoming {league_choice} data available.")
+        return
+    if league_choice == "NBA":
+        def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted(def_ratings.items(), key=lambda x: x[1], reverse=True)[:10]])
+    elif league_choice == "NFL":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
+    elif league_choice == "NCAAB":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
+    else:
+        top_10, bottom_10 = None, None
+    with st.spinner("Analyzing recent performance data..."):
+        if league_choice == "NCAAB" and DISABLE_TUNING_FOR_NCAAB:
+            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=True)
+        else:
+            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=False)
+        global team_stats_global
+        team_stats_global.update(team_stats)
+        results = []
+        for _, row in upcoming.iterrows():
+            home, away = row['home_team'], row['away_team']
+            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+            row_gameday = to_naive(row['gameday'])
+            if league_choice == "NBA" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 2
+                    elif rest_days_home >= 3:
+                        home_pred += 1
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 2
+                    elif rest_days_away >= 3:
+                        away_pred += 1
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
+            if outcome is None:
+                continue
+            if home in stack_models and away in stack_models:
+                last_features_home = team_data[team_data['team'] == home][['rolling_avg','rolling_std','weighted_avg']].tail(1)
+                last_features_away = team_data[team_data['team'] == away][['rolling_avg','rolling_std','weighted_avg']].tail(1)
+                if not last_features_home.empty and not last_features_away.empty:
+                    margin_sim = monte_carlo_simulation_margin(
+                        model_home=stack_models[home],
+                        model_away=stack_models[away],
+                        X_home=last_features_home.values,
+                        X_away=last_features_away.values,
+                        n_simulations=10000,
+                        error_std_home=team_stats[home]['std'],
+                        error_std_away=team_stats[away]['std'],
+                        random_seed=42,
+                        run_fitter=run_fitter
+                    )
+                    total_sim = monte_carlo_simulation_totals(
+                        model_home=stack_models[home],
+                        model_away=stack_models[away],
+                        X_home=last_features_home.values,
+                        X_away=last_features_away.values,
+                        n_simulations=10000,
+                        error_std_home=team_stats[home]['std'],
+                        error_std_away=team_stats[away]['std'],
+                        random_seed=42,
+                        run_fitter=run_fitter
+                    )
+                    monte_mean_diff = margin_sim["mean_diff"]
+                    monte_ci = margin_sim["ci"]
+                    win_rate = margin_sim["win_rate"]
+                    win_margin_rate = margin_sim["win_margin_rate"]
+                    monte_median = margin_sim["median_diff"]
+                    monte_std = margin_sim["std_diff"]
+                    simulated_diffs = margin_sim["simulated_diffs"]
+                    mean_total = total_sim["mean_total"]
+                    over_threshold = total_sim["over_threshold"]
+                    under_threshold = total_sim["under_threshold"]
+                    median_total = total_sim["median_total"]
+                    std_total = total_sim["std_total"]
+                    simulated_totals = total_sim["simulated_totals"]
+                    total_range = under_threshold - over_threshold
+                    totals_confidence = max(1, min(99, 100 - (total_range / mean_total * 100))) if mean_total != 0 else 50
+                    margin_confidence = (win_rate + win_margin_rate) / 2
+                    overall_confidence = (margin_confidence + totals_confidence) / 2
+                else:
+                    monte_mean_diff = monte_ci = win_rate = win_margin_rate = monte_median = monte_std = None
+                    mean_total = over_threshold = under_threshold = median_total = std_total = None
+                    margin_confidence = totals_confidence = overall_confidence = outcome['confidence']
+            else:
+                monte_mean_diff = monte_ci = win_rate = win_margin_rate = monte_median = monte_std = None
+                mean_total = over_threshold = under_threshold = median_total = std_total = None
+                margin_confidence = totals_confidence = overall_confidence = outcome['confidence']
+            bet = {
+                'date': row['gameday'],
+                'league': league_choice,
+                'home_team': home,
+                'away_team': away,
+                'home_pred': home_pred,
+                'away_pred': away_pred,
+                'predicted_winner': outcome['predicted_winner'],
+                'predicted_diff': outcome['diff'],
+                'predicted_total': outcome['total_points'],
+                'confidence': overall_confidence,
+                'spread_suggestion': outcome['spread_suggestion'],
+                'ou_suggestion': outcome['ou_suggestion'],
+                'monte_mean_diff': monte_mean_diff,
+                'monte_ci': monte_ci,
+                'win_probability': win_rate,
+                'win_margin_rate': win_margin_rate,
+                'monte_median': monte_median,
+                'monte_std': monte_std,
+                'simulated_diffs': simulated_diffs.tolist() if simulated_diffs is not None else None,
+                'mean_total': mean_total,
+                'over_threshold': over_threshold,
+                'under_threshold': under_threshold,
+                'median_total': median_total,
+                'std_total': std_total,
+                'simulated_totals': simulated_totals.tolist() if simulated_totals is not None else None,
+                'margin_confidence': margin_confidence,
+                'totals_confidence': totals_confidence,
+                'overall_confidence': overall_confidence
+            }
+            results.append(bet)
+        view_mode = st.radio("View Mode", ["Top Bets Only", "All Games"], horizontal=True)
+        if view_mode == "Top Bets Only":
+            conf_threshold = st.slider("Minimum Confidence Level", 50.0, 99.0, 75.0, 5.0)
+            top_bets = find_top_bets(results, threshold=conf_threshold)
+            if not top_bets.empty:
+                st.markdown(f"### Top {len(top_bets)} Bets for Today")
+                previous_date = None
+                for _, bet_row in top_bets.iterrows():
+                    bet = bet_row.to_dict()
+                    current_date = bet['date'].date() if isinstance(bet['date'], datetime) else bet['date']
+                    if previous_date != current_date:
+                        if isinstance(bet['date'], datetime):
+                            st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                        else:
+                            st.markdown(f"## {bet['date']}")
+                        previous_date = current_date
+                    display_bet_card(bet, team_stats_global, team_data=team_data)
+            else:
+                st.info("No high-confidence bets found. Try lowering the threshold.")
+        else:
+            if results:
+                st.markdown("### All Games Analysis")
+                sorted_results = sorted(results, key=lambda x: x['date'])
+                previous_date = None
+                for bet in sorted_results:
+                    current_date = bet['date'].date() if isinstance(bet['date'], datetime) else bet['date']
+                    if previous_date != current_date:
+                        if isinstance(bet['date'], datetime):
+                            st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                        else:
+                            st.markdown(f"## {bet['date']}")
+                        previous_date = current_date
+                    display_bet_card(bet, team_stats_global, team_data=team_data)
+            else:
+                st.info(f"No upcoming {league_choice} games found.")
+        if st.button("Compare to Bookmaker Odds"):
+            compared_results = compare_predictions_with_odds(results.copy(), league_choice, st.secrets["odds_api"]["apiKey"])
+            st.session_state["compared_results"] = compared_results
+            st.markdown("## Comparison with Bookmaker Odds")
+            for idx, bet in enumerate(compared_results):
+                st.markdown("---")
+                st.markdown(f"### {bet['away_team']} @ {bet['home_team']}")
+                st.write(f"Predicted Spread: {bet['predicted_diff']}")
+                if bet.get("bookmaker_spread") is not None:
+                    st.write(f"Bookmaker Spread: {bet['bookmaker_spread']}")
+                else:
+                    st.write("Bookmaker Spread: Data not available")
+                st.write(f"Confidence: {bet['confidence']}%")
+        if st.button("Save All Predictions to CSV"):
+            if results:
+                save_predictions_to_csv(results, csv_file=CSV_FILE)
+            else:
+                st.warning("No predictions to save.")
+
+def display_performance_dashboard():
+    st.title("Performance Dashboard")
+    file = Path(CSV_FILE)
+    if not file.exists():
+        st.info("No predictions file found.")
+        return
+    try:
+        df = pd.read_csv(CSV_FILE, parse_dates=["date"])
+    except Exception as e:
+        st.error(f"Error loading predictions CSV: {e}")
+        return
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df = df.sort_values('date')
+    if 'prediction_correct' in df.columns:
+        win_rate = df['prediction_correct'].mean() * 100
+    else:
+        win_rate = 0
+    avg_confidence = df['overall_confidence'].mean() if 'overall_confidence' in df.columns else 0
+    pred_count = df.shape[0]
+    tab_overview, tab_historical, tab_distribution, tab_bookmaker, tab_high_confidence, tab_team_insights, tab_betting_insights, tab_additional = st.tabs(
+        ["Overview", "Historical Trends", "Prediction Distribution", "Performance vs. Bookmaker", "High-Confidence Picks", "League & Team Insights", "Betting Insights", "Post-Game Analysis & KPIs"]
+    )
+    with tab_overview:
+        st.header("Overview")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Win Rate", f"{win_rate:.1f}%")
+        col2.metric("Avg. Overall Confidence", f"{avg_confidence:.1f}%")
+        col3.metric("Total Predictions", pred_count)
+        st.subheader("Summary Table")
+        st.dataframe(df)
+        st.subheader("Performance & Betting Insights Summary")
+        if 'actual_total' in df.columns and df['actual_total'].notna().all() and 'predicted_total' in df.columns:
+            mae_val = np.mean(np.abs(df['actual_total'] - df['predicted_total']))
+            rmse_val = np.sqrt(np.mean((df['actual_total'] - df['predicted_total'])**2))
+            mape_val = np.mean(np.abs((df['actual_total'] - df['predicted_total']) / df['actual_total'])) * 100
+            error_metrics_str = (
+                f"Total Points Prediction Error Metrics:\n"
+                f"• MAE: {mae_val:.2f}\n"
+                f"• RMSE: {rmse_val:.2f}\n"
+                f"• MAPE: {mape_val:.2f}%\n"
+            )
+        else:
+            error_metrics_str = ""
+        summary_text = (
+            f"Aggregated Model Performance Summary:\n"
+            f"• Overall Win Rate: {win_rate:.1f}% based on {pred_count} predictions.\n"
+            f"• Average Overall Confidence: {avg_confidence:.1f}%.\n"
+            f"{error_metrics_str}\n"
+        )
+        if win_rate >= 70 and avg_confidence >= 75:
+            summary_text += "The model exhibits robust performance, indicating strong betting opportunities. Consider leveraging aggressive wagering strategies."
+        elif win_rate >= 50 and avg_confidence >= 60:
+            summary_text += "The model shows moderate performance; adjusting wager sizes and further analysis on select picks may optimize returns."
+        else:
+            summary_text += "Model performance appears limited; proceed with caution or conduct additional research to validate predictions before wagering."
+        st.text(summary_text)
+    with tab_historical:
+        st.header("Historical Trends")
+        if 'prediction_correct' in df.columns:
+            daily_win_rate = df.groupby(df['date'].dt.date)['prediction_correct'].mean() * 100
+            st.subheader("Win Rate Over Time")
+            st.line_chart(daily_win_rate)
+        if 'overall_confidence' in df.columns:
+            daily_confidence = df.groupby(df['date'].dt.date)['overall_confidence'].mean()
+            st.subheader("Average Confidence Over Time")
+            st.line_chart(daily_confidence)
+    with tab_distribution:
+        st.header("Prediction Distribution")
+        if 'predicted_diff' in df.columns:
+            st.subheader("Histogram of Predicted Margin")
+            fig, ax = plt.subplots()
+            ax.hist(df['predicted_diff'], bins=20, color='skyblue', edgecolor='white')
+            if 'monte_mean_diff' in df.columns and df['monte_mean_diff'].notna().all():
+                ax.axvline(df['monte_mean_diff'].mean(), color='red', linestyle='--', label='Mean Margin')
+                ax.legend()
+            st.pyplot(fig)
+        if 'actual_margin' in df.columns and df['actual_margin'].notna().all() and 'predicted_diff' in df.columns:
+            st.subheader("Predicted vs. Actual Margin")
+            fig2, ax2 = plt.subplots()
+            ax2.scatter(df['predicted_diff'], df['actual_margin'], color='green', alpha=0.6)
+            ax2.set_xlabel("Predicted Margin")
+            ax2.set_ylabel("Actual Margin")
+            ax2.set_title("Scatter Plot of Predicted vs. Actual Margin")
+            st.pyplot(fig2)
+    with tab_bookmaker:
+        st.header("Performance vs. Bookmaker")
+        if 'bookmaker_spread' in df.columns:
+            st.subheader("Predicted Spread vs. Bookmaker Spread")
+            fig3, ax3 = plt.subplots()
+            ax3.scatter(df['predicted_diff'], df['bookmaker_spread'], color='purple', alpha=0.6)
+            ax3.plot([df['predicted_diff'].min(), df['predicted_diff'].max()],
+                     [df['predicted_diff'].min(), df['predicted_diff'].max()],
+                     color='black', linestyle='--')
+            ax3.set_xlabel("Predicted Spread")
+            ax3.set_ylabel("Bookmaker Spread")
+            ax3.set_title("Predicted vs. Bookmaker Spread")
+            st.pyplot(fig3)
+            st.subheader("Detailed Comparison")
+            st.dataframe(df[['home_team','away_team','predicted_diff','bookmaker_spread']])
+        else:
+            st.info("Bookmaker odds data not available in predictions.")
+    with tab_high_confidence:
+        st.header("High-Confidence Picks & Upset Alerts")
+        conf_threshold = st.slider("Minimum Confidence Level", 50.0, 99.0, 75.0, 5.0)
+        top_bets = find_top_bets(df.to_dict('records'), threshold=conf_threshold)
+        if not top_bets.empty:
+            st.dataframe(top_bets)
+        else:
+            st.info("No high-confidence picks found. Try lowering the threshold.")
+    with tab_team_insights:
+        st.header("League & Team Insights")
+        if 'home_team' in df.columns and 'predicted_diff' in df.columns:
+            team_perf = df.groupby('home_team')['predicted_diff'].mean().reset_index()
+            st.subheader("Average Predicted Margin by Home Team")
+            fig4, ax4 = plt.subplots()
+            ax4.bar(team_perf['home_team'], team_perf['predicted_diff'], color='teal')
+            ax4.set_xlabel("Team")
+            ax4.set_ylabel("Average Predicted Margin")
+            ax4.set_title("Team Performance Overview")
+            plt.xticks(rotation=45, ha='right')
+            st.pyplot(fig4)
+    with tab_betting_insights:
+        st.header("Betting Insights")
+        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        if 'predicted_total' in df.columns and 'actual_total' in df.columns and df['actual_total'].notna().all():
+            mae = mean_absolute_error(df['actual_total'], df['predicted_total'])
+            rmse = np.sqrt(mean_squared_error(df['actual_total'], df['predicted_total']))
+            mape = np.mean(np.abs((df['actual_total'] - df['predicted_total']) / df['actual_total'])) * 100
+            st.subheader("Error Metrics for Total Points Predictions")
+            st.write(f"MAE: {mae:.2f}")
+            st.write(f"RMSE: {rmse:.2f}")
+            st.write(f"MAPE: {mape:.2f}%")
+        if 'predicted_diff' in df.columns and 'bookmaker_spread' in df.columns:
+            df['spread_deviation'] = df['predicted_diff'] - df['bookmaker_spread']
+            st.subheader("Spread Deviation Analysis")
+            st.write("The spread deviation highlights potential value plays when the predicted spread significantly differs from the bookmaker spread.")
+            st.dataframe(df[['home_team','away_team','predicted_diff','bookmaker_spread','spread_deviation']])
+        else:
+            st.info("Spread deviation analysis not available.")
+        st.subheader("Aggregated Betting Insights")
+        insights_list = []
+        for idx, row in df.iterrows():
+            insights = generate_betting_insights(row.to_dict())
+            insights_list.append(insights)
+        st.write("\n\n".join(insights_list))
+
+def load_todays_predictions(csv_file="top_bets.csv"):
+    from pathlib import Path
+    import pandas as pd
+    from datetime import datetime
+    file = Path(csv_file)
+    if not file.exists():
+        st.info("No predictions file found in the project directory.")
+        return []
+    try:
+        df = pd.read_csv(csv_file)
+    except Exception as e:
+        st.error(f"Error loading predictions: {e}")
+        return []
+    if 'date' not in df.columns:
+        st.error("The CSV file does not contain a 'date' column.")
+        return []
+    df['parsed_date'] = pd.to_datetime(df['date'], format='%m/%d/%y', errors='coerce')
+    if df['parsed_date'].isnull().mean() > 0.5:
+        df['parsed_date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
+    if df['parsed_date'].isnull().mean() > 0.5:
+        df['parsed_date'] = pd.to_datetime(df['date'], errors='coerce')
+    def adjust_year(d):
+        if pd.isnull(d):
+            return d
+        return d.replace(year=d.year + 100) if d.year < 2000 else d
+    df['parsed_date'] = df['parsed_date'].apply(adjust_year)
+    df['parsed_date'] = df['parsed_date'].dt.date
+    today = datetime.now().date()
+    todays_df = df[df['parsed_date'] == today]
+    return todays_df.to_dict('records')
 
 # =============================================================================
-# Main Pipeline: run_league_pipeline is now defined above main()
+# GLOBAL VARIABLES
 # =============================================================================
+results = []
+team_stats_global = {}
 
+# =============================================================================
+# run_league_pipeline Function (Main Prediction Pipeline)
+# =============================================================================
+def run_league_pipeline(league_choice, odds_api_key):
+    st.header(f"Today's {league_choice} Best Bets")
+    run_fitter = st.sidebar.checkbox("Enable Distribution Fitting (Manual Trigger)", value=False, key="run_fitter")
+    if league_choice == "NFL":
+        schedule = load_nfl_schedule()
+        if schedule.empty:
+            st.error("Unable to load NFL schedule.")
+            return
+        team_data = preprocess_nfl_data(schedule)
+        upcoming = fetch_upcoming_nfl_games(schedule, days_ahead=7)
+    elif league_choice == "NBA":
+        team_data = load_nba_data()
+        if team_data.empty:
+            st.error("Unable to load NBA data.")
+            return
+        try:
+            upcoming = fetch_upcoming_nba_games(days_ahead=3)
+        except Exception as e:
+            st.error(f"Failed to fetch upcoming NBA games: {e}")
+            upcoming = pd.DataFrame()
+    else:
+        team_data = load_ncaab_data_current_season(season=2025)
+        if team_data.empty:
+            st.error("Unable to load NCAAB data.")
+            return
+        upcoming = fetch_upcoming_ncaab_games()
+    if team_data.empty or upcoming.empty:
+        st.warning(f"No upcoming {league_choice} data available.")
+        return
+    if league_choice == "NBA":
+        def_ratings = team_data.groupby('team')['def_rating'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted(def_ratings.items(), key=lambda x: x[1], reverse=True)[:10]])
+    elif league_choice == "NFL":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
+    elif league_choice == "NCAAB":
+        def_ratings = team_data.groupby('team')['opp_score'].mean().to_dict()
+        sorted_def = sorted(def_ratings.items(), key=lambda x: x[1])
+        top_10 = set([t for t, r in sorted_def[:10]])
+        bottom_10 = set([t for t, r in sorted_def[-10:]])
+    else:
+        top_10, bottom_10 = None, None
+    with st.spinner("Analyzing recent performance data..."):
+        if league_choice == "NCAAB" and DISABLE_TUNING_FOR_NCAAB:
+            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=True)
+        else:
+            stack_models, arima_models, team_stats = train_team_models(team_data, disable_tuning=False)
+        global team_stats_global
+        team_stats_global.update(team_stats)
+        results = []
+        for _, row in upcoming.iterrows():
+            home, away = row['home_team'], row['away_team']
+            home_pred, _ = predict_team_score(home, stack_models, arima_models, team_stats, team_data)
+            away_pred, _ = predict_team_score(away, stack_models, arima_models, team_stats, team_data)
+            row_gameday = to_naive(row['gameday'])
+            if league_choice == "NBA" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            elif league_choice == "NFL" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 2
+                    elif rest_days_home >= 3:
+                        home_pred += 1
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 2
+                    elif rest_days_away >= 3:
+                        away_pred += 1
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            elif league_choice == "NCAAB" and home_pred is not None and away_pred is not None:
+                home_games = team_data[team_data['team'] == home]
+                if not home_games.empty:
+                    last_game_home = to_naive(home_games['gameday'].max())
+                    rest_days_home = (row_gameday - last_game_home).days
+                    if rest_days_home == 0:
+                        home_pred -= 3
+                    elif rest_days_home >= 3:
+                        home_pred += 2
+                away_games = team_data[team_data['team'] == away]
+                if not away_games.empty:
+                    last_game_away = to_naive(away_games['gameday'].max())
+                    rest_days_away = (row_gameday - last_game_away).days
+                    if rest_days_away == 0:
+                        away_pred -= 3
+                    elif rest_days_away >= 3:
+                        away_pred += 2
+                home_pred += 1
+                away_pred -= 1
+                if top_10 and bottom_10:
+                    if away in top_10:
+                        home_pred -= 2
+                    elif away in bottom_10:
+                        home_pred += 2
+                    if home in top_10:
+                        away_pred -= 2
+                    elif home in bottom_10:
+                        away_pred += 2
+            outcome = evaluate_matchup(home, away, home_pred, away_pred, team_stats)
+            if outcome is None:
+                continue
+            if home in stack_models and away in stack_models:
+                last_features_home = team_data[team_data['team'] == home][['rolling_avg','rolling_std','weighted_avg']].tail(1)
+                last_features_away = team_data[team_data['team'] == away][['rolling_avg','rolling_std','weighted_avg']].tail(1)
+                if not last_features_home.empty and not last_features_away.empty:
+                    margin_sim = monte_carlo_simulation_margin(
+                        model_home=stack_models[home],
+                        model_away=stack_models[away],
+                        X_home=last_features_home.values,
+                        X_away=last_features_away.values,
+                        n_simulations=10000,
+                        error_std_home=team_stats[home]['std'],
+                        error_std_away=team_stats[away]['std'],
+                        random_seed=42,
+                        run_fitter=run_fitter
+                    )
+                    total_sim = monte_carlo_simulation_totals(
+                        model_home=stack_models[home],
+                        model_away=stack_models[away],
+                        X_home=last_features_home.values,
+                        X_away=last_features_away.values,
+                        n_simulations=10000,
+                        error_std_home=team_stats[home]['std'],
+                        error_std_away=team_stats[away]['std'],
+                        random_seed=42,
+                        run_fitter=run_fitter
+                    )
+                    monte_mean_diff = margin_sim["mean_diff"]
+                    monte_ci = margin_sim["ci"]
+                    win_rate = margin_sim["win_rate"]
+                    win_margin_rate = margin_sim["win_margin_rate"]
+                    monte_median = margin_sim["median_diff"]
+                    monte_std = margin_sim["std_diff"]
+                    simulated_diffs = margin_sim["simulated_diffs"]
+                    mean_total = total_sim["mean_total"]
+                    over_threshold = total_sim["over_threshold"]
+                    under_threshold = total_sim["under_threshold"]
+                    median_total = total_sim["median_total"]
+                    std_total = total_sim["std_total"]
+                    simulated_totals = total_sim["simulated_totals"]
+                    total_range = under_threshold - over_threshold
+                    totals_confidence = max(1, min(99, 100 - (total_range / mean_total * 100))) if mean_total != 0 else 50
+                    margin_confidence = (win_rate + win_margin_rate) / 2
+                    overall_confidence = (margin_confidence + totals_confidence) / 2
+                else:
+                    monte_mean_diff = monte_ci = win_rate = win_margin_rate = monte_median = monte_std = None
+                    mean_total = over_threshold = under_threshold = median_total = std_total = None
+                    margin_confidence = totals_confidence = overall_confidence = outcome['confidence']
+            else:
+                monte_mean_diff = monte_ci = win_rate = win_margin_rate = monte_median = monte_std = None
+                mean_total = over_threshold = under_threshold = median_total = std_total = None
+                margin_confidence = totals_confidence = overall_confidence = outcome['confidence']
+            bet = {
+                'date': row['gameday'],
+                'league': league_choice,
+                'home_team': home,
+                'away_team': away,
+                'home_pred': home_pred,
+                'away_pred': away_pred,
+                'predicted_winner': outcome['predicted_winner'],
+                'predicted_diff': outcome['diff'],
+                'predicted_total': outcome['total_points'],
+                'confidence': overall_confidence,
+                'spread_suggestion': outcome['spread_suggestion'],
+                'ou_suggestion': outcome['ou_suggestion'],
+                'monte_mean_diff': monte_mean_diff,
+                'monte_ci': monte_ci,
+                'win_probability': win_rate,
+                'win_margin_rate': win_margin_rate,
+                'monte_median': monte_median,
+                'monte_std': monte_std,
+                'simulated_diffs': simulated_diffs.tolist() if simulated_diffs is not None else None,
+                'mean_total': mean_total,
+                'over_threshold': over_threshold,
+                'under_threshold': under_threshold,
+                'median_total': median_total,
+                'std_total': std_total,
+                'simulated_totals': simulated_totals.tolist() if simulated_totals is not None else None,
+                'margin_confidence': margin_confidence,
+                'totals_confidence': totals_confidence,
+                'overall_confidence': overall_confidence
+            }
+            results.append(bet)
+        view_mode = st.radio("View Mode", ["Top Bets Only", "All Games"], horizontal=True)
+        if view_mode == "Top Bets Only":
+            conf_threshold = st.slider("Minimum Confidence Level", 50.0, 99.0, 75.0, 5.0)
+            top_bets = find_top_bets(results, threshold=conf_threshold)
+            if not top_bets.empty:
+                st.markdown(f"### Top {len(top_bets)} Bets for Today")
+                previous_date = None
+                for _, bet_row in top_bets.iterrows():
+                    bet = bet_row.to_dict()
+                    current_date = bet['date'].date() if isinstance(bet['date'], datetime) else bet['date']
+                    if previous_date != current_date:
+                        if isinstance(bet['date'], datetime):
+                            st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                        else:
+                            st.markdown(f"## {bet['date']}")
+                        previous_date = current_date
+                    display_bet_card(bet, team_stats_global, team_data=team_data)
+            else:
+                st.info("No high-confidence bets found. Try lowering the threshold.")
+        else:
+            if results:
+                st.markdown("### All Games Analysis")
+                sorted_results = sorted(results, key=lambda x: x['date'])
+                previous_date = None
+                for bet in sorted_results:
+                    current_date = bet['date'].date() if isinstance(bet['date'], datetime) else bet['date']
+                    if previous_date != current_date:
+                        if isinstance(bet['date'], datetime):
+                            st.markdown(f"## {bet['date'].strftime('%A, %B %d, %Y')}")
+                        else:
+                            st.markdown(f"## {bet['date']}")
+                        previous_date = current_date
+                    display_bet_card(bet, team_stats_global, team_data=team_data)
+            else:
+                st.info(f"No upcoming {league_choice} games found.")
+        if st.button("Compare to Bookmaker Odds"):
+            compared_results = compare_predictions_with_odds(results.copy(), league_choice, st.secrets["odds_api"]["apiKey"])
+            st.session_state["compared_results"] = compared_results
+            st.markdown("## Comparison with Bookmaker Odds")
+            for idx, bet in enumerate(compared_results):
+                st.markdown("---")
+                st.markdown(f"### {bet['away_team']} @ {bet['home_team']}")
+                st.write(f"Predicted Spread: {bet['predicted_diff']}")
+                if bet.get("bookmaker_spread") is not None:
+                    st.write(f"Bookmaker Spread: {bet['bookmaker_spread']}")
+                else:
+                    st.write("Bookmaker Spread: Data not available")
+                st.write(f"Confidence: {bet['confidence']}%")
+        if st.button("Save All Predictions to CSV"):
+            if results:
+                save_predictions_to_csv(results, csv_file=CSV_FILE)
+            else:
+                st.warning("No predictions to save.")
+
+def display_performance_dashboard():
+    st.title("Performance Dashboard")
+    file = Path(CSV_FILE)
+    if not file.exists():
+        st.info("No predictions file found.")
+        return
+    try:
+        df = pd.read_csv(CSV_FILE, parse_dates=["date"])
+    except Exception as e:
+        st.error(f"Error loading predictions CSV: {e}")
+        return
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df = df.sort_values('date')
+    if 'prediction_correct' in df.columns:
+        win_rate = df['prediction_correct'].mean() * 100
+    else:
+        win_rate = 0
+    avg_confidence = df['overall_confidence'].mean() if 'overall_confidence' in df.columns else 0
+    pred_count = df.shape[0]
+    tab_overview, tab_historical, tab_distribution, tab_bookmaker, tab_high_confidence, tab_team_insights, tab_betting_insights, tab_additional = st.tabs(
+        ["Overview", "Historical Trends", "Prediction Distribution", "Performance vs. Bookmaker", "High-Confidence Picks", "League & Team Insights", "Betting Insights", "Post-Game Analysis & KPIs"]
+    )
+    with tab_overview:
+        st.header("Overview")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Win Rate", f"{win_rate:.1f}%")
+        col2.metric("Avg. Overall Confidence", f"{avg_confidence:.1f}%")
+        col3.metric("Total Predictions", pred_count)
+        st.subheader("Summary Table")
+        st.dataframe(df)
+        st.subheader("Performance & Betting Insights Summary")
+        if 'actual_total' in df.columns and df['actual_total'].notna().all() and 'predicted_total' in df.columns:
+            mae_val = np.mean(np.abs(df['actual_total'] - df['predicted_total']))
+            rmse_val = np.sqrt(np.mean((df['actual_total'] - df['predicted_total'])**2))
+            mape_val = np.mean(np.abs((df['actual_total'] - df['predicted_total']) / df['actual_total'])) * 100
+            error_metrics_str = (
+                f"Total Points Prediction Error Metrics:\n"
+                f"• MAE: {mae_val:.2f}\n"
+                f"• RMSE: {rmse_val:.2f}\n"
+                f"• MAPE: {mape_val:.2f}%\n"
+            )
+        else:
+            error_metrics_str = ""
+        summary_text = (
+            f"Aggregated Model Performance Summary:\n"
+            f"• Overall Win Rate: {win_rate:.1f}% based on {pred_count} predictions.\n"
+            f"• Average Overall Confidence: {avg_confidence:.1f}%.\n"
+            f"{error_metrics_str}\n"
+        )
+        if win_rate >= 70 and avg_confidence >= 75:
+            summary_text += "The model exhibits robust performance, indicating strong betting opportunities. Consider leveraging aggressive wagering strategies."
+        elif win_rate >= 50 and avg_confidence >= 60:
+            summary_text += "The model shows moderate performance; adjusting wager sizes and further analysis on select picks may optimize returns."
+        else:
+            summary_text += "Model performance appears limited; proceed with caution or conduct additional research to validate predictions before wagering."
+        st.text(summary_text)
+    with tab_historical:
+        st.header("Historical Trends")
+        if 'prediction_correct' in df.columns:
+            daily_win_rate = df.groupby(df['date'].dt.date)['prediction_correct'].mean() * 100
+            st.subheader("Win Rate Over Time")
+            st.line_chart(daily_win_rate)
+        if 'overall_confidence' in df.columns:
+            daily_confidence = df.groupby(df['date'].dt.date)['overall_confidence'].mean()
+            st.subheader("Average Confidence Over Time")
+            st.line_chart(daily_confidence)
+    with tab_distribution:
+        st.header("Prediction Distribution")
+        if 'predicted_diff' in df.columns:
+            st.subheader("Histogram of Predicted Margin")
+            fig, ax = plt.subplots()
+            ax.hist(df['predicted_diff'], bins=20, color='skyblue', edgecolor='white')
+            if 'monte_mean_diff' in df.columns and df['monte_mean_diff'].notna().all():
+                ax.axvline(df['monte_mean_diff'].mean(), color='red', linestyle='--', label='Mean Margin')
+                ax.legend()
+            st.pyplot(fig)
+        if 'actual_margin' in df.columns and df['actual_margin'].notna().all() and 'predicted_diff' in df.columns:
+            st.subheader("Predicted vs. Actual Margin")
+            fig2, ax2 = plt.subplots()
+            ax2.scatter(df['predicted_diff'], df['actual_margin'], color='green', alpha=0.6)
+            ax2.set_xlabel("Predicted Margin")
+            ax2.set_ylabel("Actual Margin")
+            ax2.set_title("Scatter Plot of Predicted vs. Actual Margin")
+            st.pyplot(fig2)
+    with tab_bookmaker:
+        st.header("Performance vs. Bookmaker")
+        if 'bookmaker_spread' in df.columns:
+            st.subheader("Predicted Spread vs. Bookmaker Spread")
+            fig3, ax3 = plt.subplots()
+            ax3.scatter(df['predicted_diff'], df['bookmaker_spread'], color='purple', alpha=0.6)
+            ax3.plot([df['predicted_diff'].min(), df['predicted_diff'].max()],
+                     [df['predicted_diff'].min(), df['predicted_diff'].max()],
+                     color='black', linestyle='--')
+            ax3.set_xlabel("Predicted Spread")
+            ax3.set_ylabel("Bookmaker Spread")
+            ax3.set_title("Predicted vs. Bookmaker Spread")
+            st.pyplot(fig3)
+            st.subheader("Detailed Comparison")
+            st.dataframe(df[['home_team','away_team','predicted_diff','bookmaker_spread']])
+        else:
+            st.info("Bookmaker odds data not available in predictions.")
+    with tab_high_confidence:
+        st.header("High-Confidence Picks & Upset Alerts")
+        conf_threshold = st.slider("Minimum Confidence Level", 50.0, 99.0, 75.0, 5.0)
+        top_bets = find_top_bets(df.to_dict('records'), threshold=conf_threshold)
+        if not top_bets.empty:
+            st.dataframe(top_bets)
+        else:
+            st.info("No high-confidence picks found. Try lowering the threshold.")
+    with tab_team_insights:
+        st.header("League & Team Insights")
+        if 'home_team' in df.columns and 'predicted_diff' in df.columns:
+            team_perf = df.groupby('home_team')['predicted_diff'].mean().reset_index()
+            st.subheader("Average Predicted Margin by Home Team")
+            fig4, ax4 = plt.subplots()
+            ax4.bar(team_perf['home_team'], team_perf['predicted_diff'], color='teal')
+            ax4.set_xlabel("Team")
+            ax4.set_ylabel("Average Predicted Margin")
+            ax4.set_title("Team Performance Overview")
+            plt.xticks(rotation=45, ha='right')
+            st.pyplot(fig4)
+    with tab_betting_insights:
+        st.header("Betting Insights")
+        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        if 'predicted_total' in df.columns and 'actual_total' in df.columns and df['actual_total'].notna().all():
+            mae = mean_absolute_error(df['actual_total'], df['predicted_total'])
+            rmse = np.sqrt(mean_squared_error(df['actual_total'], df['predicted_total']))
+            mape = np.mean(np.abs((df['actual_total'] - df['predicted_total']) / df['actual_total'])) * 100
+            st.subheader("Error Metrics for Total Points Predictions")
+            st.write(f"MAE: {mae:.2f}")
+            st.write(f"RMSE: {rmse:.2f}")
+            st.write(f"MAPE: {mape:.2f}%")
+        if 'predicted_diff' in df.columns and 'bookmaker_spread' in df.columns:
+            df['spread_deviation'] = df['predicted_diff'] - df['bookmaker_spread']
+            st.subheader("Spread Deviation Analysis")
+            st.write("The spread deviation highlights potential value plays when the predicted spread significantly differs from the bookmaker spread.")
+            st.dataframe(df[['home_team','away_team','predicted_diff','bookmaker_spread','spread_deviation']])
+        else:
+            st.info("Spread deviation analysis not available.")
+        st.subheader("Aggregated Betting Insights")
+        insights_list = []
+        for idx, row in df.iterrows():
+            insights = generate_betting_insights(row.to_dict())
+            insights_list.append(insights)
+        st.write("\n\n".join(insights_list))
+
+def load_todays_predictions(csv_file="top_bets.csv"):
+    from pathlib import Path
+    import pandas as pd
+    from datetime import datetime
+    file = Path(csv_file)
+    if not file.exists():
+        st.info("No predictions file found in the project directory.")
+        return []
+    try:
+        df = pd.read_csv(csv_file)
+    except Exception as e:
+        st.error(f"Error loading predictions: {e}")
+        return []
+    if 'date' not in df.columns:
+        st.error("The CSV file does not contain a 'date' column.")
+        return []
+    df['parsed_date'] = pd.to_datetime(df['date'], format='%m/%d/%y', errors='coerce')
+    if df['parsed_date'].isnull().mean() > 0.5:
+        df['parsed_date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
+    if df['parsed_date'].isnull().mean() > 0.5:
+        df['parsed_date'] = pd.to_datetime(df['date'], errors='coerce')
+    def adjust_year(d):
+        if pd.isnull(d):
+            return d
+        return d.replace(year=d.year + 100) if d.year < 2000 else d
+    df['parsed_date'] = df['parsed_date'].apply(adjust_year)
+    df['parsed_date'] = df['parsed_date'].dt.date
+    today = datetime.now().date()
+    todays_df = df[df['parsed_date'] == today]
+    return todays_df.to_dict('records')
+
+# =============================================================================
+# Main Function
+# =============================================================================
 def main():
     st.set_page_config(page_title="FoxEdge Sports Betting Insights", page_icon="🦊", layout="centered")
     st.title("🦊 FoxEdge Sports Betting Insights")
@@ -2247,6 +3421,15 @@ def main():
             st.experimental_rerun()
     odds_api_key = st.sidebar.text_input("Enter Odds API Key", type="password",
                                           value=st.secrets["odds_api"]["apiKey"] if "odds_api" in st.secrets else "")
+    # Sidebar button to fetch odds via scraper.py
+    if st.sidebar.button("Fetch Odds"):
+        fetch_and_save_odds()
+        odds_df = load_odds_csv()
+        if not odds_df.empty:
+            st.sidebar.write("Odds data loaded:")
+            st.sidebar.dataframe(odds_df.head())
+        else:
+            st.sidebar.info("No odds data found after fetching.")
     nav_option = st.sidebar.radio("Navigation", ["Prediction Pipeline", "Performance Dashboard"])
     league_choice = st.sidebar.radio("Select League", ["NFL", "NBA", "NCAAB"])
     if nav_option == "Prediction Pipeline":
@@ -2261,7 +3444,7 @@ if __name__ == "__main__":
     for sport in ["NBA", "NFL", "NCAAB"]:
         print(f"\nUpdating predictions for {sport}...")
         updated_df = update_predictions_with_results("predictions.csv", league=sport)
-        if not updated_df.empty:
+        if updated_df is not None:
             print(f"Updated {sport} predictions:")
             print(updated_df.head())
         else:
