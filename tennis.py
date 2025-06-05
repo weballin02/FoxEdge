@@ -24,276 +24,276 @@ import threading
 # –– ODDS SCRAPING MODULE ––
 
 class OddsScraper:
-def **init**(self):
-self.session = requests.Session()
-self.session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-})
-self.odds_cache = {}
-self.cache_timeout = 300  # 5 minutes
-
-
-def _normalize_player_name(self, name):
-    """Normalize player names for matching"""
-    return re.sub(r'[^\w\s]', '', name.lower().strip())
-
-def _is_cache_valid(self, cache_key):
-    """Check if cached odds are still valid"""
-    if cache_key not in self.odds_cache:
-        return False
-    return time.time() - self.odds_cache[cache_key]['timestamp'] < self.cache_timeout
-
-def fetch_odds_betexplorer(self, player1, player2):
-    """Fetch odds from BetExplorer"""
-    try:
-        # Search for the match
-        search_url = f"https://www.betexplorer.com/tennis/"
-        response = self.session.get(search_url, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
+        self.odds_cache = {}
+        self.cache_timeout = 300  # 5 minutes
         
-        # Look for match links containing both players
-        p1_norm = self._normalize_player_name(player1)
-        p2_norm = self._normalize_player_name(player2)
         
-        # Find match links
-        match_links = soup.find_all('a', href=re.compile(r'/tennis/.*?/'))
-        for link in match_links:
-            link_text = self._normalize_player_name(link.get_text())
-            if p1_norm in link_text and p2_norm in link_text:
-                match_url = "https://www.betexplorer.com" + link['href']
-                return self._scrape_betexplorer_match(match_url, player1, player2)
+    def _normalize_player_name(self, name):
+        """Normalize player names for matching"""
+        return re.sub(r'[^\w\s]', '', name.lower().strip())
         
-        return None
-    except Exception as e:
-        st.warning(f"BetExplorer scraping failed: {str(e)}")
-        return None
-
-def _scrape_betexplorer_match(self, match_url, player1, player2):
-    """Scrape odds from a specific BetExplorer match page"""
-    try:
-        response = self.session.get(match_url, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
+    def _is_cache_valid(self, cache_key):
+        """Check if cached odds are still valid"""
+        if cache_key not in self.odds_cache:
+            return False
+        return time.time() - self.odds_cache[cache_key]['timestamp'] < self.cache_timeout
         
-        odds_data = {}
-        
-        # Look for odds table
-        odds_table = soup.find('table', {'id': 'odds-data-table'})
-        if not odds_table:
-            odds_table = soup.find('table', class_=re.compile(r'.*odds.*'))
-        
-        if odds_table:
-            rows = odds_table.find_all('tr')
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                if len(cells) >= 3:
-                    try:
-                        bookmaker = cells[0].get_text(strip=True)
-                        odds1 = float(cells[1].get_text(strip=True))
-                        odds2 = float(cells[2].get_text(strip=True))
-                        
-                        if bookmaker not in odds_data:
-                            odds_data[bookmaker] = {}
-                        odds_data[bookmaker] = {
-                            'player1_odds': odds1,
-                            'player2_odds': odds2,
-                            'player1': player1,
-                            'player2': player2
-                        }
-                    except (ValueError, IndexError):
-                        continue
-        
-        return odds_data if odds_data else None
-    except Exception as e:
-        return None
-
-def fetch_odds_flashscore(self, player1, player2):
-    """Fetch odds from Flashscore using Selenium"""
-    try:
-        options = Options()
-        options.add_argument('--headless')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        
-        driver = webdriver.Chrome(options=options)
-        
-        # Search for tennis matches
-        search_url = f"https://www.flashscore.com/tennis/"
-        driver.get(search_url)
-        
-        # Wait for page to load
-        time.sleep(3)
-        
-        # Look for matches
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
-        p1_norm = self._normalize_player_name(player1)
-        p2_norm = self._normalize_player_name(player2)
-        
-        # Find match elements
-        matches = soup.find_all('div', class_=re.compile(r'.*match.*'))
-        
-        for match in matches:
-            match_text = self._normalize_player_name(match.get_text())
-            if p1_norm in match_text and p2_norm in match_text:
-                # Click on match to get odds
-                match_link = match.find('a')
-                if match_link and match_link.get('href'):
-                    odds_url = "https://www.flashscore.com" + match_link['href'] + "#odds"
-                    driver.get(odds_url)
-                    time.sleep(2)
-                    
-                    # Extract odds
-                    odds_soup = BeautifulSoup(driver.page_source, 'html.parser')
-                    odds_data = self._parse_flashscore_odds(odds_soup, player1, player2)
-                    
-                    driver.quit()
-                    return odds_data
-        
-        driver.quit()
-        return None
-        
-    except Exception as e:
-        st.warning(f"Flashscore scraping failed: {str(e)}")
-        return None
-
-def _parse_flashscore_odds(self, soup, player1, player2):
-    """Parse odds from Flashscore page"""
-    try:
-        odds_data = {}
-        
-        # Look for odds tables
-        odds_sections = soup.find_all('div', class_=re.compile(r'.*odds.*'))
-        
-        for section in odds_sections:
-            rows = section.find_all('div', class_=re.compile(r'.*row.*'))
+    def fetch_odds_betexplorer(self, player1, player2):
+        """Fetch odds from BetExplorer"""
+        try:
+            # Search for the match
+            search_url = f"https://www.betexplorer.com/tennis/"
+            response = self.session.get(search_url, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            for row in rows:
-                cells = row.find_all(['div', 'span'])
-                if len(cells) >= 3:
-                    try:
-                        bookmaker = cells[0].get_text(strip=True)
-                        odds1_text = cells[1].get_text(strip=True)
-                        odds2_text = cells[2].get_text(strip=True)
-                        
-                        # Parse odds (handle different formats)
-                        odds1 = self._parse_odds_format(odds1_text)
-                        odds2 = self._parse_odds_format(odds2_text)
-                        
-                        if odds1 and odds2:
+            # Look for match links containing both players
+            p1_norm = self._normalize_player_name(player1)
+            p2_norm = self._normalize_player_name(player2)
+            
+            # Find match links
+            match_links = soup.find_all('a', href=re.compile(r'/tennis/.*?/'))
+            for link in match_links:
+                link_text = self._normalize_player_name(link.get_text())
+                if p1_norm in link_text and p2_norm in link_text:
+                    match_url = "https://www.betexplorer.com" + link['href']
+                    return self._scrape_betexplorer_match(match_url, player1, player2)
+            
+            return None
+        except Exception as e:
+            st.warning(f"BetExplorer scraping failed: {str(e)}")
+            return None
+        
+    def _scrape_betexplorer_match(self, match_url, player1, player2):
+        """Scrape odds from a specific BetExplorer match page"""
+        try:
+            response = self.session.get(match_url, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            odds_data = {}
+            
+            # Look for odds table
+            odds_table = soup.find('table', {'id': 'odds-data-table'})
+            if not odds_table:
+                odds_table = soup.find('table', class_=re.compile(r'.*odds.*'))
+            
+            if odds_table:
+                rows = odds_table.find_all('tr')
+                for row in rows:
+                    cells = row.find_all(['td', 'th'])
+                    if len(cells) >= 3:
+                        try:
+                            bookmaker = cells[0].get_text(strip=True)
+                            odds1 = float(cells[1].get_text(strip=True))
+                            odds2 = float(cells[2].get_text(strip=True))
+                            
+                            if bookmaker not in odds_data:
+                                odds_data[bookmaker] = {}
                             odds_data[bookmaker] = {
                                 'player1_odds': odds1,
                                 'player2_odds': odds2,
                                 'player1': player1,
                                 'player2': player2
                             }
-                    except:
-                        continue
+                        except (ValueError, IndexError):
+                            continue
+            
+            return odds_data if odds_data else None
+        except Exception as e:
+            return None
         
-        return odds_data if odds_data else None
-    except Exception as e:
-        return None
-
-def _parse_odds_format(self, odds_text):
-    """Parse different odds formats (decimal, fractional, american)"""
-    try:
-        # Remove extra characters
-        odds_text = re.sub(r'[^\d\.\-\+\/]', '', odds_text)
+    def fetch_odds_flashscore(self, player1, player2):
+        """Fetch odds from Flashscore using Selenium"""
+        try:
+            options = Options()
+            options.add_argument('--headless')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            
+            driver = webdriver.Chrome(options=options)
+            
+            # Search for tennis matches
+            search_url = f"https://www.flashscore.com/tennis/"
+            driver.get(search_url)
+            
+            # Wait for page to load
+            time.sleep(3)
+            
+            # Look for matches
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            
+            p1_norm = self._normalize_player_name(player1)
+            p2_norm = self._normalize_player_name(player2)
+            
+            # Find match elements
+            matches = soup.find_all('div', class_=re.compile(r'.*match.*'))
+            
+            for match in matches:
+                match_text = self._normalize_player_name(match.get_text())
+                if p1_norm in match_text and p2_norm in match_text:
+                    # Click on match to get odds
+                    match_link = match.find('a')
+                    if match_link and match_link.get('href'):
+                        odds_url = "https://www.flashscore.com" + match_link['href'] + "#odds"
+                        driver.get(odds_url)
+                        time.sleep(2)
+                        
+                        # Extract odds
+                        odds_soup = BeautifulSoup(driver.page_source, 'html.parser')
+                        odds_data = self._parse_flashscore_odds(odds_soup, player1, player2)
+                        
+                        driver.quit()
+                        return odds_data
+            
+            driver.quit()
+            return None
+            
+        except Exception as e:
+            st.warning(f"Flashscore scraping failed: {str(e)}")
+            return None
         
-        # Decimal odds
-        if '.' in odds_text and not '/' in odds_text:
-            return float(odds_text)
+    def _parse_flashscore_odds(self, soup, player1, player2):
+        """Parse odds from Flashscore page"""
+        try:
+            odds_data = {}
+            
+            # Look for odds tables
+            odds_sections = soup.find_all('div', class_=re.compile(r'.*odds.*'))
+            
+            for section in odds_sections:
+                rows = section.find_all('div', class_=re.compile(r'.*row.*'))
+                
+                for row in rows:
+                    cells = row.find_all(['div', 'span'])
+                    if len(cells) >= 3:
+                        try:
+                            bookmaker = cells[0].get_text(strip=True)
+                            odds1_text = cells[1].get_text(strip=True)
+                            odds2_text = cells[2].get_text(strip=True)
+                            
+                            # Parse odds (handle different formats)
+                            odds1 = self._parse_odds_format(odds1_text)
+                            odds2 = self._parse_odds_format(odds2_text)
+                            
+                            if odds1 and odds2:
+                                odds_data[bookmaker] = {
+                                    'player1_odds': odds1,
+                                    'player2_odds': odds2,
+                                    'player1': player1,
+                                    'player2': player2
+                                }
+                        except:
+                            continue
+            
+            return odds_data if odds_data else None
+        except Exception as e:
+            return None
         
-        # Fractional odds (e.g., "5/2")
-        if '/' in odds_text:
-            parts = odds_text.split('/')
-            if len(parts) == 2:
-                return (float(parts[0]) / float(parts[1])) + 1
+    def _parse_odds_format(self, odds_text):
+        """Parse different odds formats (decimal, fractional, american)"""
+        try:
+            # Remove extra characters
+            odds_text = re.sub(r'[^\d\.\-\+\/]', '', odds_text)
+            
+            # Decimal odds
+            if '.' in odds_text and not '/' in odds_text:
+                return float(odds_text)
+            
+            # Fractional odds (e.g., "5/2")
+            if '/' in odds_text:
+                parts = odds_text.split('/')
+                if len(parts) == 2:
+                    return (float(parts[0]) / float(parts[1])) + 1
+            
+            # American odds
+            if odds_text.startswith(('+', '-')):
+                american_odds = int(odds_text)
+                if american_odds > 0:
+                    return (american_odds / 100) + 1
+                else:
+                    return (100 / abs(american_odds)) + 1
+            
+            return None
+        except:
+            return None
         
-        # American odds
-        if odds_text.startswith(('+', '-')):
-            american_odds = int(odds_text)
-            if american_odds > 0:
-                return (american_odds / 100) + 1
-            else:
-                return (100 / abs(american_odds)) + 1
+    def fetch_aggregated_odds(self, player1, player2):
+        """Fetch odds from multiple sources and aggregate"""
+        cache_key = f"{self._normalize_player_name(player1)}_{self._normalize_player_name(player2)}"
         
-        return None
-    except:
-        return None
-
-def fetch_aggregated_odds(self, player1, player2):
-    """Fetch odds from multiple sources and aggregate"""
-    cache_key = f"{self._normalize_player_name(player1)}_{self._normalize_player_name(player2)}"
-    
-    # Check cache first
-    if self._is_cache_valid(cache_key):
-        return self.odds_cache[cache_key]['data']
-    
-    all_odds = {}
-    
-    # Fetch from multiple sources concurrently
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(self.fetch_odds_betexplorer, player1, player2): 'BetExplorer',
-            executor.submit(self.fetch_odds_flashscore, player1, player2): 'Flashscore',
+        # Check cache first
+        if self._is_cache_valid(cache_key):
+            return self.odds_cache[cache_key]['data']
+        
+        all_odds = {}
+        
+        # Fetch from multiple sources concurrently
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(self.fetch_odds_betexplorer, player1, player2): 'BetExplorer',
+                executor.submit(self.fetch_odds_flashscore, player1, player2): 'Flashscore',
+            }
+            
+            for future in as_completed(futures, timeout=30):
+                source = futures[future]
+                try:
+                    result = future.result()
+                    if result:
+                        all_odds[source] = result
+                except Exception as e:
+                    st.warning(f"Failed to fetch odds from {source}: {str(e)}")
+        
+        # Aggregate odds
+        aggregated = self._aggregate_odds(all_odds, player1, player2)
+        
+        # Cache the result
+        self.odds_cache[cache_key] = {
+            'data': aggregated,
+            'timestamp': time.time()
         }
         
-        for future in as_completed(futures, timeout=30):
-            source = futures[future]
-            try:
-                result = future.result()
-                if result:
-                    all_odds[source] = result
-            except Exception as e:
-                st.warning(f"Failed to fetch odds from {source}: {str(e)}")
-    
-    # Aggregate odds
-    aggregated = self._aggregate_odds(all_odds, player1, player2)
-    
-    # Cache the result
-    self.odds_cache[cache_key] = {
-        'data': aggregated,
-        'timestamp': time.time()
-    }
-    
-    return aggregated
-
-def _aggregate_odds(self, all_odds, player1, player2):
-    """Aggregate odds from multiple sources"""
-    if not all_odds:
+        return aggregated
+        
+    def _aggregate_odds(self, all_odds, player1, player2):
+        """Aggregate odds from multiple sources"""
+        if not all_odds:
+            return {
+                'best_odds_player1': 2.0,
+                'best_odds_player2': 2.0,
+                'avg_odds_player1': 2.0,
+                'avg_odds_player2': 2.0,
+                'bookmaker_count': 0,
+                'sources': []
+            }
+        
+        p1_odds = []
+        p2_odds = []
+        sources = []
+        
+        for source, bookmakers in all_odds.items():
+            sources.append(source)
+            for bookmaker, odds in bookmakers.items():
+                if isinstance(odds, dict):
+                    p1_odds.append(odds.get('player1_odds', 2.0))
+                    p2_odds.append(odds.get('player2_odds', 2.0))
+        
+        if not p1_odds:
+            p1_odds = [2.0]
+            p2_odds = [2.0]
+        
         return {
-            'best_odds_player1': 2.0,
-            'best_odds_player2': 2.0,
-            'avg_odds_player1': 2.0,
-            'avg_odds_player2': 2.0,
-            'bookmaker_count': 0,
-            'sources': []
+            'best_odds_player1': max(p1_odds),
+            'best_odds_player2': max(p2_odds),
+            'avg_odds_player1': sum(p1_odds) / len(p1_odds),
+            'avg_odds_player2': sum(p2_odds) / len(p2_odds),
+            'bookmaker_count': len(p1_odds),
+            'sources': sources,
+            'all_odds': all_odds
         }
-    
-    p1_odds = []
-    p2_odds = []
-    sources = []
-    
-    for source, bookmakers in all_odds.items():
-        sources.append(source)
-        for bookmaker, odds in bookmakers.items():
-            if isinstance(odds, dict):
-                p1_odds.append(odds.get('player1_odds', 2.0))
-                p2_odds.append(odds.get('player2_odds', 2.0))
-    
-    if not p1_odds:
-        p1_odds = [2.0]
-        p2_odds = [2.0]
-    
-    return {
-        'best_odds_player1': max(p1_odds),
-        'best_odds_player2': max(p2_odds),
-        'avg_odds_player1': sum(p1_odds) / len(p1_odds),
-        'avg_odds_player2': sum(p2_odds) / len(p2_odds),
-        'bookmaker_count': len(p1_odds),
-        'sources': sources,
-        'all_odds': all_odds
-    }
 
 
 # –– ATP/WTA Next Matches Scraper ––
@@ -414,167 +414,167 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 class TennisPredictor:
-    def **init**(self):
-        self.model = None
-        self.scaler = StandardScaler()
-        self.features = []
-
-
-def fetch_atp_rankings(self):
-    try:
-        url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_rankings_current.csv"
-        rankings = pd.read_csv(url)
-        return rankings
-    except:
-        return pd.DataFrame({
-            'ranking_date': [20241202] * 10,
-            'rank': range(1, 11),
-            'player': ['Novak Djokovic', 'Carlos Alcaraz', 'Daniil Medvedev', 
-                      'Jannik Sinner', 'Andrey Rublev', 'Stefanos Tsitsipas',
-                      'Holger Rune', 'Casper Ruud', 'Taylor Fritz', 'Alex de Minaur'],
-            'points': [9945, 8855, 7600, 7500, 4200, 4000, 3800, 3600, 3400, 3200]
-        })
-
-def fetch_wta_rankings(self):
-    try:
-        url = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_rankings_current.csv"
-        rankings = pd.read_csv(url)
-        return rankings
-    except:
-        return pd.DataFrame({
-            'ranking_date': [20241202] * 10,
-            'rank': range(1, 11),
-            'player': ['Iga Swiatek', 'Aryna Sabalenka', 'Coco Gauff', 
-                      'Elena Rybakina', 'Jessica Pegula', 'Ons Jabeur',
-                      'Karolina Muchova', 'Qinwen Zheng', 'Barbora Krejcikova', 'Danielle Collins'],
-            'points': [9665, 8716, 6530, 5471, 4990, 3758, 3348, 3267, 3214, 2854]
-        })
-
-def fetch_match_data(self, tour, year):
-    """Download match data from Jeff Sackmann's repo for ATP/WTA"""
-    try:
-        base_url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{tour}/master/{tour}_matches_{year}.csv"
-        df = pd.read_csv(base_url)
-        df['winner_name'] = df['winner_name'].fillna('')
-        df['loser_name'] = df['loser_name'].fillna('')
-        return df
-    except Exception:
-        # Fallback demo data
-        return pd.DataFrame({
-            'tourney_date': [20240101],
-            'winner_name': ['Demo Player1'],
-            'loser_name': ['Demo Player2'],
-            'surface': ['Hard'],
-            'score': ['6-4 6-3'],
-        })
-
-def calculate_head_to_head(self, player1, player2, matches_df):
-    h2h_matches = matches_df[
-        ((matches_df['winner_name'] == player1) & (matches_df['loser_name'] == player2)) |
-        ((matches_df['winner_name'] == player2) & (matches_df['loser_name'] == player1))
-    ]
-    p1_wins = len(h2h_matches[h2h_matches['winner_name'] == player1])
-    p2_wins = len(h2h_matches[h2h_matches['winner_name'] == player2])
-    return p1_wins, p2_wins
-
-def calculate_surface_stats(self, player, surface, matches_df):
-    surface_matches = matches_df[matches_df['surface'] == surface]
-    wins = len(surface_matches[surface_matches['winner_name'] == player])
-    losses = len(surface_matches[surface_matches['loser_name'] == player])
-    total = wins + losses
-    win_rate = wins / total if total > 0 else 0.5
-    return win_rate, total
-
-def calculate_recent_form(self, player, matches_df, days=30):
-    # This is a simplification for the demo. Real logic should parse actual dates.
-    wins = len(matches_df[matches_df['winner_name'] == player])
-    losses = len(matches_df[matches_df['loser_name'] == player])
-    total = wins + losses
-    form = wins / total if total > 0 else 0.5
-    return form, total
-
-def prepare_features(self, player1, player2, surface, rankings_df, matches_df):
-    p1_rank = rankings_df[rankings_df['player'] == player1]['rank'].iloc[0] if len(rankings_df[rankings_df['player'] == player1]) > 0 else 50
-    p2_rank = rankings_df[rankings_df['player'] == player2]['rank'].iloc[0] if len(rankings_df[rankings_df['player'] == player2]) > 0 else 50
-    p1_points = rankings_df[rankings_df['player'] == player1]['points'].iloc[0] if len(rankings_df[rankings_df['player'] == player1]) > 0 else 1000
-    p2_points = rankings_df[rankings_df['player'] == player2]['points'].iloc[0] if len(rankings_df[rankings_df['player'] == player2]) > 0 else 1000
-    p1_h2h, p2_h2h = self.calculate_head_to_head(player1, player2, matches_df)
-    p1_surface_wr, p1_surface_matches = self.calculate_surface_stats(player1, surface, matches_df)
-    p2_surface_wr, p2_surface_matches = self.calculate_surface_stats(player2, surface, matches_df)
-    p1_form, p1_recent_matches = self.calculate_recent_form(player1, matches_df)
-    p2_form, p2_recent_matches = self.calculate_recent_form(player2, matches_df)
-    features = [
-        p1_rank, p2_rank,
-        p1_points, p2_points,
-        p1_h2h, p2_h2h,
-        p1_surface_wr, p2_surface_wr,
-        p1_surface_matches, p2_surface_matches,
-        p1_form, p2_form,
-        p1_recent_matches, p2_recent_matches,
-        1 if surface == 'Hard' else 0,
-        1 if surface == 'Clay' else 0,
-        1 if surface == 'Grass' else 0
-    ]
-    return features
-
-def train_model(self, matches_df, rankings_df):
-    X = []
-    y = []
-    sample_matches = matches_df.sample(min(1000, len(matches_df)))
-    for _, match in sample_matches.iterrows():
+    def __init__(self):
+            self.model = None
+            self.scaler = StandardScaler()
+            self.features = []
+        
+        
+    def fetch_atp_rankings(self):
         try:
-            features = self.prepare_features(
-                match['winner_name'], match['loser_name'], 
-                match['surface'], rankings_df, matches_df
-            )
-            X.append(features)
-            y.append(1)
-            features_reverse = self.prepare_features(
-                match['loser_name'], match['winner_name'], 
-                match['surface'], rankings_df, matches_df
-            )
-            X.append(features_reverse)
-            y.append(0)
+            url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_rankings_current.csv"
+            rankings = pd.read_csv(url)
+            return rankings
+        except:
+            return pd.DataFrame({
+                'ranking_date': [20241202] * 10,
+                'rank': range(1, 11),
+                'player': ['Novak Djokovic', 'Carlos Alcaraz', 'Daniil Medvedev', 
+                          'Jannik Sinner', 'Andrey Rublev', 'Stefanos Tsitsipas',
+                          'Holger Rune', 'Casper Ruud', 'Taylor Fritz', 'Alex de Minaur'],
+                'points': [9945, 8855, 7600, 7500, 4200, 4000, 3800, 3600, 3400, 3200]
+            })
+        
+    def fetch_wta_rankings(self):
+        try:
+            url = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_rankings_current.csv"
+            rankings = pd.read_csv(url)
+            return rankings
+        except:
+            return pd.DataFrame({
+                'ranking_date': [20241202] * 10,
+                'rank': range(1, 11),
+                'player': ['Iga Swiatek', 'Aryna Sabalenka', 'Coco Gauff', 
+                          'Elena Rybakina', 'Jessica Pegula', 'Ons Jabeur',
+                          'Karolina Muchova', 'Qinwen Zheng', 'Barbora Krejcikova', 'Danielle Collins'],
+                'points': [9665, 8716, 6530, 5471, 4990, 3758, 3348, 3267, 3214, 2854]
+            })
+        
+    def fetch_match_data(self, tour, year):
+        """Download match data from Jeff Sackmann's repo for ATP/WTA"""
+        try:
+            base_url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{tour}/master/{tour}_matches_{year}.csv"
+            df = pd.read_csv(base_url)
+            df['winner_name'] = df['winner_name'].fillna('')
+            df['loser_name'] = df['loser_name'].fillna('')
+            return df
+        except Exception:
+            # Fallback demo data
+            return pd.DataFrame({
+                'tourney_date': [20240101],
+                'winner_name': ['Demo Player1'],
+                'loser_name': ['Demo Player2'],
+                'surface': ['Hard'],
+                'score': ['6-4 6-3'],
+            })
+        
+    def calculate_head_to_head(self, player1, player2, matches_df):
+        h2h_matches = matches_df[
+            ((matches_df['winner_name'] == player1) & (matches_df['loser_name'] == player2)) |
+            ((matches_df['winner_name'] == player2) & (matches_df['loser_name'] == player1))
+        ]
+        p1_wins = len(h2h_matches[h2h_matches['winner_name'] == player1])
+        p2_wins = len(h2h_matches[h2h_matches['winner_name'] == player2])
+        return p1_wins, p2_wins
+        
+    def calculate_surface_stats(self, player, surface, matches_df):
+        surface_matches = matches_df[matches_df['surface'] == surface]
+        wins = len(surface_matches[surface_matches['winner_name'] == player])
+        losses = len(surface_matches[surface_matches['loser_name'] == player])
+        total = wins + losses
+        win_rate = wins / total if total > 0 else 0.5
+        return win_rate, total
+        
+    def calculate_recent_form(self, player, matches_df, days=30):
+        # This is a simplification for the demo. Real logic should parse actual dates.
+        wins = len(matches_df[matches_df['winner_name'] == player])
+        losses = len(matches_df[matches_df['loser_name'] == player])
+        total = wins + losses
+        form = wins / total if total > 0 else 0.5
+        return form, total
+        
+    def prepare_features(self, player1, player2, surface, rankings_df, matches_df):
+        p1_rank = rankings_df[rankings_df['player'] == player1]['rank'].iloc[0] if len(rankings_df[rankings_df['player'] == player1]) > 0 else 50
+        p2_rank = rankings_df[rankings_df['player'] == player2]['rank'].iloc[0] if len(rankings_df[rankings_df['player'] == player2]) > 0 else 50
+        p1_points = rankings_df[rankings_df['player'] == player1]['points'].iloc[0] if len(rankings_df[rankings_df['player'] == player1]) > 0 else 1000
+        p2_points = rankings_df[rankings_df['player'] == player2]['points'].iloc[0] if len(rankings_df[rankings_df['player'] == player2]) > 0 else 1000
+        p1_h2h, p2_h2h = self.calculate_head_to_head(player1, player2, matches_df)
+        p1_surface_wr, p1_surface_matches = self.calculate_surface_stats(player1, surface, matches_df)
+        p2_surface_wr, p2_surface_matches = self.calculate_surface_stats(player2, surface, matches_df)
+        p1_form, p1_recent_matches = self.calculate_recent_form(player1, matches_df)
+        p2_form, p2_recent_matches = self.calculate_recent_form(player2, matches_df)
+        features = [
+            p1_rank, p2_rank,
+            p1_points, p2_points,
+            p1_h2h, p2_h2h,
+            p1_surface_wr, p2_surface_wr,
+            p1_surface_matches, p2_surface_matches,
+            p1_form, p2_form,
+            p1_recent_matches, p2_recent_matches,
+            1 if surface == 'Hard' else 0,
+            1 if surface == 'Clay' else 0,
+            1 if surface == 'Grass' else 0
+        ]
+        return features
+        
+    def train_model(self, matches_df, rankings_df):
+        X = []
+        y = []
+        sample_matches = matches_df.sample(min(1000, len(matches_df)))
+        for _, match in sample_matches.iterrows():
+            try:
+                features = self.prepare_features(
+                    match['winner_name'], match['loser_name'], 
+                    match['surface'], rankings_df, matches_df
+                )
+                X.append(features)
+                y.append(1)
+                features_reverse = self.prepare_features(
+                    match['loser_name'], match['winner_name'], 
+                    match['surface'], rankings_df, matches_df
+                )
+                X.append(features_reverse)
+                y.append(0)
+            except Exception:
+                continue
+        if len(X) == 0:
+            return False
+        X = np.array(X)
+        y = np.array(y)
+        mask = np.isfinite(X).all(axis=1)
+        X = X[mask]
+        y = y[mask]
+        if len(X) < 10:
+            return False
+        X_scaled = self.scaler.fit_transform(X)
+        self.model = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.model.fit(X_scaled, y)
+        return True
+        
+    def predict_match(self, player1, player2, surface, rankings_df, matches_df):
+        if self.model is None:
+            return 0.5, "Model not trained"
+        try:
+            features = self.prepare_features(player1, player2, surface, rankings_df, matches_df)
+            features_scaled = self.scaler.transform([features])
+            probability = self.model.predict_proba(features_scaled)[0][1]
+            confidence = abs(probability - 0.5) * 2
+            return probability, f"Confidence: {confidence:.1%}"
+        except Exception as e:
+            return 0.5, f"Error: {str(e)}"
+        
+        
+def fetch_all_years_matches(tour, start=2015, end=2025):
+    frames = []
+    for year in range(start, end + 1):
+        try:
+            df = TennisPredictor().fetch_match_data(tour, year)
+            frames.append(df)
         except Exception:
             continue
-    if len(X) == 0:
-        return False
-    X = np.array(X)
-    y = np.array(y)
-    mask = np.isfinite(X).all(axis=1)
-    X = X[mask]
-    y = y[mask]
-    if len(X) < 10:
-        return False
-    X_scaled = self.scaler.fit_transform(X)
-    self.model = RandomForestClassifier(n_estimators=100, random_state=42)
-    self.model.fit(X_scaled, y)
-    return True
-
-def predict_match(self, player1, player2, surface, rankings_df, matches_df):
-    if self.model is None:
-        return 0.5, "Model not trained"
-    try:
-        features = self.prepare_features(player1, player2, surface, rankings_df, matches_df)
-        features_scaled = self.scaler.transform([features])
-        probability = self.model.predict_proba(features_scaled)[0][1]
-        confidence = abs(probability - 0.5) * 2
-        return probability, f"Confidence: {confidence:.1%}"
-    except Exception as e:
-        return 0.5, f"Error: {str(e)}"
-
-
-def fetch_all_years_matches(tour, start=2015, end=2025):
-frames = []
-for year in range(start, end + 1):
-try:
-df = TennisPredictor().fetch_match_data(tour, year)
-frames.append(df)
-except Exception:
-continue
-if frames:
-return pd.concat(frames, ignore_index=True)
-return pd.DataFrame()
+    if frames:
+        return pd.concat(frames, ignore_index=True)
+    return pd.DataFrame()
 
 def calculate_betting_return(probability, odds, stake=100):
     """Calculate expected return with Kelly criterion consideration"""
@@ -611,47 +611,6 @@ def project_set_score(prob, is_slam=False):
             return "2-1"
         else:
             return "2-1"
-
-def main():
-    st.markdown('<h1 class="main-header">🎾 Tennis Betting Predictor Pro</h1>', unsafe_allow_html=True)
-
-
-# Initialize odds scraper
-if 'odds_scraper' not in st.session_state:
-    st.session_state.odds_scraper = OddsScraper()
-
-# Sidebar for settings
-with st.sidebar:
-    st.header("⚙️ Settings")
-    
-    enable_live_odds = st.checkbox("Enable Live Odds Fetching", value=True, 
-                                   help="Fetch real-time odds from multiple sources")
-    
-    min_confidence = st.slider("Minimum Model Confidence", 0.0, 1.0, 0.6, 0.05,
-                               help="Only show predictions above this confidence level")
-    
-    min_expected_value = st.slider("Minimum Expected Value ($)", -50, 50, 0, 5,
-                                   help="Only show bets with expected value above this threshold")
-    
-    show_all_bookmakers = st.checkbox("Show All Bookmaker Odds", value=False,
-                                      help="Display odds from all available bookmakers")
-
-if 'atp_predictor' not in st.session_state or 'wta_predictor' not in st.session_state:
-    with st.spinner("Loading ATP & WTA data and training models..."):
-        atp_predictor = TennisPredictor()
-        atp_rankings = atp_predictor.fetch_atp_rankings()
-        atp_matches = fetch_all_years_matches('atp', 2015, 2025)
-        atp_predictor.train_model(atp_matches, atp_rankings)
-        st.session_state.atp_predictor = atp_predictor
-        st.session_state.atp_rankings = atp_rankings
-        st.session_state.atp_matches = atp_matches
-        wta_predictor = TennisPredictor()
-        wta_rankings = wta_predictor.fetch_wta_rankings()
-        wta_matches = fetch_all_years_matches('wta', 2015, 2025)
-        wta_predictor.train_model(wta_matches, wta_rankings)
-        st.session_state.wta_predictor = wta_predictor
-        st.session_state.wta_rankings = wta_rankings
-        st.session_state.wta_matches = wta_matches
 
 def get_predictions_for_matches(matches_df, predictor, rankings_df, matches_hist_df, tour_name):
     preds = []
