@@ -16,6 +16,8 @@ The FoxEdge MLB Historical Research Library organizes 13,661 historical MLB game
 
 [Read the free controlled sample](research-sample/README.md) to see the methodology, representative validated and rejected findings, a database-row example, and a quick-reference example before visiting the full library.
 
+[Download the seven-page controlled sample (PDF)](research-sample/FoxEdge_MLB_Historical_Research_Free_Sample.pdf).
+
 [View the FoxEdge MLB Historical Research Library](https://foxedge.gumroad.com/l/mlb-research?utm_source=github&utm_medium=repository&utm_campaign=mlb-research-library&utm_content=readme)
 
 Historical research—not picks, predictions, live odds, or guaranteed outcomes. Historical performance does not guarantee future results. 21+; gamble responsibly.

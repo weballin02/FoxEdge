@@ -4,6 +4,8 @@ This sample shows how FoxEdge organizes historical MLB betting research: full-sa
 
 It is a research preview, not a picks service, prediction model, or automatic betting system. Historical performance does not guarantee future results.
 
+**[Download the designed seven-page sample (PDF)](FoxEdge_MLB_Historical_Research_Free_Sample.pdf)** or continue below for the accessible web version.
+
 ## What was studied
 
 - 13,661 completed MLB games and 27,322 team-side opportunities from 2021 through July 12, 2026.
